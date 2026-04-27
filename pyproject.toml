@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quant_earning_edge"
+version = "0.0.1"
+description = "Event-driven earnings-day equity strategy with NBBO-replay execution-realism proof."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Nahom" }]
+
+dependencies = [
+  # Core data
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "pyarrow>=15.0",
+  "duckdb>=1.0",
+  # Config + CLI
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+  "typer>=0.12",
+  "python-dotenv>=1.0",
+  # HTTP clients
+  "httpx>=0.27",
+  "tenacity>=8.2",
+  # Tracking
+  "mlflow>=2.13",
+]
+
+[project.optional-dependencies]
+# Phase 1+: data ingestion clients
+ingest = [
+  "polygon-api-client>=1.14",
+  "alpaca-py>=0.30",
+]
+# Phase 2+: feature engineering
+features = [
+  "pykalman>=0.9.7",
+  "scikit-learn>=1.4",
+]
+# Phase 3+: backtest + portfolio analytics
+backtest = [
+  "vectorbt>=0.26",
+  "quantstats>=0.0.62",
+  "pyfolio-reloaded>=0.9.5",
+]
+# Phase 4+: ML + optimization
+ml = [
+  "lightgbm>=4.3",
+  "optuna>=3.6",
+  "shap>=0.45",
+]
+# Phase 5+: regime model + earnings transcripts
+regime = [
+  "hmmlearn>=0.3",
+]
+# Phase 6: orchestration on VPS
+orchestration = [
+  "prefect>=2.19",
+  "apscheduler>=3.10",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "pytest>=8.2",
+  "pytest-cov>=5.0",
+  "hypothesis>=6.103",
+  "types-PyYAML",
+  "types-requests",
+]
+
+[project.scripts]
+qee = "quant_earning_edge.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/quant_earning_edge"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",  # pycodestyle, pyflakes
+  "I",            # isort
+  "B",            # bugbear
+  "UP",           # pyupgrade
+  "SIM",          # simplify
+  "RUF",          # ruff-specific
+  "PL",           # pylint
+  "TCH",          # type-checking
+  "PTH",          # pathlib
+]
+ignore = [
+  "PLR0913",      # too many args (config-driven entrypoints)
+  "PLR2004",      # magic numbers (financial constants)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004", "S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+no_implicit_optional = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = [
+  "vectorbt.*",
+  "pykalman.*",
+  "hmmlearn.*",
+  "quantstats.*",
+  "pyfolio.*",
+  "shap.*",
+  "lightgbm.*",
+  "polygon.*",
+  "alpaca.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "property: property-based tests using hypothesis (must always run in CI)",
+  "integration: end-to-end pipeline tests requiring data lake",
+  "slow: tests > 5s",
+]

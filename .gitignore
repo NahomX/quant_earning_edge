@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+myenv/
+env/
+ENV/
+.python-version
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Secrets / config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+.secrets/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Data lake (Bronze/Silver/Gold) — never commit data
+data/
+parquet/
+*.parquet
+*.duckdb
+*.duckdb.wal
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Output / scratch
+notebooks/.ipynb_checkpoints/
+scratch/

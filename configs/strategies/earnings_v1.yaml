@@ -1,0 +1,90 @@
+# Strategy spec for earnings v1 (Phase 4).
+#
+# Validated by pydantic at load time. The shape below is the contract;
+# adding/renaming fields requires updating the pydantic model in
+# src/quant_earning_edge/signals/config.py (Phase 4).
+
+name: earnings_v1
+description: |
+  LightGBM binary classifier on earnings-day multi-factor features.
+  Forward-return horizon: D+1 close. Position held overnight from T-1 close.
+
+# Universe filter applied at T-1 close
+universe:
+  min_price: 5.0
+  min_market_cap_usd: 500_000_000
+  min_avg_daily_volume: 1_000_000
+  exchanges: [NYSE, NASDAQ, AMEX]
+  exclude_halts: true
+
+# Event filter — only trade on dates with earnings on the underlying
+event:
+  source: finnhub
+  earnings_window:
+    bmo: true   # before market open earnings traded D+1 open->close
+    amc: true   # after market close earnings traded D+1 open->close
+    dmt: false  # during market trading — too noisy
+
+# Features pulled from the registry by name. Each must be PIT-correct.
+features:
+  - return_1d
+  - return_5d
+  - return_20d
+  - vol_20d
+  - vol_60d
+  - vwap_distance_20d
+  - kalman_volume_7d        # filtered, not smoothed
+  - kalman_volume_30d
+  - relative_volume_30d
+  - gap_pct
+  - rsi_14
+  - macd_signal
+  - dist_52w_high
+  - days_since_earnings
+  - earnings_surprise_prior
+
+# Forward-return label
+label:
+  horizon: d1_close
+  threshold: 0.0    # binary: > 0 = win, <= 0 = loss
+
+# Walk-forward training
+walkforward:
+  train_window_months: 6
+  test_window_months: 1
+  step_months: 1
+  embargo_days: 5      # >= max label horizon
+
+# LightGBM hyperparameters — Optuna search bounds defined elsewhere
+model:
+  type: lightgbm_binary
+  early_stopping_rounds: 50
+  hyperparam_search:
+    backend: optuna
+    n_trials: 200
+    objective: oos_sharpe   # not training accuracy
+
+# Portfolio construction
+portfolio:
+  top_k: 5
+  sizing:
+    method: fractional_kelly
+    kelly_fraction: 0.25
+    rolling_window_days: 60
+  caps:
+    max_position_pct: 0.05
+    max_sector_pct: 0.20
+    max_gross_exposure_pct: 0.50
+
+# Cost model — applied identically in backtest and NBBO-replay
+costs:
+  commission_bps_per_side: 1.0
+  half_spread_by_price_tier:
+    - { min_price: 50.0, half_spread_bps: 2.0 }
+    - { min_price: 10.0, half_spread_bps: 5.0 }
+    - { min_price: 0.0,  half_spread_bps: 15.0 }
+  market_impact_coef_bps: 5.0   # final impact = coef * sqrt(qty / ADV)
+  borrow_bps_annualized: 50.0
+
+# Reproducibility
+seed: 20260427

@@ -30,6 +30,7 @@ from quant_earning_edge.runtime import (
 )
 from quant_earning_edge.universe import (
     DailyUniverseJob,
+    EventCandidateJob,
     RunTrigger,
     UniverseBuilder,
     UniverseManifestStore,
@@ -286,6 +287,52 @@ def universe_readiness(
         raise typer.Exit(code=1)
 
 
+@universe_app.command("events")
+def universe_events(  # noqa: PLR0917 - CLI options are the event-join contract.
+    trade_date: Annotated[str, typer.Option(help="Intended order date (YYYY-MM-DD).")],
+    decision_at: Annotated[
+        str,
+        typer.Option(help="Point-in-time cutoff as an offset-aware ISO-8601 timestamp."),
+    ],
+    universe_snapshot: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Frozen universe Parquet artifact."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Immutable Alpaca session JSON file."),
+    ],
+    earnings_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--earnings-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver earnings Parquet; repeat for every relevant partition/revision.",
+        ),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Join scheduled earnings to a frozen eligible universe without lookahead."""
+    environment = _environment(env_file)
+    artifact = EventCandidateJob(LakehouseLayout(environment.data_lake_root)).run(
+        trade_date=_parse_date(trade_date, option="--trade-date"),
+        decision_at=_parse_datetime(decision_at, option="--decision-at"),
+        universe_snapshot=universe_snapshot,
+        session_file=session_file,
+        earnings_files=earnings_files,
+    )
+    _echo_json(
+        {
+            "path": str(artifact.path),
+            "manifest_path": str(artifact.manifest_path),
+            "sha256": artifact.sha256,
+            "candidate_count": artifact.row_count,
+            "excluded_counts": artifact.excluded_counts,
+        }
+    )
+
+
 @backfill_app.command("symbols")
 def backfill_symbols(
     asof_dates: Annotated[
@@ -463,6 +510,22 @@ def _parse_date(value: str, *, option: str) -> date:
             f"{option} must use YYYY-MM-DD",
             param_hint=option,
         ) from error
+
+
+def _parse_datetime(value: str, *, option: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise typer.BadParameter(
+            f"{option} must be an ISO-8601 timestamp",
+            param_hint=option,
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise typer.BadParameter(
+            f"{option} must include a UTC offset",
+            param_hint=option,
+        )
+    return parsed
 
 
 def _load_string_list(path: Path, *, key: str) -> tuple[str, ...]:

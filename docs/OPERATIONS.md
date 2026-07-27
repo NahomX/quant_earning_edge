@@ -65,6 +65,29 @@ exact prior-close bar for every candidate, and persists either a success or
 failure manifest. A fixture or manual invocation cannot prove unattended
 readiness.
 
+## Build point-in-time earnings candidates
+
+After the frozen universe and silver earnings partitions exist, join them using
+the immutable session file and an explicit decision cutoff:
+
+```powershell
+uv run qee universe events `
+  --trade-date 2026-07-28 `
+  --decision-at 2026-07-28T01:30:00Z `
+  --universe-snapshot .\data\gold\universe-snapshots\for_trade_date=2026-07-28\snapshot-<hash>.parquet `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-27\part-<hash>.parquet `
+  --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-28\part-<hash>.parquet
+```
+
+The decision timestamp must fall after the prior session close and before the
+trade-session open. Only observations whose `ingested_at` is at or before that
+cutoff participate. Prior-session after-close (`amc`) and trade-date
+before-open (`bmo`) events are eligible; during-market-hours events are
+explicitly excluded. Output Parquet contains estimates but never actual results,
+and its manifest hashes every source plus exclusion counts. A valid empty
+candidate set is persisted instead of silently inventing a trade.
+
 ## Evaluate the five-session gate
 
 Pass dates from an authoritative market calendar:

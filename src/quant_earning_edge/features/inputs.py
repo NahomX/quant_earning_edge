@@ -120,6 +120,7 @@ class EarningsFeatureLoader:
         candidate_files: Sequence[Path],
         earnings_files: Sequence[Path],
         observed_at: datetime,
+        target_date: date,
     ) -> tuple[FeatureContext, ...]:
         """Add exactly one current event plus prior known reported events."""
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -131,7 +132,9 @@ class EarningsFeatureLoader:
         history = self._read_history(earnings_files, cutoff=cutoff)
         enriched: list[FeatureContext] = []
         for context in contexts:
-            key = (context.symbol, context.asof_date)
+            if target_date <= context.asof_date:
+                raise ValueError("target_date must be after every feature asof_date")
+            key = (context.symbol, target_date)
             current = candidates.get(key)
             if current is None:
                 raise ValueError(f"no event candidate found for {key}")
@@ -166,6 +169,7 @@ class EarningsFeatureLoader:
                     symbol=context.symbol,
                     asof_date=context.asof_date,
                     bars=context.bars,
+                    target_date=target_date,
                     earnings=observations,
                 )
             )

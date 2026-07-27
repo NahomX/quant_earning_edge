@@ -196,21 +196,23 @@ def test_volume_momentum_and_event_features_are_causal_and_well_defined() -> Non
         for index in range(252)
     )
     asof_date = bars[-1].session_date
+    target_date = asof_date + timedelta(days=1)
     context = FeatureContext(
         symbol="AAPL",
         asof_date=asof_date,
         bars=bars,
+        target_date=target_date,
         earnings=(
             EarningsObservation(
-                event_date=asof_date - timedelta(days=90),
-                effective_trade_date=asof_date - timedelta(days=90),
+                event_date=target_date - timedelta(days=90),
+                effective_trade_date=target_date - timedelta(days=90),
                 timing="amc",
                 eps_actual=1.2,
                 eps_estimate=1.0,
             ),
             EarningsObservation(
-                event_date=asof_date,
-                effective_trade_date=asof_date,
+                event_date=target_date,
+                effective_trade_date=target_date,
                 timing="bmo",
             ),
         ),
@@ -293,7 +295,7 @@ def test_earnings_loader_uses_candidate_timing_and_only_prior_known_results(
     )
     base = FeatureContext(
         symbol="AAPL",
-        asof_date=trade_date,
+        asof_date=trade_date - timedelta(days=1),
         bars=_context().bars,
     )
 
@@ -302,6 +304,7 @@ def test_earnings_loader_uses_candidate_timing_and_only_prior_known_results(
         candidate_files=(candidate_path,),
         earnings_files=tuple(item.path for item in (*prior_files, *future_files)),
         observed_at=cutoff,
+        target_date=trade_date,
     )[0]
 
     assert len(enriched.earnings) == 2

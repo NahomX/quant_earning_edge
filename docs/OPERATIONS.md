@@ -73,8 +73,43 @@ The registered baseline also includes Kalman-filtered 7/30-session volume,
 relative volume, RSI(14), MACD 12/26/9 histogram, distance to the 252-session
 high, earnings timing, days since the prior report, and prior EPS surprise.
 Event features additionally require repeatable `--candidate-file` and
-`--earnings-file` inputs. The current event contributes timing only; reported
-EPS is read exclusively from earlier events observed by the cutoff.
+`--earnings-file` inputs plus `--target-date`. `--asof-date` remains the
+prior-close feature boundary; `--target-date` is the next trading session. The
+current event contributes timing only; reported EPS is read exclusively from
+earlier events observed by the cutoff.
+
+## Materialize forward labels and training data
+
+Labels are intentionally computed only after all five future sessions exist:
+
+```powershell
+uv run qee labels compute `
+  --asof-date 2026-07-27 `
+  --observed-at 2026-08-04T22:00:00Z `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --bars-file .\data\silver\asset_class=us-equity\dataset=daily-bars\date=2026-07-27\part-<hash>.parquet `
+  --symbol AAPL
+```
+
+Repeat `--bars-file` through the fifth subsequent market session. The three
+labels are next-session open-to-close, next-session close versus the as-of
+close, and fifth-session close versus the as-of close. Offsets come only from
+the explicit market-session file, never weekdays or calendar-day arithmetic.
+
+Join complete feature and label key sets:
+
+```powershell
+uv run qee labels assemble `
+  --feature-file .\data\gold\feature_group=price\month=2026-07\part-<hash>.parquet `
+  --label-file .\data\gold\feature_group=forward-labels\month=2026-07\part-<hash>.parquet `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --assembled-at 2026-08-04T23:00:00Z
+```
+
+Assembly rejects missing keys, incomplete feature vectors, mixed code versions,
+mixed input lineage, schema drift, non-next-session targets, and features
+computed at or after the target open. Features and labels remain separate
+artifacts; only this immutable training table combines them.
 
 ## Fetch authoritative market sessions
 

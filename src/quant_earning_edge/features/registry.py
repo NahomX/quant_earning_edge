@@ -67,6 +67,7 @@ class FeatureContext:
     symbol: str
     asof_date: date
     bars: tuple[PriceBar, ...]
+    target_date: date | None = None
     earnings: tuple[EarningsObservation, ...] = ()
 
     def __post_init__(self) -> None:
@@ -74,6 +75,8 @@ class FeatureContext:
         if not normalized:
             raise ValueError("symbol must not be empty")
         object.__setattr__(self, "symbol", normalized)
+        if self.target_date is not None and self.target_date <= self.asof_date:
+            raise ValueError("target_date must be after asof_date")
         dates = tuple(item.session_date for item in self.bars)
         if dates != tuple(sorted(set(dates))):
             raise ValueError("bars must have unique ascending session dates")
@@ -95,8 +98,9 @@ class FeatureContext:
         return known[-observations:]
 
     def earnings_history(self) -> tuple[EarningsObservation, ...]:
-        """Return only events effective at or before ``asof_date``."""
-        return tuple(item for item in self.earnings if item.effective_trade_date <= self.asof_date)
+        """Return only events effective by the declared feature target."""
+        boundary = self.target_date or self.asof_date
+        return tuple(item for item in self.earnings if item.effective_trade_date <= boundary)
 
 
 FeatureFunction = Callable[[FeatureContext], float]

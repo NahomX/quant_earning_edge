@@ -39,6 +39,8 @@ reproducible through `uv.lock`.
 | Typed feature registry with code hashes and PIT input boundary | Complete | `features/registry.py`, active property tests |
 | Baseline causal feature set | 15 of 15 complete | price, Kalman volume, momentum, and earnings-event features |
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
+| Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, explicit-offset tests |
+| Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
 
 ## Phase 1 exit gate
 
@@ -57,7 +59,7 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Build the point-in-time label maker for D+1 open-to-close, D+1 close, and D+5
-close horizons, then expose a reproducible feature/label dataset assembly.
-Credentialed calendar, backfill, and five-session unattended execution remain
-pending. Those operational gates cannot be replaced by fixtures.
+Add the remaining documented baseline gap feature using pre-market observations,
+then close Phase 2 with a requirement-by-requirement gate audit. Credentialed
+calendar, backfill, and five-session unattended execution remain pending. Those
+operational gates cannot be replaced by fixtures.

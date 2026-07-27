@@ -32,6 +32,12 @@ from quant_earning_edge.features import (
     FeatureEngine,
     FeatureStore,
 )
+from quant_earning_edge.labels import (
+    ForwardLabelMaker,
+    LabelBarsLoader,
+    LabelStore,
+    TrainingDatasetAssembler,
+)
 from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     RuntimeEnvironment,
@@ -61,12 +67,14 @@ backfill_app = typer.Typer(no_args_is_help=True, help="Plan and resume historica
 calendar_app = typer.Typer(no_args_is_help=True, help="Fetch authoritative market sessions.")
 data_app = typer.Typer(no_args_is_help=True, help="Manage local lake query surfaces.")
 features_app = typer.Typer(no_args_is_help=True, help="Compute point-in-time features.")
+labels_app = typer.Typer(no_args_is_help=True, help="Materialize forward labels and datasets.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(calendar_app, name="calendar")
 app.add_typer(data_app, name="data")
 app.add_typer(features_app, name="features")
+app.add_typer(labels_app, name="labels")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -191,6 +199,12 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
             help="Silver earnings Parquet history; required for event features.",
         ),
     ] = None,
+    target_date: Annotated[
+        str | None,
+        typer.Option(
+            help="Next trading session for event features (YYYY-MM-DD).",
+        ),
+    ] = None,
     feature_group: Annotated[
         str,
         typer.Option(help="Gold feature-group partition name."),
@@ -212,11 +226,17 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
             param_hint="event feature inputs",
         )
     if candidate_files is not None and earnings_files is not None:
+        if target_date is None:
+            raise typer.BadParameter(
+                "--target-date is required with event feature inputs",
+                param_hint="--target-date",
+            )
         contexts = EarningsFeatureLoader().enrich(
             contexts,
             candidate_files=candidate_files,
             earnings_files=earnings_files,
             observed_at=cutoff,
+            target_date=_parse_date(target_date, option="--target-date"),
         )
     values = FeatureEngine().compute(contexts, feature_names=feature_names)
     artifact = FeatureStore(LakehouseLayout(environment.data_lake_root)).write(
@@ -227,6 +247,120 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
     _echo_json(
         {
             "path": str(artifact.path),
+            "sha256": artifact.sha256,
+            "row_count": artifact.row_count,
+            "feature_names": artifact.feature_names,
+        }
+    )
+
+
+@labels_app.command("compute")
+def compute_labels(  # noqa: PLR0917 - CLI options are the label contract.
+    asof_date: Annotated[str, typer.Option(help="Feature as-of session (YYYY-MM-DD).")],
+    observed_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware cutoff after the label horizon completed."),
+    ],
+    bars_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--bars-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver daily-bars Parquet; repeat for the full horizon.",
+        ),
+    ],
+    symbols: Annotated[
+        list[str],
+        typer.Option("--symbol", help="Ticker key; repeat for multiple symbols."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Immutable market-session file."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Compute the three documented forward-return labels."""
+    environment = _environment(env_file)
+    asof = _parse_date(asof_date, option="--asof-date")
+    cutoff = _parse_datetime(observed_at, option="--observed-at")
+    session_artifact = SessionFileStore.load(session_file)
+    sessions = tuple(item.session_date for item in session_artifact.sessions)
+    try:
+        asof_index = sessions.index(asof)
+        horizon_end = sessions[asof_index + 5]
+    except (ValueError, IndexError) as error:
+        raise typer.BadParameter(
+            "session file must include asof_date and five later sessions",
+            param_hint="--session-file",
+        ) from error
+    bars = LabelBarsLoader().load(
+        bars_files,
+        symbols=symbols,
+        start_date=asof,
+        end_date=horizon_end,
+        observed_at=cutoff,
+    )
+    labels = ForwardLabelMaker().compute(
+        keys=tuple((symbol, asof) for symbol in symbols),
+        sessions=sessions,
+        bars=bars,
+    )
+    artifact = LabelStore(LakehouseLayout(environment.data_lake_root)).write(
+        labels,
+        computed_at=cutoff,
+    )
+    _echo_json(
+        {
+            "path": str(artifact.path),
+            "sha256": artifact.sha256,
+            "row_count": artifact.row_count,
+        }
+    )
+
+
+@labels_app.command("assemble")
+def assemble_training_dataset(
+    feature_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--feature-file",
+            exists=True,
+            dir_okay=False,
+            help="Gold long-form feature artifact; repeat for all feature groups.",
+        ),
+    ],
+    label_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--label-file",
+            exists=True,
+            dir_okay=False,
+            help="Gold forward-label artifact; repeat for all partitions.",
+        ),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Immutable market-session file."),
+    ],
+    assembled_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware dataset assembly timestamp."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Build an exact-key, pre-open-frozen wide training dataset."""
+    environment = _environment(env_file)
+    artifact = TrainingDatasetAssembler(LakehouseLayout(environment.data_lake_root)).assemble(
+        feature_files=feature_files,
+        label_files=label_files,
+        session_file=session_file,
+        assembled_at=_parse_datetime(assembled_at, option="--assembled-at"),
+    )
+    _echo_json(
+        {
+            "path": str(artifact.path),
+            "manifest_path": str(artifact.manifest_path),
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
             "feature_names": artifact.feature_names,

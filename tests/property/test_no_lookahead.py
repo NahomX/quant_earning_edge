@@ -57,17 +57,18 @@ def test_feature_is_point_in_time(
         )
     cutoff_index = 255
     asof_date = bars[cutoff_index].session_date
+    target_date = asof_date + timedelta(days=1)
     known_earnings = (
         EarningsObservation(
-            event_date=asof_date - timedelta(days=90),
-            effective_trade_date=asof_date - timedelta(days=90),
+            event_date=target_date - timedelta(days=90),
+            effective_trade_date=target_date - timedelta(days=90),
             timing="amc",
             eps_actual=1.2,
             eps_estimate=1.0,
         ),
         EarningsObservation(
-            event_date=asof_date,
-            effective_trade_date=asof_date,
+            event_date=target_date,
+            effective_trade_date=target_date,
             timing="bmo",
         ),
     )
@@ -75,17 +76,19 @@ def test_feature_is_point_in_time(
         symbol="AAPL",
         asof_date=asof_date,
         bars=tuple(bars[: cutoff_index + 1]),
+        target_date=target_date,
         earnings=known_earnings,
     )
     with_future = FeatureContext(
         symbol="AAPL",
         asof_date=asof_date,
         bars=tuple(bars),
+        target_date=target_date,
         earnings=(
             *known_earnings,
             EarningsObservation(
-                event_date=asof_date + timedelta(days=30),
-                effective_trade_date=asof_date + timedelta(days=30),
+                event_date=target_date + timedelta(days=30),
+                effective_trade_date=target_date + timedelta(days=30),
                 timing="bmo",
                 eps_actual=9.0,
                 eps_estimate=1.0,

@@ -173,6 +173,7 @@ def _context_hash(context: FeatureContext) -> str:
         {
             "symbol": context.symbol,
             "asof_date": context.asof_date,
+            "target_date": context.target_date,
             "bars": known,
             "earnings": [
                 {

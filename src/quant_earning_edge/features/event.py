@@ -13,10 +13,12 @@ _EVENT_DEPENDENCIES = ("silver_earnings_events", "gold_event_candidates")
 
 
 def _current_event(context: FeatureContext) -> EarningsObservation:
+    if context.target_date is None:
+        raise ValueError("event features require target_date")
     current = [
         item
         for item in context.earnings_history()
-        if item.effective_trade_date == context.asof_date
+        if item.effective_trade_date == context.target_date
     ]
     if len(current) != 1:
         raise ValueError(

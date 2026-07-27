@@ -29,6 +29,7 @@ reproducible through `uv.lock`.
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
 | Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
+| Credential-safe CLI and validated universe config | Complete | `cli.py`, `runtime.py`, CLI/config tests |
 
 ## Phase 1 exit gate
 
@@ -47,6 +48,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add CLI/config wiring for data ingestion and the daily universe job, including
-environment validation and nonzero exit codes. Then begin the credentialed
-historical backfill when provider access is available.
+Add resumable multi-symbol historical backfill manifests and coverage auditing.
+Credentialed execution remains pending because no local Polygon or Finnhub keys
+are currently configured.

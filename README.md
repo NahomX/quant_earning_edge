@@ -3,6 +3,8 @@
 Production-grade quantitative research platform for an event-driven (earnings) US-equities strategy. Terminal goal: 90-day NBBO-replay execution-realism proof on Alpaca paper. No live capital in this project's scope.
 
 See [`docs/ARCHITECTURE_PLAN.md`](docs/ARCHITECTURE_PLAN.md) for the full design, budget, and phased plan.
+See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for credentialed Phase 1 commands
+and operational gates.
 
 ## Quickstart
 

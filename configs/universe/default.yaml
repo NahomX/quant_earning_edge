@@ -1,0 +1,9 @@
+eligibility:
+  min_price: 5.0
+  min_market_cap_usd: 500000000
+  min_avg_daily_volume: 1000000
+  allowed_exchanges: [XNYS, XNAS, XASE]
+  allowed_security_types: [CS]
+  exclude_halts: true
+
+adv_sessions: 20

@@ -44,7 +44,7 @@ mlruns/
 mlartifacts/
 
 # Data lake (Bronze/Silver/Gold) — never commit data
-data/
+/data/
 parquet/
 *.parquet
 *.duckdb

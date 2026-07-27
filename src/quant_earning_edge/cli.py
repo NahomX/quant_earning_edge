@@ -7,14 +7,14 @@ from __future__ import annotations
 
 import typer
 
+from quant_earning_edge import __version__
+
 app = typer.Typer(no_args_is_help=True, help="quant_earning_edge command-line interface.")
 
 
 @app.command()
 def version() -> None:
     """Print the installed package version."""
-    from quant_earning_edge import __version__
-
     typer.echo(__version__)
 
 

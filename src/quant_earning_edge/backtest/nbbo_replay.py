@@ -13,8 +13,10 @@ decision time. Reading any earlier quote is a look-ahead bug.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 OrderSide = Literal["buy", "sell"]
 OrderAggressiveness = Literal["aggressive", "mid", "passive"]

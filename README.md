@@ -61,4 +61,6 @@ ops/            Prefect flows, deploy scripts
 
 ## Status
 
-Phase 0. Bootstrap only.
+Phase 1 data-layer implementation is in progress. See
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
+deliverables, remaining gates, and the next implementation slice.

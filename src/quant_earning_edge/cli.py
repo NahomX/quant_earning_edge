@@ -19,9 +19,10 @@ from quant_earning_edge.data import (
     BronzeWriter,
     EarningsIngestor,
     LakehouseLayout,
+    SessionFileStore,
     SilverWriter,
 )
-from quant_earning_edge.data.clients import FinnhubClient, PolygonClient
+from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
 from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     RuntimeEnvironment,
@@ -47,9 +48,11 @@ app = typer.Typer(no_args_is_help=True, help="quant_earning_edge command-line in
 ingest_app = typer.Typer(no_args_is_help=True, help="Ingest provider data.")
 universe_app = typer.Typer(no_args_is_help=True, help="Build and inspect universes.")
 backfill_app = typer.Typer(no_args_is_help=True, help="Plan and resume historical backfills.")
+calendar_app = typer.Typer(no_args_is_help=True, help="Fetch authoritative market sessions.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
+app.add_typer(calendar_app, name="calendar")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -64,6 +67,43 @@ EnvFileOption = Annotated[
 def version() -> None:
     """Print the installed package version."""
     typer.echo(__version__)
+
+
+@calendar_app.command("sessions")
+def calendar_sessions(
+    start: Annotated[str, typer.Option(help="Inclusive calendar start (YYYY-MM-DD).")],
+    end: Annotated[str, typer.Option(help="Inclusive calendar end (YYYY-MM-DD).")],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Fetch Alpaca's trading calendar into an immutable session file."""
+    environment = _environment(env_file)
+    try:
+        api_key_id, secret_key = environment.require_alpaca_credentials()
+    except RuntimeConfigurationError as error:
+        raise typer.BadParameter(str(error), param_hint="environment") from error
+    start_date = _parse_date(start, option="--start")
+    end_date = _parse_date(end, option="--end")
+    layout = LakehouseLayout(environment.data_lake_root)
+    with httpx.Client(
+        base_url=environment.alpaca_trading_base_url,
+        timeout=environment.http_timeout_seconds,
+    ) as http_client:
+        sessions = AlpacaCalendarClient(
+            api_key_id=api_key_id,
+            secret_key=secret_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        ).sessions(start_date=start_date, end_date=end_date)
+    artifact = SessionFileStore(layout).write(sessions)
+    _echo_json(
+        {
+            "path": str(artifact.path),
+            "sha256": artifact.sha256,
+            "session_count": len(artifact.sessions),
+            "first_session": artifact.sessions[0].session_date,
+            "last_session": artifact.sessions[-1].session_date,
+        }
+    )
 
 
 @ingest_app.command("earnings")

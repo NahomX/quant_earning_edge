@@ -111,3 +111,35 @@ def test_readiness_command_reports_missing_real_runs(
     payload = json.loads(result.stdout)
     assert payload["ready"] is False
     assert payload["successful_trade_dates"] == []
+
+
+def test_calendar_command_requires_both_credentials(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "APCA_API_KEY_ID=test-only",
+                f"DATA_LAKE_ROOT={tmp_path / 'lake'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "calendar",
+            "sessions",
+            "--start",
+            "2026-07-01",
+            "--end",
+            "2026-07-31",
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "APCA_API_KEY_ID" in result.stderr
+    assert "APCA_API_SECRET_KEY" in result.stderr
+    assert "required" in result.stderr

@@ -21,9 +21,12 @@ class RuntimeEnvironment:
     data_lake_root: Path
     polygon_base_url: str
     finnhub_base_url: str
+    alpaca_trading_base_url: str
     http_timeout_seconds: float
     _polygon_api_key: str | None = field(default=None, repr=False)
     _finnhub_api_key: str | None = field(default=None, repr=False)
+    _alpaca_api_key_id: str | None = field(default=None, repr=False)
+    _alpaca_secret_key: str | None = field(default=None, repr=False)
 
     def require_polygon_api_key(self) -> str:
         """Return the Polygon key or fail without echoing secret material."""
@@ -36,6 +39,14 @@ class RuntimeEnvironment:
         if not self._finnhub_api_key:
             raise RuntimeConfigurationError("FINNHUB_API_KEY is required for this command")
         return self._finnhub_api_key
+
+    def require_alpaca_credentials(self) -> tuple[str, str]:
+        """Return paper-account credentials or fail without exposing them."""
+        if not self._alpaca_api_key_id or not self._alpaca_secret_key:
+            raise RuntimeConfigurationError(
+                "APCA_API_KEY_ID and APCA_API_SECRET_KEY are required for this command"
+            )
+        return self._alpaca_api_key_id, self._alpaca_secret_key
 
 
 def load_runtime_environment(*, env_file: Path | None = None) -> RuntimeEnvironment:
@@ -65,15 +76,20 @@ def load_runtime_environment(*, env_file: Path | None = None) -> RuntimeEnvironm
         )
         or ""
     )
+    alpaca_trading_base_url = setting("ALPACA_BASE_URL", "https://paper-api.alpaca.markets") or ""
     _require_https_url(polygon_base_url, field_name="POLYGON_BASE_URL")
     _require_https_url(finnhub_base_url, field_name="FINNHUB_BASE_URL")
+    _require_https_url(alpaca_trading_base_url, field_name="ALPACA_BASE_URL")
     return RuntimeEnvironment(
         data_lake_root=Path(setting("DATA_LAKE_ROOT", "./data") or "").expanduser().resolve(),
         polygon_base_url=polygon_base_url,
         finnhub_base_url=finnhub_base_url,
+        alpaca_trading_base_url=alpaca_trading_base_url,
         http_timeout_seconds=timeout,
         _polygon_api_key=_clean_secret(setting("POLYGON_API_KEY")),
         _finnhub_api_key=_clean_secret(setting("FINNHUB_API_KEY")),
+        _alpaca_api_key_id=_clean_secret(setting("APCA_API_KEY_ID")),
+        _alpaca_secret_key=_clean_secret(setting("APCA_API_SECRET_KEY")),
     )
 
 

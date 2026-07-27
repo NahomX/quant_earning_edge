@@ -23,6 +23,20 @@ uv run qee ingest bars --symbol AAPL --start 2021-07-01 --end 2026-07-31
 These commands write the raw response to bronze before writing validated,
 partitioned silver Parquet.
 
+## Fetch authoritative market sessions
+
+The Alpaca calendar reports real trading dates and session-specific open/close
+times, including early closes. With paper-account credentials configured, run:
+
+```powershell
+uv run qee calendar sessions --start 2021-01-01 --end 2026-01-01
+```
+
+The command writes the raw provider response to bronze and creates an immutable,
+content-addressed JSON session file under `manifests/market-calendar`. Use that
+file as the explicit input to coverage and trading-date decisions. A locally
+constructed weekday list is not acceptable operational evidence.
+
 ## Build the next-session universe
 
 A halt snapshot is mandatory even when no symbols are halted:

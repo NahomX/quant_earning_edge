@@ -11,6 +11,7 @@ from quant_earning_edge.data.backfill import (
     BarCoverageReport,
 )
 from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
+from quant_earning_edge.data.calendar import SessionFile, SessionFileStore
 from quant_earning_edge.data.ingest import (
     BarsIngestionResult,
     BarsIngestor,
@@ -46,6 +47,8 @@ __all__ = [
     "EarningsIngestionResult",
     "EarningsIngestor",
     "LakehouseLayout",
+    "SessionFile",
+    "SessionFileStore",
     "SilverArtifact",
     "SilverWriter",
 ]

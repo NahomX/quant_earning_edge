@@ -27,6 +27,7 @@ reproducible through `uv.lock`.
 | Resumable historical backfill tooling | Complete | `data/backfill.py`, resume tests |
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
+| Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
@@ -50,7 +51,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add an authoritative market-calendar client and session-file command, then
-implement the event-calendar join needed to select earnings candidates.
-Credentialed backfill execution remains pending because no local provider keys
-are configured.
+Implement the point-in-time event-calendar join needed to select earnings
+candidates from frozen universes. Credentialed calendar and backfill execution
+remain pending because no local provider keys are configured.

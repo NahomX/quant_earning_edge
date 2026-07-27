@@ -25,7 +25,9 @@ reproducible through `uv.lock`.
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
 | US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
 | Historical backfill | Blocked on provider credentials | No local credentials |
-| Daily universe snapshot | Not started | — |
+| Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
+| Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
+| Daily universe snapshot production job | Not started | — |
 
 ## Phase 1 exit gate
 
@@ -44,6 +46,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add point-in-time ticker reference data, daily eligibility rules, and frozen
-prior-close universe snapshots. The first implementation will use injected
-reference/bar inputs and deterministic Parquet output.
+Add the daily production job that assembles prior-close ticker details, closing
+price, 20-session ADV, and halt status into a frozen next-session snapshot.
+Record run manifests so the five-day unattended gate can be measured honestly.

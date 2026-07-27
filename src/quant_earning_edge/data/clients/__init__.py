@@ -6,7 +6,7 @@ from quant_earning_edge.data.clients.finnhub import (
     EarningsTiming,
     FinnhubClient,
 )
-from quant_earning_edge.data.clients.polygon import EquityBar, PolygonClient
+from quant_earning_edge.data.clients.polygon import EquityBar, PolygonClient, TickerDetails
 
 __all__ = [
     "EarningsEvent",
@@ -16,4 +16,5 @@ __all__ = [
     "PolygonClient",
     "ProviderRequestError",
     "ProviderResponseError",
+    "TickerDetails",
 ]

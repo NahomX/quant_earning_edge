@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -57,6 +57,24 @@ class EquityBar(BaseModel):
         return self.timestamp.astimezone(_MARKET_TIMEZONE).date()
 
 
+class TickerDetails(BaseModel):
+    """Point-in-time security metadata used by universe construction."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1)
+    asof_date: date
+    name: str = Field(min_length=1)
+    active: bool
+    locale: Literal["us"]
+    market: Literal["stocks"]
+    primary_exchange: str = Field(min_length=1)
+    security_type: str = Field(min_length=1)
+    market_cap: float = Field(gt=0)
+    list_date: date | None = None
+    delisted_date: date | None = None
+
+
 class _Aggregate(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -78,6 +96,28 @@ class _AggregatesResponse(BaseModel):
     status: str
     results: list[_Aggregate] = Field(default_factory=list)
     next_url: str | None = None
+
+
+class _TickerDetailsPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    ticker: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    active: bool
+    locale: Literal["us"]
+    market: Literal["stocks"]
+    primary_exchange: str = Field(min_length=1)
+    security_type: str = Field(alias="type", min_length=1)
+    market_cap: float = Field(gt=0)
+    list_date: date | None = None
+    delisted_date: date | None = Field(default=None, alias="delisted_utc")
+
+
+class _TickerDetailsResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: str
+    results: _TickerDetailsPayload
 
 
 class PolygonClient:
@@ -167,6 +207,50 @@ class PolygonClient:
             params = None
 
         raise ProviderResponseError(f"Polygon pagination exceeded max_pages={self._max_pages}")
+
+    def ticker_details(self, *, symbol: str, asof_date: date) -> TickerDetails:
+        """Fetch security metadata explicitly as it was known on ``asof_date``."""
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be empty")
+        response = self._request(
+            url=f"/v3/reference/tickers/{normalized_symbol}",
+            params={"date": asof_date.isoformat()},
+        )
+        raw = self._decode_json(response)
+        if self._bronze_writer is not None:
+            self._bronze_writer.write_json(
+                raw,
+                source="polygon",
+                dataset="ticker-details",
+                event_date=asof_date,
+            )
+        try:
+            envelope = _TickerDetailsResponse.model_validate(raw)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Polygon ticker-details response failed validation: {error}"
+            ) from error
+        if envelope.status != "OK":
+            raise ProviderResponseError(f"Polygon ticker-details status was {envelope.status!r}")
+        details = envelope.results
+        if details.ticker != normalized_symbol:
+            raise ProviderResponseError(
+                f"Polygon response ticker {details.ticker!r} did not match {normalized_symbol!r}"
+            )
+        return TickerDetails(
+            symbol=normalized_symbol,
+            asof_date=asof_date,
+            name=details.name,
+            active=details.active,
+            locale=details.locale,
+            market=details.market,
+            primary_exchange=details.primary_exchange,
+            security_type=details.security_type,
+            market_cap=details.market_cap,
+            list_date=details.list_date,
+            delisted_date=details.delisted_date,
+        )
 
     @staticmethod
     def _to_equity_bar(

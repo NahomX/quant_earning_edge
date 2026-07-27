@@ -66,3 +66,7 @@ class LakehouseLayout:
             / f"feature_group={_safe_partition(feature_group, field='feature_group')}"
             / f"month={month}"
         )
+
+    def universe_snapshot(self, *, trade_date: date) -> Path:
+        """Frozen point-in-time universe partition for one intended trade date."""
+        return self.root / DataTier.GOLD / "universe-snapshots" / f"for_trade_date={trade_date}"

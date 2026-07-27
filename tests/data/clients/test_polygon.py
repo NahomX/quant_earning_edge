@@ -237,3 +237,96 @@ def test_nonretryable_http_error_uses_shared_provider_error() -> None:
             start_date=date(2026, 7, 27),
             end_date=date(2026, 7, 27),
         )
+
+
+def test_ticker_details_are_explicitly_point_in_time_and_captured(tmp_path: Path) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v3/reference/tickers/AAPL"
+        assert request.url.params["date"] == "2026-07-27"
+        return httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "results": {
+                    "ticker": "AAPL",
+                    "name": "Apple Inc.",
+                    "active": True,
+                    "locale": "us",
+                    "market": "stocks",
+                    "primary_exchange": "XNAS",
+                    "type": "CS",
+                    "market_cap": 3_000_000_000_000,
+                    "list_date": "1980-12-12",
+                },
+            },
+        )
+
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(respond),
+    )
+    with http_client:
+        details = PolygonClient(
+            api_key="key",
+            http_client=http_client,
+            bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
+        ).ticker_details(symbol="aapl", asof_date=date(2026, 7, 27))
+
+    assert details.symbol == "AAPL"
+    assert details.asof_date == date(2026, 7, 27)
+    assert details.primary_exchange == "XNAS"
+    assert details.market_cap == 3_000_000_000_000
+    assert len(list((tmp_path / "bronze").rglob("*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {
+                "status": "OK",
+                "results": {
+                    "ticker": "MSFT",
+                    "name": "Microsoft",
+                    "active": True,
+                    "locale": "us",
+                    "market": "stocks",
+                    "primary_exchange": "XNAS",
+                    "type": "CS",
+                    "market_cap": 1_000_000_000,
+                },
+            },
+            "did not match",
+        ),
+        (
+            {
+                "status": "ERROR",
+                "results": {
+                    "ticker": "AAPL",
+                    "name": "Apple",
+                    "active": True,
+                    "locale": "us",
+                    "market": "stocks",
+                    "primary_exchange": "XNAS",
+                    "type": "CS",
+                    "market_cap": 1_000_000_000,
+                },
+            },
+            "status",
+        ),
+        ({"status": "OK", "results": {"ticker": "AAPL"}}, "failed validation"),
+    ],
+)
+def test_ticker_details_reject_invalid_contract(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
+    )
+    with http_client, pytest.raises(ProviderResponseError, match=message):
+        PolygonClient(api_key="key", http_client=http_client).ticker_details(
+            symbol="AAPL",
+            asof_date=date(2026, 7, 27),
+        )

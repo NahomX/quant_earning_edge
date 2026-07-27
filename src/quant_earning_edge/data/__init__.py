@@ -1,5 +1,15 @@
 """Point-in-time data lake primitives."""
 
+from quant_earning_edge.data.backfill import (
+    BackfillBatchEvent,
+    BackfillEventStatus,
+    BackfillRunResult,
+    BarBackfillJob,
+    BarBackfillPlan,
+    BarBackfillStore,
+    BarCoverageAuditor,
+    BarCoverageReport,
+)
 from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 from quant_earning_edge.data.ingest import (
     BarsIngestionResult,
@@ -19,6 +29,14 @@ from quant_earning_edge.data.store import DuckDBStore
 __all__ = [
     "DAILY_BARS_SCHEMA",
     "EARNINGS_SCHEMA",
+    "BackfillBatchEvent",
+    "BackfillEventStatus",
+    "BackfillRunResult",
+    "BarBackfillJob",
+    "BarBackfillPlan",
+    "BarBackfillStore",
+    "BarCoverageAuditor",
+    "BarCoverageReport",
     "BarsIngestionResult",
     "BarsIngestor",
     "BronzeArtifact",

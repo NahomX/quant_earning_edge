@@ -24,7 +24,9 @@ reproducible through `uv.lock`.
 | Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
 | US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
-| Historical backfill | Blocked on provider credentials | No local credentials |
+| Resumable historical backfill tooling | Complete | `data/backfill.py`, resume tests |
+| Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
+| Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
@@ -48,6 +50,7 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add resumable multi-symbol historical backfill manifests and coverage auditing.
-Credentialed execution remains pending because no local Polygon or Finnhub keys
-are currently configured.
+Add an authoritative market-calendar client and session-file command, then
+implement the event-calendar join needed to select earnings candidates.
+Credentialed backfill execution remains pending because no local provider keys
+are configured.

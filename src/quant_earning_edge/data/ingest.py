@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from datetime import date, datetime
 
     from quant_earning_edge.data.clients.finnhub import FinnhubClient
+    from quant_earning_edge.data.clients.polygon import PolygonClient
     from quant_earning_edge.data.silver import SilverArtifact, SilverWriter
 
 
@@ -19,6 +20,17 @@ class EarningsIngestionResult:
     start_date: date
     end_date: date
     event_count: int
+    silver_artifacts: tuple[SilverArtifact, ...]
+
+
+@dataclass(frozen=True)
+class BarsIngestionResult:
+    """Auditable result of one Polygon symbol/date-range ingestion."""
+
+    symbol: str
+    start_date: date
+    end_date: date
+    bar_count: int
     silver_artifacts: tuple[SilverArtifact, ...]
 
 
@@ -49,5 +61,40 @@ class EarningsIngestor:
             start_date=start_date,
             end_date=end_date,
             event_count=len(events),
+            silver_artifacts=artifacts,
+        )
+
+
+class BarsIngestor:
+    """Fetch adjusted Polygon bars and persist them to the silver tier."""
+
+    def __init__(self, *, client: PolygonClient, silver_writer: SilverWriter) -> None:
+        self._client = client
+        self._silver_writer = silver_writer
+
+    def ingest(
+        self,
+        *,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+        ingested_at: datetime | None = None,
+    ) -> BarsIngestionResult:
+        """Ingest one symbol over an inclusive date range."""
+        bars = self._client.daily_bars(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        artifacts = self._silver_writer.write_daily_bars(
+            bars,
+            ingested_at=ingested_at,
+        )
+        normalized_symbol = symbol.strip().upper()
+        return BarsIngestionResult(
+            symbol=normalized_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            bar_count=len(bars),
             silver_artifacts=artifacts,
         )

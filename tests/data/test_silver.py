@@ -10,14 +10,21 @@ import pyarrow.parquet as pq
 import pytest
 
 from quant_earning_edge.data import (
+    DAILY_BARS_SCHEMA,
     EARNINGS_SCHEMA,
+    BarsIngestor,
     BronzeWriter,
     DuckDBStore,
     EarningsIngestor,
     LakehouseLayout,
     SilverWriter,
 )
-from quant_earning_edge.data.clients import EarningsEvent, FinnhubClient
+from quant_earning_edge.data.clients import (
+    EarningsEvent,
+    EquityBar,
+    FinnhubClient,
+    PolygonClient,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +43,21 @@ def _event(*, symbol: str, event_date: date) -> EarningsEvent:
             "revenueActual": 100.0,
             "revenueEstimate": 95.0,
         }
+    )
+
+
+def _bar(*, symbol: str, day: int) -> EquityBar:
+    return EquityBar(
+        symbol=symbol,
+        timestamp=datetime(2026, 7, day, 4, tzinfo=UTC),
+        open=100,
+        high=102,
+        low=99,
+        close=101,
+        volume=1_000_000,
+        vwap=100.5,
+        transactions=50_000,
+        adjusted=True,
     )
 
 
@@ -133,3 +155,67 @@ def test_earnings_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> 
         result.silver_artifacts[0].path
     )
     assert silver.column("symbol").to_pylist() == ["AAPL"]
+
+
+def test_daily_bars_writer_uses_schema_partitions_and_is_idempotent(tmp_path: Path) -> None:
+    writer = SilverWriter(LakehouseLayout(tmp_path))
+    ingested_at = datetime(2026, 7, 27, 18, tzinfo=UTC)
+    bars = (
+        _bar(symbol="MSFT", day=28),
+        _bar(symbol="AAPL", day=28),
+    )
+
+    first = writer.write_daily_bars(bars, ingested_at=ingested_at)
+    second = writer.write_daily_bars(bars, ingested_at=ingested_at)
+
+    assert first == second
+    assert first[0].schema == DAILY_BARS_SCHEMA
+    assert first[0].row_count == 2
+    table = pq.read_table(first[0].path)  # type: ignore[no-untyped-call]
+    assert table.column("symbol").to_pylist() == ["AAPL", "MSFT"]
+    assert table.column("adjusted").to_pylist() == [True, True]
+    assert len(list((tmp_path / "silver").rglob("*.parquet"))) == 1
+
+
+def test_bars_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> None:
+    timestamp = int(datetime(2026, 7, 28, 4, tzinfo=UTC).timestamp() * 1000)
+    payload = {
+        "ticker": "AAPL",
+        "adjusted": True,
+        "status": "OK",
+        "results": [
+            {
+                "o": 100,
+                "h": 102,
+                "l": 99,
+                "c": 101,
+                "v": 1_000_000,
+                "t": timestamp,
+            }
+        ],
+    }
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload)),
+    )
+    layout = LakehouseLayout(tmp_path)
+    with http_client:
+        result = BarsIngestor(
+            client=PolygonClient(
+                api_key="test-key",
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ),
+            silver_writer=SilverWriter(layout),
+        ).ingest(
+            symbol="aapl",
+            start_date=date(2026, 7, 28),
+            end_date=date(2026, 7, 28),
+            ingested_at=datetime(2026, 7, 28, 22, tzinfo=UTC),
+        )
+
+    assert result.symbol == "AAPL"
+    assert result.bar_count == 1
+    assert len(result.silver_artifacts) == 1
+    assert len(list((tmp_path / "bronze").rglob("*.json"))) == 1
+    assert len(list((tmp_path / "silver").rglob("*.parquet"))) == 1

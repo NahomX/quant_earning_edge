@@ -20,10 +20,10 @@ reproducible through `uv.lock`.
 | Immutable canonical bronze JSON persistence | Complete | `data/bronze.py`, data tests |
 | DuckDB connection/query boundary | Complete | `data/store.py`, persistence test |
 | Finnhub earnings client and retry/rate-limit handling | Complete | `data/clients/finnhub.py`, contract tests |
-| Polygon market-data client | Not started | — |
+| Polygon aggregate-bars client and pagination | Complete | `data/clients/polygon.py`, contract tests |
 | Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
-| US-equity bars silver schema and writer | Not started | — |
+| US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
 | Historical backfill | Blocked on provider credentials | No local credentials |
 | Daily universe snapshot | Not started | — |
 
@@ -44,6 +44,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add a Polygon aggregate-bars client and the validated US-equity bars silver
-schema/writer. Keep provider transport injectable so the full contract can be
-verified without paid credentials.
+Add point-in-time ticker reference data, daily eligibility rules, and frozen
+prior-close universe snapshots. The first implementation will use injected
+reference/bar inputs and deterministic Parquet output.

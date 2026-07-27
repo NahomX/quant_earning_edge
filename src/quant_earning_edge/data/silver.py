@@ -17,7 +17,26 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from quant_earning_edge.data.clients.finnhub import EarningsEvent
+    from quant_earning_edge.data.clients.polygon import EquityBar
     from quant_earning_edge.data.layout import LakehouseLayout
+
+DAILY_BARS_SCHEMA = pa.schema(
+    [
+        pa.field("session_date", pa.date32(), nullable=False),
+        pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("open", pa.float64(), nullable=False),
+        pa.field("high", pa.float64(), nullable=False),
+        pa.field("low", pa.float64(), nullable=False),
+        pa.field("close", pa.float64(), nullable=False),
+        pa.field("volume", pa.float64(), nullable=False),
+        pa.field("vwap", pa.float64()),
+        pa.field("transactions", pa.int64()),
+        pa.field("adjusted", pa.bool_(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
 
 EARNINGS_SCHEMA = pa.schema(
     [
@@ -78,6 +97,72 @@ class SilverWriter:
         ]
         return tuple(artifacts)
 
+    def write_daily_bars(
+        self,
+        bars: tuple[EquityBar, ...],
+        *,
+        ingested_at: datetime | None = None,
+    ) -> tuple[SilverArtifact, ...]:
+        """Write split-adjusted bars to one immutable file per session."""
+        observed_at = ingested_at or datetime.now(UTC)
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("ingested_at must be timezone-aware")
+        observed_at = observed_at.astimezone(UTC)
+
+        grouped: dict[date, list[EquityBar]] = defaultdict(list)
+        for bar in bars:
+            if not bar.adjusted:
+                raise ValueError("silver daily bars must be split-adjusted")
+            grouped[bar.session_date].append(bar)
+
+        artifacts = [
+            self._write_daily_bars_partition(
+                session_date=session_date,
+                bars=partition_bars,
+                ingested_at=observed_at,
+            )
+            for session_date, partition_bars in sorted(grouped.items())
+        ]
+        return tuple(artifacts)
+
+    def _write_daily_bars_partition(
+        self,
+        *,
+        session_date: date,
+        bars: list[EquityBar],
+        ingested_at: datetime,
+    ) -> SilverArtifact:
+        records = [
+            {
+                "session_date": bar.session_date,
+                "timestamp": bar.timestamp.astimezone(UTC),
+                "symbol": bar.symbol,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "vwap": bar.vwap,
+                "transactions": bar.transactions,
+                "adjusted": bar.adjusted,
+                "source": "polygon",
+                "ingested_at": ingested_at,
+            }
+            for bar in sorted(bars, key=lambda item: (item.symbol, item.timestamp))
+        ]
+        digest = _records_digest(records)
+        partition = self._layout.silver(
+            asset_class="us-equity",
+            dataset="daily-bars",
+            event_date=session_date,
+        )
+        return self._write_table(
+            partition=partition,
+            digest=digest,
+            records=records,
+            schema=DAILY_BARS_SCHEMA,
+        )
+
     def _write_earnings_partition(
         self,
         *,
@@ -110,16 +195,31 @@ class SilverWriter:
             dataset="earnings-events",
             event_date=event_date,
         )
+        return self._write_table(
+            partition=partition,
+            digest=digest,
+            records=records,
+            schema=EARNINGS_SCHEMA,
+        )
+
+    @staticmethod
+    def _write_table(
+        *,
+        partition: Path,
+        digest: str,
+        records: list[dict[str, Any]],
+        schema: pa.Schema,
+    ) -> SilverArtifact:
         partition.mkdir(parents=True, exist_ok=True)
         path = partition / f"part-{digest[:20]}.parquet"
-        table = pa.Table.from_pylist(records, schema=EARNINGS_SCHEMA)
+        table = pa.Table.from_pylist(records, schema=schema)
 
         try:
             with path.open("xb") as sink:
                 pq.write_table(table, sink, compression="zstd")  # type: ignore[no-untyped-call]
         except FileExistsError:
             existing = pq.read_schema(path)  # type: ignore[no-untyped-call]
-            if existing != EARNINGS_SCHEMA:
+            if existing != schema:
                 raise RuntimeError(f"Silver artifact schema collision at {path}") from None
 
         return SilverArtifact(

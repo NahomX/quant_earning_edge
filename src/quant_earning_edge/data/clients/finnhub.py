@@ -10,20 +10,14 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from quant_earning_edge.data.clients.errors import ProviderRequestError, ProviderResponseError
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from quant_earning_edge.data.bronze import BronzeWriter
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-
-
-class ProviderRequestError(RuntimeError):
-    """The provider could not return a successful response."""
-
-
-class ProviderResponseError(RuntimeError):
-    """The provider returned JSON that violated the expected contract."""
 
 
 class EarningsTiming(StrEnum):

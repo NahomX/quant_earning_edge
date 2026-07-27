@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -48,6 +48,15 @@ class EarningsEvent(BaseModel):
     eps_estimate: float | None = Field(default=None, alias="epsEstimate")
     revenue_actual: float | None = Field(default=None, alias="revenueActual")
     revenue_estimate: float | None = Field(default=None, alias="revenueEstimate")
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        """Store a normalized symbol key across provider responses."""
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("symbol must not be blank")
+        return normalized
 
 
 class _EarningsCalendarResponse(BaseModel):

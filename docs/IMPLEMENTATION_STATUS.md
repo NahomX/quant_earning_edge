@@ -21,8 +21,9 @@ reproducible through `uv.lock`.
 | DuckDB connection/query boundary | Complete | `data/store.py`, persistence test |
 | Finnhub earnings client and retry/rate-limit handling | Complete | `data/clients/finnhub.py`, contract tests |
 | Polygon market-data client | Not started | — |
-| Bronze-to-silver normalization | Not started | — |
-| Parquet schemas and writers | Not started | — |
+| Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
+| Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
+| US-equity bars silver schema and writer | Not started | — |
 | Historical backfill | Blocked on provider credentials | No local credentials |
 | Daily universe snapshot | Not started | — |
 
@@ -43,6 +44,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add validated silver schemas and Parquet writers for earnings events and
-US-equity bars. Connect the Finnhub client's validated events to an explicit
-bronze-to-silver ingestion service.
+Add a Polygon aggregate-bars client and the validated US-equity bars silver
+schema/writer. Keep provider transport injectable so the full contract can be
+verified without paid credentials.

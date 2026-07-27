@@ -30,6 +30,13 @@ class DuckDBStore:
         """Execute SQL with positional parameters."""
         return self._connection.execute(sql, parameters)
 
+    def parquet_relation(self, path_glob: Path | str) -> duckdb.DuckDBPyRelation:
+        """Return a relation over partitioned Parquet with Hive keys enabled."""
+        return self._connection.from_parquet(
+            str(path_glob),
+            hive_partitioning=True,
+        )
+
     def close(self) -> None:
         """Close the owned connection."""
         self._connection.close()

@@ -37,7 +37,7 @@ reproducible through `uv.lock`.
 | Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
 | Credential-safe CLI and validated universe config | Complete | `cli.py`, `runtime.py`, CLI/config tests |
 | Typed feature registry with code hashes and PIT input boundary | Complete | `features/registry.py`, active property tests |
-| Baseline causal price features | 6 of 15 baseline features | returns, realized volatility, trailing VWAP distance |
+| Baseline causal feature set | 15 of 15 complete | price, Kalman volume, momentum, and earnings-event features |
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
 
 ## Phase 1 exit gate
@@ -57,7 +57,7 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add causal volume, momentum, and event features until the 15-feature baseline
-is complete, then build the label maker. Credentialed calendar, backfill, and
-five-session unattended execution remain pending. Those operational gates
-cannot be replaced by fixtures.
+Build the point-in-time label maker for D+1 open-to-close, D+1 close, and D+5
+close horizons, then expose a reproducible feature/label dataset assembly.
+Credentialed calendar, backfill, and five-session unattended execution remain
+pending. Those operational gates cannot be replaced by fixtures.

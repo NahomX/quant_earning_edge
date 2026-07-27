@@ -26,7 +26,12 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
-from quant_earning_edge.features import DailyBarsFeatureLoader, FeatureEngine, FeatureStore
+from quant_earning_edge.features import (
+    DailyBarsFeatureLoader,
+    EarningsFeatureLoader,
+    FeatureEngine,
+    FeatureStore,
+)
 from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     RuntimeEnvironment,
@@ -141,8 +146,8 @@ def register_views(
     _echo_json({"database": str(database.resolve()), "views": views})
 
 
-@features_app.command("compute-price")
-def compute_price_features(  # noqa: PLR0917 - CLI options are the PIT compute contract.
+@features_app.command("compute")
+def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contract.
     asof_date: Annotated[str, typer.Option(help="Last observable session (YYYY-MM-DD).")],
     observed_at: Annotated[
         str,
@@ -168,13 +173,31 @@ def compute_price_features(  # noqa: PLR0917 - CLI options are the PIT compute c
             help="Registered price feature; repeat as needed.",
         ),
     ],
+    candidate_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--candidate-file",
+            exists=True,
+            dir_okay=False,
+            help="Gold event-candidate Parquet; required for event features.",
+        ),
+    ] = None,
+    earnings_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--earnings-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver earnings Parquet history; required for event features.",
+        ),
+    ] = None,
     feature_group: Annotated[
         str,
         typer.Option(help="Gold feature-group partition name."),
     ] = "price",
     env_file: EnvFileOption = None,
 ) -> None:
-    """Compute registered causal price features and persist lineage."""
+    """Compute registered causal features and persist lineage."""
     environment = _environment(env_file)
     cutoff = _parse_datetime(observed_at, option="--observed-at")
     contexts = DailyBarsFeatureLoader().load(
@@ -183,6 +206,18 @@ def compute_price_features(  # noqa: PLR0917 - CLI options are the PIT compute c
         asof_date=_parse_date(asof_date, option="--asof-date"),
         observed_at=cutoff,
     )
+    if (candidate_files is None) != (earnings_files is None):
+        raise typer.BadParameter(
+            "--candidate-file and --earnings-file must be supplied together",
+            param_hint="event feature inputs",
+        )
+    if candidate_files is not None and earnings_files is not None:
+        contexts = EarningsFeatureLoader().enrich(
+            contexts,
+            candidate_files=candidate_files,
+            earnings_files=earnings_files,
+            observed_at=cutoff,
+        )
     values = FeatureEngine().compute(contexts, feature_names=feature_names)
     artifact = FeatureStore(LakehouseLayout(environment.data_lake_root)).write(
         feature_group=feature_group,

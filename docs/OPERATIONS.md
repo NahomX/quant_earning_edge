@@ -50,7 +50,7 @@ only revisions ingested by `--observed-at`, discards sessions after
 `--asof-date`, and fails on missing history:
 
 ```powershell
-uv run qee features compute-price `
+uv run qee features compute `
   --asof-date 2026-07-27 `
   --observed-at 2026-07-27T21:00:00Z `
   --bars-file .\data\silver\asset_class=us-equity\dataset=daily-bars\date=2026-07-27\part-<hash>.parquet `
@@ -68,6 +68,13 @@ keyed by symbol, as-of date, and feature name. Every value records the feature
 implementation hash, a hash of only its allowed PIT inputs, and the computation
 cutoff. Registered feature property tests append arbitrary future observations
 and require exact output and lineage equality.
+
+The registered baseline also includes Kalman-filtered 7/30-session volume,
+relative volume, RSI(14), MACD 12/26/9 histogram, distance to the 252-session
+high, earnings timing, days since the prior report, and prior EPS surprise.
+Event features additionally require repeatable `--candidate-file` and
+`--earnings-file` inputs. The current event contributes timing only; reported
+EPS is read exclusively from earlier events observed by the cutoff.
 
 ## Fetch authoritative market sessions
 

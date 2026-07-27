@@ -9,7 +9,13 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from quant_earning_edge.features import FEATURE_REGISTRY, FeatureContext, FeatureSpec, PriceBar
+from quant_earning_edge.features import (
+    FEATURE_REGISTRY,
+    EarningsObservation,
+    FeatureContext,
+    FeatureSpec,
+    PriceBar,
+)
 
 SPECS = FEATURE_REGISTRY.values()
 
@@ -26,8 +32,8 @@ SPECS = FEATURE_REGISTRY.values()
             allow_nan=False,
             allow_infinity=False,
         ),
-        min_size=80,
-        max_size=80,
+        min_size=270,
+        max_size=270,
     ),
 )
 def test_feature_is_point_in_time(
@@ -49,17 +55,42 @@ def test_feature_is_point_in_time(
                 vwap=price * (1.0 + 0.001 * math.sin(index)),
             )
         )
-    cutoff_index = 64
+    cutoff_index = 255
     asof_date = bars[cutoff_index].session_date
+    known_earnings = (
+        EarningsObservation(
+            event_date=asof_date - timedelta(days=90),
+            effective_trade_date=asof_date - timedelta(days=90),
+            timing="amc",
+            eps_actual=1.2,
+            eps_estimate=1.0,
+        ),
+        EarningsObservation(
+            event_date=asof_date,
+            effective_trade_date=asof_date,
+            timing="bmo",
+        ),
+    )
     truncated = FeatureContext(
         symbol="AAPL",
         asof_date=asof_date,
         bars=tuple(bars[: cutoff_index + 1]),
+        earnings=known_earnings,
     )
     with_future = FeatureContext(
         symbol="AAPL",
         asof_date=asof_date,
         bars=tuple(bars),
+        earnings=(
+            *known_earnings,
+            EarningsObservation(
+                event_date=asof_date + timedelta(days=30),
+                effective_trade_date=asof_date + timedelta(days=30),
+                timing="bmo",
+                eps_actual=9.0,
+                eps_estimate=1.0,
+            ),
+        ),
     )
 
     assert spec.evaluate(truncated) == spec.evaluate(with_future)

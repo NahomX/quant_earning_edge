@@ -41,12 +41,33 @@ class PriceBar:
 
 
 @dataclass(frozen=True)
+class EarningsObservation:
+    """One earnings event mapped to its first tradable session."""
+
+    event_date: date
+    effective_trade_date: date
+    timing: Literal["bmo", "amc", "dmh"]
+    eps_actual: float | None = None
+    eps_estimate: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.effective_trade_date < self.event_date:
+            raise ValueError("effective_trade_date must not precede event_date")
+        if self.timing not in {"bmo", "amc", "dmh"}:
+            raise ValueError(f"invalid earnings timing: {self.timing!r}")
+        for value in (self.eps_actual, self.eps_estimate):
+            if value is not None and not math.isfinite(value):
+                raise ValueError("earnings EPS values must be finite")
+
+
+@dataclass(frozen=True)
 class FeatureContext:
     """All observations plus the date boundary a feature is allowed to see."""
 
     symbol: str
     asof_date: date
     bars: tuple[PriceBar, ...]
+    earnings: tuple[EarningsObservation, ...] = ()
 
     def __post_init__(self) -> None:
         normalized = self.symbol.strip().upper()
@@ -56,6 +77,11 @@ class FeatureContext:
         dates = tuple(item.session_date for item in self.bars)
         if dates != tuple(sorted(set(dates))):
             raise ValueError("bars must have unique ascending session dates")
+        event_keys = tuple(
+            (item.effective_trade_date, item.event_date, item.timing) for item in self.earnings
+        )
+        if event_keys != tuple(sorted(set(event_keys))):
+            raise ValueError("earnings observations must have unique ascending event keys")
 
     def price_history(self, *, observations: int) -> tuple[PriceBar, ...]:
         """Return only the last N observations at or before ``asof_date``."""
@@ -67,6 +93,10 @@ class FeatureContext:
                 f"{self.symbol} has {len(known)} PIT bars; {observations} required"
             )
         return known[-observations:]
+
+    def earnings_history(self) -> tuple[EarningsObservation, ...]:
+        """Return only events effective at or before ``asof_date``."""
+        return tuple(item for item in self.earnings if item.effective_trade_date <= self.asof_date)
 
 
 FeatureFunction = Callable[[FeatureContext], float]
@@ -140,7 +170,8 @@ def feature(
     normalized_dependencies = tuple(sorted(set(dependencies)))
 
     def decorator(func: FeatureFunction) -> FeatureFunction:
-        source = inspect.getsource(func).encode()
+        module = inspect.getmodule(func)
+        source = inspect.getsource(module or func).encode()
         FEATURE_REGISTRY.register(
             FeatureSpec(
                 name=name,

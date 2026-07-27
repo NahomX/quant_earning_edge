@@ -174,6 +174,16 @@ def _context_hash(context: FeatureContext) -> str:
             "symbol": context.symbol,
             "asof_date": context.asof_date,
             "bars": known,
+            "earnings": [
+                {
+                    "event_date": item.event_date,
+                    "effective_trade_date": item.effective_trade_date,
+                    "timing": item.timing,
+                    "eps_actual": item.eps_actual,
+                    "eps_estimate": item.eps_estimate,
+                }
+                for item in context.earnings_history()
+            ],
         }
     )
 

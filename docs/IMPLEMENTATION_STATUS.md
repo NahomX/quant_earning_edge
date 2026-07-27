@@ -29,6 +29,8 @@ reproducible through `uv.lock`.
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Point-in-time earnings candidate join | Complete | `universe/events.py`, cutoff/timing tests |
+| Polygon splits/dividends ingestion | Complete | current `/stocks/v1` clients, silver schemas, integration tests |
+| Stable schema-validated DuckDB silver views | Complete | `data/store.py`, view query tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
@@ -52,7 +54,7 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add corporate-action ingestion (splits and dividends) to complete the combined
-event calendar, then expose stable typed DuckDB views across silver partitions.
-Credentialed calendar and backfill execution remain pending because no local
-provider keys are configured.
+Integrate corporate actions into the trade-date event audit and close the
+remaining code-complete portions of the Phase 1 gate. Credentialed calendar,
+backfill, and five-session unattended execution remain pending because no local
+provider keys are configured and real observation time is required.

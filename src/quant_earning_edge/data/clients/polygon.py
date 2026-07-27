@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -91,6 +92,57 @@ class TickerReference(BaseModel):
     delisted_date: date | None = None
 
 
+class SplitAdjustmentType(StrEnum):
+    """Massive's current share-change classifications."""
+
+    FORWARD_SPLIT = "forward_split"
+    REVERSE_SPLIT = "reverse_split"
+    STOCK_DIVIDEND = "stock_dividend"
+
+
+class DividendDistributionType(StrEnum):
+    """Massive's current cash-distribution classifications."""
+
+    RECURRING = "recurring"
+    SPECIAL = "special"
+    SUPPLEMENTAL = "supplemental"
+    IRREGULAR = "irregular"
+    UNKNOWN = "unknown"
+
+
+class StockSplit(BaseModel):
+    """Validated corporate-action split observation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    execution_date: date
+    adjustment_type: SplitAdjustmentType
+    split_from: float = Field(gt=0)
+    split_to: float = Field(gt=0)
+    historical_adjustment_factor: float | None = Field(default=None, gt=0)
+
+
+class CashDividend(BaseModel):
+    """Validated cash-dividend observation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    ex_dividend_date: date
+    distribution_type: DividendDistributionType
+    cash_amount: float = Field(gt=0)
+    currency: str = Field(min_length=3, max_length=3)
+    frequency: int = Field(ge=0)
+    declaration_date: date | None = None
+    record_date: date | None = None
+    pay_date: date | None = None
+    split_adjusted_cash_amount: float | None = Field(default=None, gt=0)
+    historical_adjustment_factor: float | None = Field(default=None, gt=0)
+
+
 class _Aggregate(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -154,6 +206,43 @@ class _TickersResponse(BaseModel):
 
     status: str
     results: list[_TickerReferencePayload] = Field(default_factory=list)
+    next_url: str | None = None
+
+
+class _SplitPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    event_id: str = Field(alias="id", min_length=1)
+    symbol: str = Field(alias="ticker", min_length=1)
+    execution_date: date
+    adjustment_type: SplitAdjustmentType
+    split_from: float = Field(gt=0)
+    split_to: float = Field(gt=0)
+    historical_adjustment_factor: float | None = Field(default=None, gt=0)
+
+
+class _DividendPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    event_id: str = Field(alias="id", min_length=1)
+    symbol: str = Field(alias="ticker", min_length=1)
+    ex_dividend_date: date
+    distribution_type: DividendDistributionType
+    cash_amount: float = Field(gt=0)
+    currency: str = Field(min_length=3, max_length=3)
+    frequency: int = Field(ge=0)
+    declaration_date: date | None = None
+    record_date: date | None = None
+    pay_date: date | None = None
+    split_adjusted_cash_amount: float | None = Field(default=None, gt=0)
+    historical_adjustment_factor: float | None = Field(default=None, gt=0)
+
+
+class _CorporateActionsResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: str
+    results: list[dict[str, Any]] = Field(default_factory=list)
     next_url: str | None = None
 
 
@@ -352,6 +441,140 @@ class PolygonClient:
         raise ProviderResponseError(
             f"Polygon ticker pagination exceeded max_pages={self._max_pages}"
         )
+
+    def stock_splits(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[StockSplit, ...]:
+        """Fetch all split events by execution date over an inclusive interval."""
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        pages = self._corporate_action_pages(
+            url="/stocks/v1/splits",
+            params={
+                "execution_date.gte": start_date.isoformat(),
+                "execution_date.lte": end_date.isoformat(),
+                "limit": "5000",
+                "sort": "execution_date.asc",
+            },
+            dataset="stock-splits",
+            event_date=start_date,
+        )
+        results: list[StockSplit] = []
+        for page in pages:
+            for raw_item in page.results:
+                try:
+                    item = _SplitPayload.model_validate(raw_item)
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon stock-splits response failed validation: {error}"
+                    ) from error
+                results.append(StockSplit.model_validate(item.model_dump()))
+        self._validate_corporate_actions(
+            results,
+            start_date=start_date,
+            end_date=end_date,
+            date_field="execution_date",
+        )
+        return tuple(sorted(results, key=lambda item: (item.execution_date, item.symbol)))
+
+    def cash_dividends(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[CashDividend, ...]:
+        """Fetch all cash dividends by ex-date over an inclusive interval."""
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        pages = self._corporate_action_pages(
+            url="/stocks/v1/dividends",
+            params={
+                "ex_dividend_date.gte": start_date.isoformat(),
+                "ex_dividend_date.lte": end_date.isoformat(),
+                "limit": "5000",
+                "sort": "ex_dividend_date.asc",
+            },
+            dataset="cash-dividends",
+            event_date=start_date,
+        )
+        results: list[CashDividend] = []
+        for page in pages:
+            for raw_item in page.results:
+                try:
+                    item = _DividendPayload.model_validate(raw_item)
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon cash-dividends response failed validation: {error}"
+                    ) from error
+                results.append(CashDividend.model_validate(item.model_dump()))
+        self._validate_corporate_actions(
+            results,
+            start_date=start_date,
+            end_date=end_date,
+            date_field="ex_dividend_date",
+        )
+        return tuple(sorted(results, key=lambda item: (item.ex_dividend_date, item.symbol)))
+
+    def _corporate_action_pages(
+        self,
+        *,
+        url: str,
+        params: dict[str, str],
+        dataset: str,
+        event_date: date,
+    ) -> list[_CorporateActionsResponse]:
+        pages: list[_CorporateActionsResponse] = []
+        request_params: dict[str, str] | None = params
+        for _page_number in range(1, self._max_pages + 1):
+            response = self._request(url=url, params=request_params)
+            raw = self._decode_json(response)
+            if self._bronze_writer is not None:
+                self._bronze_writer.write_json(
+                    raw,
+                    source="polygon",
+                    dataset=dataset,
+                    event_date=event_date,
+                )
+            try:
+                page = _CorporateActionsResponse.model_validate(raw)
+            except ValidationError as error:
+                raise ProviderResponseError(
+                    f"Polygon {dataset} response failed validation: {error}"
+                ) from error
+            if page.status != "OK":
+                raise ProviderResponseError(f"Polygon {dataset} status was {page.status!r}")
+            pages.append(page)
+            if page.next_url is None:
+                return pages
+            url = self._validated_next_url(page.next_url)
+            request_params = None
+        raise ProviderResponseError(
+            f"Polygon {dataset} pagination exceeded max_pages={self._max_pages}"
+        )
+
+    @staticmethod
+    def _validate_corporate_actions(
+        events: list[StockSplit] | list[CashDividend],
+        *,
+        start_date: date,
+        end_date: date,
+        date_field: str,
+    ) -> None:
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        identifiers: set[str] = set()
+        for event in events:
+            event_date = getattr(event, date_field)
+            if not start_date <= event_date <= end_date:
+                raise ProviderResponseError("Polygon returned a corporate action out of range")
+            if event.event_id in identifiers:
+                raise ProviderResponseError(
+                    f"Polygon returned duplicate corporate action id: {event.event_id}"
+                )
+            identifiers.add(event.event_id)
 
     @staticmethod
     def _to_equity_bar(

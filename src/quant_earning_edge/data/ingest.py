@@ -34,6 +34,17 @@ class BarsIngestionResult:
     silver_artifacts: tuple[SilverArtifact, ...]
 
 
+@dataclass(frozen=True)
+class CorporateActionsIngestionResult:
+    """Auditable result of one Polygon corporate-action interval."""
+
+    start_date: date
+    end_date: date
+    split_count: int
+    dividend_count: int
+    silver_artifacts: tuple[SilverArtifact, ...]
+
+
 class EarningsIngestor:
     """Fetch validated events and persist them to the silver tier."""
 
@@ -97,4 +108,35 @@ class BarsIngestor:
             end_date=end_date,
             bar_count=len(bars),
             silver_artifacts=artifacts,
+        )
+
+
+class CorporateActionsIngestor:
+    """Fetch validated splits/dividends and persist both silver datasets."""
+
+    def __init__(self, *, client: PolygonClient, silver_writer: SilverWriter) -> None:
+        self._client = client
+        self._silver_writer = silver_writer
+
+    def ingest(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        ingested_at: datetime | None = None,
+    ) -> CorporateActionsIngestionResult:
+        """Ingest both corporate-action datasets for one inclusive interval."""
+        splits = self._client.stock_splits(start_date=start_date, end_date=end_date)
+        dividends = self._client.cash_dividends(start_date=start_date, end_date=end_date)
+        split_artifacts = self._silver_writer.write_splits(splits, ingested_at=ingested_at)
+        dividend_artifacts = self._silver_writer.write_dividends(
+            dividends,
+            ingested_at=ingested_at,
+        )
+        return CorporateActionsIngestionResult(
+            start_date=start_date,
+            end_date=end_date,
+            split_count=len(splits),
+            dividend_count=len(dividends),
+            silver_artifacts=(*split_artifacts, *dividend_artifacts),
         )

@@ -18,10 +18,30 @@ The committed universe thresholds live in `configs/universe/default.yaml`.
 ```powershell
 uv run qee ingest earnings --start 2026-07-01 --end 2026-07-31
 uv run qee ingest bars --symbol AAPL --start 2021-07-01 --end 2026-07-31
+uv run qee ingest corporate-actions --start 2021-07-01 --end 2026-07-31
 ```
 
 These commands write the raw response to bronze before writing validated,
 partitioned silver Parquet.
+
+The corporate-action command uses Polygon/Massive's current `/stocks/v1/splits`
+and `/stocks/v1/dividends` endpoints. Splits partition by execution date and
+cash dividends by ex-dividend date. Provider event IDs are required and
+duplicate IDs or out-of-range results abort ingestion.
+
+## Register stable DuckDB views
+
+After silver data exists, validate every artifact against its declared Arrow
+schema and expose stable SQL names:
+
+```powershell
+uv run qee data register-views --database .\data\research.duckdb
+```
+
+The default requires all four datasets and creates `silver_daily_bars`,
+`silver_earnings_events`, `silver_stock_splits`, and
+`silver_cash_dividends`. Use repeated `--dataset` options to register a strict
+subset. Missing datasets and schema drift fail before a view is replaced.
 
 ## Fetch authoritative market sessions
 

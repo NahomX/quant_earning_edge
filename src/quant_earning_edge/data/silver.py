@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from quant_earning_edge.data.clients.finnhub import EarningsEvent
-    from quant_earning_edge.data.clients.polygon import EquityBar
+    from quant_earning_edge.data.clients.polygon import CashDividend, EquityBar, StockSplit
     from quant_earning_edge.data.layout import LakehouseLayout
 
 DAILY_BARS_SCHEMA = pa.schema(
@@ -49,6 +49,39 @@ EARNINGS_SCHEMA = pa.schema(
         pa.field("eps_estimate", pa.float64()),
         pa.field("revenue_actual", pa.float64()),
         pa.field("revenue_estimate", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+SPLITS_SCHEMA = pa.schema(
+    [
+        pa.field("execution_date", pa.date32(), nullable=False),
+        pa.field("event_id", pa.string(), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("adjustment_type", pa.string(), nullable=False),
+        pa.field("split_from", pa.float64(), nullable=False),
+        pa.field("split_to", pa.float64(), nullable=False),
+        pa.field("historical_adjustment_factor", pa.float64()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+DIVIDENDS_SCHEMA = pa.schema(
+    [
+        pa.field("ex_dividend_date", pa.date32(), nullable=False),
+        pa.field("event_id", pa.string(), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("distribution_type", pa.string(), nullable=False),
+        pa.field("cash_amount", pa.float64(), nullable=False),
+        pa.field("currency", pa.string(), nullable=False),
+        pa.field("frequency", pa.int16(), nullable=False),
+        pa.field("declaration_date", pa.date32()),
+        pa.field("record_date", pa.date32()),
+        pa.field("pay_date", pa.date32()),
+        pa.field("split_adjusted_cash_amount", pa.float64()),
+        pa.field("historical_adjustment_factor", pa.float64()),
         pa.field("source", pa.string(), nullable=False),
         pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
     ]
@@ -124,6 +157,46 @@ class SilverWriter:
             for session_date, partition_bars in sorted(grouped.items())
         ]
         return tuple(artifacts)
+
+    def write_splits(
+        self,
+        events: tuple[StockSplit, ...],
+        *,
+        ingested_at: datetime | None = None,
+    ) -> tuple[SilverArtifact, ...]:
+        """Write one immutable split file per execution-date partition."""
+        observed_at = self._observed_at(ingested_at)
+        grouped: dict[date, list[StockSplit]] = defaultdict(list)
+        for event in events:
+            grouped[event.execution_date].append(event)
+        return tuple(
+            self._write_split_partition(
+                execution_date=execution_date,
+                events=partition_events,
+                ingested_at=observed_at,
+            )
+            for execution_date, partition_events in sorted(grouped.items())
+        )
+
+    def write_dividends(
+        self,
+        events: tuple[CashDividend, ...],
+        *,
+        ingested_at: datetime | None = None,
+    ) -> tuple[SilverArtifact, ...]:
+        """Write one immutable dividend file per ex-date partition."""
+        observed_at = self._observed_at(ingested_at)
+        grouped: dict[date, list[CashDividend]] = defaultdict(list)
+        for event in events:
+            grouped[event.ex_dividend_date].append(event)
+        return tuple(
+            self._write_dividend_partition(
+                ex_dividend_date=ex_dividend_date,
+                events=partition_events,
+                ingested_at=observed_at,
+            )
+            for ex_dividend_date, partition_events in sorted(grouped.items())
+        )
 
     def _write_daily_bars_partition(
         self,
@@ -201,6 +274,82 @@ class SilverWriter:
             records=records,
             schema=EARNINGS_SCHEMA,
         )
+
+    def _write_split_partition(
+        self,
+        *,
+        execution_date: date,
+        events: list[StockSplit],
+        ingested_at: datetime,
+    ) -> SilverArtifact:
+        records = [
+            {
+                "execution_date": event.execution_date,
+                "event_id": event.event_id,
+                "symbol": event.symbol,
+                "adjustment_type": event.adjustment_type.value,
+                "split_from": event.split_from,
+                "split_to": event.split_to,
+                "historical_adjustment_factor": event.historical_adjustment_factor,
+                "source": "polygon",
+                "ingested_at": ingested_at,
+            }
+            for event in sorted(events, key=lambda item: (item.symbol, item.event_id))
+        ]
+        return self._write_table(
+            partition=self._layout.silver(
+                asset_class="us-equity",
+                dataset="stock-splits",
+                event_date=execution_date,
+            ),
+            digest=_records_digest(records),
+            records=records,
+            schema=SPLITS_SCHEMA,
+        )
+
+    def _write_dividend_partition(
+        self,
+        *,
+        ex_dividend_date: date,
+        events: list[CashDividend],
+        ingested_at: datetime,
+    ) -> SilverArtifact:
+        records = [
+            {
+                "ex_dividend_date": event.ex_dividend_date,
+                "event_id": event.event_id,
+                "symbol": event.symbol,
+                "distribution_type": event.distribution_type.value,
+                "cash_amount": event.cash_amount,
+                "currency": event.currency,
+                "frequency": event.frequency,
+                "declaration_date": event.declaration_date,
+                "record_date": event.record_date,
+                "pay_date": event.pay_date,
+                "split_adjusted_cash_amount": event.split_adjusted_cash_amount,
+                "historical_adjustment_factor": event.historical_adjustment_factor,
+                "source": "polygon",
+                "ingested_at": ingested_at,
+            }
+            for event in sorted(events, key=lambda item: (item.symbol, item.event_id))
+        ]
+        return self._write_table(
+            partition=self._layout.silver(
+                asset_class="us-equity",
+                dataset="cash-dividends",
+                event_date=ex_dividend_date,
+            ),
+            digest=_records_digest(records),
+            records=records,
+            schema=DIVIDENDS_SCHEMA,
+        )
+
+    @staticmethod
+    def _observed_at(value: datetime | None) -> datetime:
+        observed_at = value or datetime.now(UTC)
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("ingested_at must be timezone-aware")
+        return observed_at.astimezone(UTC)
 
     @staticmethod
     def _write_table(

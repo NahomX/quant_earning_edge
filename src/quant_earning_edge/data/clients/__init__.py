@@ -8,14 +8,20 @@ from quant_earning_edge.data.clients.finnhub import (
     FinnhubClient,
 )
 from quant_earning_edge.data.clients.polygon import (
+    CashDividend,
+    DividendDistributionType,
     EquityBar,
     PolygonClient,
+    SplitAdjustmentType,
+    StockSplit,
     TickerDetails,
     TickerReference,
 )
 
 __all__ = [
     "AlpacaCalendarClient",
+    "CashDividend",
+    "DividendDistributionType",
     "EarningsEvent",
     "EarningsTiming",
     "EquityBar",
@@ -24,6 +30,8 @@ __all__ = [
     "PolygonClient",
     "ProviderRequestError",
     "ProviderResponseError",
+    "SplitAdjustmentType",
+    "StockSplit",
     "TickerDetails",
     "TickerReference",
 ]

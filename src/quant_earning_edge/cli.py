@@ -17,9 +17,12 @@ from quant_earning_edge.data import (
     BarCoverageAuditor,
     BarsIngestor,
     BronzeWriter,
+    CorporateActionsIngestor,
+    DuckDBStore,
     EarningsIngestor,
     LakehouseLayout,
     SessionFileStore,
+    SilverDataset,
     SilverWriter,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
@@ -50,10 +53,12 @@ ingest_app = typer.Typer(no_args_is_help=True, help="Ingest provider data.")
 universe_app = typer.Typer(no_args_is_help=True, help="Build and inspect universes.")
 backfill_app = typer.Typer(no_args_is_help=True, help="Plan and resume historical backfills.")
 calendar_app = typer.Typer(no_args_is_help=True, help="Fetch authoritative market sessions.")
+data_app = typer.Typer(no_args_is_help=True, help="Manage local lake query surfaces.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(calendar_app, name="calendar")
+app.add_typer(data_app, name="data")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -105,6 +110,32 @@ def calendar_sessions(
             "last_session": artifact.sessions[-1].session_date,
         }
     )
+
+
+@data_app.command("register-views")
+def register_views(
+    database: Annotated[
+        Path,
+        typer.Option(help="Persistent DuckDB database to create or update."),
+    ],
+    datasets: Annotated[
+        list[SilverDataset] | None,
+        typer.Option(
+            "--dataset",
+            help="Required silver dataset; repeat as needed. Defaults to all datasets.",
+        ),
+    ] = None,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Validate silver schemas and register stable DuckDB views."""
+    environment = _environment(env_file)
+    selected = tuple(datasets) if datasets else tuple(SilverDataset)
+    with DuckDBStore(database) as store:
+        views = store.register_silver_views(
+            LakehouseLayout(environment.data_lake_root),
+            datasets=selected,
+        )
+    _echo_json({"database": str(database.resolve()), "views": views})
 
 
 @ingest_app.command("earnings")
@@ -172,6 +203,39 @@ def ingest_bars(
         {
             "symbol": result.symbol,
             "bar_count": result.bar_count,
+            "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
+        }
+    )
+
+
+@ingest_app.command("corporate-actions")
+def ingest_corporate_actions(
+    start: Annotated[str, typer.Option(help="Inclusive action date (YYYY-MM-DD).")],
+    end: Annotated[str, typer.Option(help="Inclusive action date (YYYY-MM-DD).")],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Fetch Polygon splits and dividends into bronze and silver storage."""
+    environment = _environment(env_file)
+    api_key = _required_key(environment.require_polygon_api_key)
+    start_date = _parse_date(start, option="--start")
+    end_date = _parse_date(end, option="--end")
+    layout = LakehouseLayout(environment.data_lake_root)
+    with httpx.Client(
+        base_url=environment.polygon_base_url,
+        timeout=environment.http_timeout_seconds,
+    ) as http_client:
+        result = CorporateActionsIngestor(
+            client=PolygonClient(
+                api_key=api_key,
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ),
+            silver_writer=SilverWriter(layout),
+        ).ingest(start_date=start_date, end_date=end_date)
+    _echo_json(
+        {
+            "split_count": result.split_count,
+            "dividend_count": result.dividend_count,
             "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
         }
     )

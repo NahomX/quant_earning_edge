@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
 from enum import StrEnum
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datetime import date
+    from pathlib import Path
 
 _PARTITION_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 

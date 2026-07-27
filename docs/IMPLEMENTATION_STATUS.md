@@ -19,7 +19,8 @@ reproducible through `uv.lock`.
 | Bronze/silver/gold deterministic lake layout | Complete | `data/layout.py`, data tests |
 | Immutable canonical bronze JSON persistence | Complete | `data/bronze.py`, data tests |
 | DuckDB connection/query boundary | Complete | `data/store.py`, persistence test |
-| Provider clients and retry/rate-limit handling | Not started | — |
+| Finnhub earnings client and retry/rate-limit handling | Complete | `data/clients/finnhub.py`, contract tests |
+| Polygon market-data client | Not started | — |
 | Bronze-to-silver normalization | Not started | — |
 | Parquet schemas and writers | Not started | — |
 | Historical backfill | Blocked on provider credentials | No local credentials |
@@ -42,6 +43,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add typed HTTP provider boundaries and a Finnhub earnings-calendar client using
-dependency-injected transport, retries, explicit timeouts, and fixture-based
-contract tests. No secret is required for the contract-test implementation.
+Add validated silver schemas and Parquet writers for earnings events and
+US-equity bars. Connect the Finnhub client's validated events to an explicit
+bronze-to-silver ingestion service.

@@ -31,9 +31,7 @@ def test_layout_builds_expected_partitions(tmp_path: Path) -> None:
     assert layout.gold(
         feature_group="price",
         asof_month=date(2026, 7, 27),
-    ).relative_to(tmp_path.resolve()) == Path(
-        "gold/feature_group=price/month=2026-07"
-    )
+    ).relative_to(tmp_path.resolve()) == Path("gold/feature_group=price/month=2026-07")
 
 
 @pytest.mark.parametrize("unsafe", ["../escape", "a/b", "", "with space"])

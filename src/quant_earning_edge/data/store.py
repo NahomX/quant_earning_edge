@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import TracebackType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import duckdb
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 
 class DuckDBStore:

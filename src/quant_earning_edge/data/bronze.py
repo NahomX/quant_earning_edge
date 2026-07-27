@@ -6,10 +6,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from quant_earning_edge.data.layout import LakehouseLayout
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from quant_earning_edge.data.layout import LakehouseLayout
 
 
 @dataclass(frozen=True)

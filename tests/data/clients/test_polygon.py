@@ -330,3 +330,103 @@ def test_ticker_details_reject_invalid_contract(
             symbol="AAPL",
             asof_date=date(2026, 7, 27),
         )
+
+
+def test_list_tickers_paginates_historical_date_and_captures_bronze(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if "cursor" not in request.url.params:
+            assert request.url.path == "/v3/reference/tickers"
+            assert request.url.params["date"] == "2026-07-27"
+            assert request.url.params["active"] == "true"
+            assert request.url.params["market"] == "stocks"
+            return httpx.Response(
+                200,
+                json={
+                    "status": "OK",
+                    "results": [
+                        {
+                            "ticker": "MSFT",
+                            "name": "Microsoft",
+                            "active": True,
+                            "locale": "us",
+                            "market": "stocks",
+                            "primary_exchange": "XNAS",
+                            "type": "CS",
+                        }
+                    ],
+                    "next_url": "https://api.polygon.io/v3/reference/tickers?cursor=next",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "results": [
+                    {
+                        "ticker": "AAPL",
+                        "name": "Apple",
+                        "active": True,
+                        "locale": "us",
+                        "market": "stocks",
+                        "primary_exchange": "XNAS",
+                        "type": "CS",
+                    }
+                ],
+            },
+        )
+
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(respond),
+    )
+    with http_client:
+        references = PolygonClient(
+            api_key="key",
+            http_client=http_client,
+            bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
+        ).list_tickers(asof_date=date(2026, 7, 27))
+
+    assert [reference.symbol for reference in references] == ["AAPL", "MSFT"]
+    assert all(reference.asof_date == date(2026, 7, 27) for reference in references)
+    assert len(requests) == 2
+    assert len(list((tmp_path / "bronze").rglob("*.json"))) == 2
+
+
+def test_list_tickers_rejects_duplicate_symbol_across_pages() -> None:
+    page = 0
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal page
+        page += 1
+        return httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "results": [
+                    {
+                        "ticker": "AAPL",
+                        "name": "Apple",
+                        "active": True,
+                        "locale": "us",
+                        "market": "stocks",
+                    }
+                ],
+                "next_url": (
+                    "https://api.polygon.io/v3/reference/tickers?cursor=next" if page == 1 else None
+                ),
+            },
+        )
+
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(respond),
+    )
+    with http_client, pytest.raises(ProviderResponseError, match="duplicate ticker"):
+        PolygonClient(api_key="key", http_client=http_client).list_tickers(
+            asof_date=date(2026, 7, 27)
+        )

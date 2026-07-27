@@ -27,7 +27,8 @@ reproducible through `uv.lock`.
 | Historical backfill | Blocked on provider credentials | No local credentials |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
-| Daily universe snapshot production job | Not started | — |
+| Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
+| Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
 
 ## Phase 1 exit gate
 
@@ -46,6 +47,6 @@ not be marked complete from fixtures or synthetic data.
 
 ## Next implementation slice
 
-Add the daily production job that assembles prior-close ticker details, closing
-price, 20-session ADV, and halt status into a frozen next-session snapshot.
-Record run manifests so the five-day unattended gate can be measured honestly.
+Add CLI/config wiring for data ingestion and the daily universe job, including
+environment validation and nonzero exit codes. Then begin the credentialed
+historical backfill when provider access is available.

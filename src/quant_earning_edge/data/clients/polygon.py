@@ -75,6 +75,22 @@ class TickerDetails(BaseModel):
     delisted_date: date | None = None
 
 
+class TickerReference(BaseModel):
+    """Historical ticker identity returned by the all-tickers endpoint."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1)
+    asof_date: date
+    name: str = Field(min_length=1)
+    active: bool
+    locale: Literal["us"]
+    market: Literal["stocks"]
+    primary_exchange: str
+    security_type: str
+    delisted_date: date | None = None
+
+
 class _Aggregate(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -118,6 +134,27 @@ class _TickerDetailsResponse(BaseModel):
 
     status: str
     results: _TickerDetailsPayload
+
+
+class _TickerReferencePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    ticker: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    active: bool
+    locale: Literal["us"]
+    market: Literal["stocks"]
+    primary_exchange: str = ""
+    security_type: str = Field(default="", alias="type")
+    delisted_date: date | None = Field(default=None, alias="delisted_utc")
+
+
+class _TickersResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: str
+    results: list[_TickerReferencePayload] = Field(default_factory=list)
+    next_url: str | None = None
 
 
 class PolygonClient:
@@ -250,6 +287,70 @@ class PolygonClient:
             market_cap=details.market_cap,
             list_date=details.list_date,
             delisted_date=details.delisted_date,
+        )
+
+    def list_tickers(
+        self,
+        *,
+        asof_date: date,
+        active: bool = True,
+    ) -> tuple[TickerReference, ...]:
+        """Enumerate US stock tickers explicitly available on a historical date."""
+        url = "/v3/reference/tickers"
+        params: dict[str, str] | None = {
+            "market": "stocks",
+            "date": asof_date.isoformat(),
+            "active": str(active).lower(),
+            "sort": "ticker",
+            "order": "asc",
+            "limit": "1000",
+        }
+        references: list[TickerReference] = []
+        symbols: set[str] = set()
+        for _page_number in range(1, self._max_pages + 1):
+            response = self._request(url=url, params=params)
+            raw = self._decode_json(response)
+            if self._bronze_writer is not None:
+                self._bronze_writer.write_json(
+                    raw,
+                    source="polygon",
+                    dataset="ticker-reference",
+                    event_date=asof_date,
+                )
+            try:
+                page = _TickersResponse.model_validate(raw)
+            except ValidationError as error:
+                raise ProviderResponseError(
+                    f"Polygon tickers response failed validation: {error}"
+                ) from error
+            if page.status != "OK":
+                raise ProviderResponseError(f"Polygon tickers response status was {page.status!r}")
+            for item in page.results:
+                symbol = item.ticker.strip().upper()
+                if symbol in symbols:
+                    raise ProviderResponseError(
+                        f"Polygon returned duplicate ticker reference: {symbol}"
+                    )
+                symbols.add(symbol)
+                references.append(
+                    TickerReference(
+                        symbol=symbol,
+                        asof_date=asof_date,
+                        name=item.name,
+                        active=item.active,
+                        locale=item.locale,
+                        market=item.market,
+                        primary_exchange=item.primary_exchange,
+                        security_type=item.security_type,
+                        delisted_date=item.delisted_date,
+                    )
+                )
+            if page.next_url is None:
+                return tuple(sorted(references, key=lambda item: item.symbol))
+            url = self._validated_next_url(page.next_url)
+            params = None
+        raise ProviderResponseError(
+            f"Polygon ticker pagination exceeded max_pages={self._max_pages}"
         )
 
     @staticmethod

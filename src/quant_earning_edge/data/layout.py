@@ -70,3 +70,12 @@ class LakehouseLayout:
     def universe_snapshot(self, *, trade_date: date) -> Path:
         """Frozen point-in-time universe partition for one intended trade date."""
         return self.root / DataTier.GOLD / "universe-snapshots" / f"for_trade_date={trade_date}"
+
+    def run_manifests(self, *, job_name: str, trade_date: date) -> Path:
+        """Operational evidence partition for one job and intended trade date."""
+        return (
+            self.root
+            / "manifests"
+            / f"job={_safe_partition(job_name, field='job_name')}"
+            / f"trade_date={trade_date}"
+        )

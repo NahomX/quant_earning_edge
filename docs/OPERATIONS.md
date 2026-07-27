@@ -43,6 +43,32 @@ The default requires all four datasets and creates `silver_daily_bars`,
 `silver_cash_dividends`. Use repeated `--dataset` options to register a strict
 subset. Missing datasets and schema drift fail before a view is replaced.
 
+## Compute point-in-time price features
+
+Supply every required silver daily-bar partition explicitly. The loader resolves
+only revisions ingested by `--observed-at`, discards sessions after
+`--asof-date`, and fails on missing history:
+
+```powershell
+uv run qee features compute-price `
+  --asof-date 2026-07-27 `
+  --observed-at 2026-07-27T21:00:00Z `
+  --bars-file .\data\silver\asset_class=us-equity\dataset=daily-bars\date=2026-07-27\part-<hash>.parquet `
+  --symbol AAPL `
+  --feature return_1d `
+  --feature return_5d `
+  --feature return_20d `
+  --feature realized_vol_20d `
+  --feature realized_vol_60d `
+  --feature distance_to_vwap_20d
+```
+
+Repeat `--bars-file` for the complete lookback. Gold output is long-form and
+keyed by symbol, as-of date, and feature name. Every value records the feature
+implementation hash, a hash of only its allowed PIT inputs, and the computation
+cutoff. Registered feature property tests append arbitrary future observations
+and require exact output and lineage equality.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

@@ -26,6 +26,7 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
+from quant_earning_edge.features import DailyBarsFeatureLoader, FeatureEngine, FeatureStore
 from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     RuntimeEnvironment,
@@ -54,11 +55,13 @@ universe_app = typer.Typer(no_args_is_help=True, help="Build and inspect univers
 backfill_app = typer.Typer(no_args_is_help=True, help="Plan and resume historical backfills.")
 calendar_app = typer.Typer(no_args_is_help=True, help="Fetch authoritative market sessions.")
 data_app = typer.Typer(no_args_is_help=True, help="Manage local lake query surfaces.")
+features_app = typer.Typer(no_args_is_help=True, help="Compute point-in-time features.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
 app.add_typer(calendar_app, name="calendar")
 app.add_typer(data_app, name="data")
+app.add_typer(features_app, name="features")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -136,6 +139,64 @@ def register_views(
             datasets=selected,
         )
     _echo_json({"database": str(database.resolve()), "views": views})
+
+
+@features_app.command("compute-price")
+def compute_price_features(  # noqa: PLR0917 - CLI options are the PIT compute contract.
+    asof_date: Annotated[str, typer.Option(help="Last observable session (YYYY-MM-DD).")],
+    observed_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware cutoff for silver ingestion revisions."),
+    ],
+    bars_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--bars-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver daily-bars Parquet; repeat for all required partitions.",
+        ),
+    ],
+    symbols: Annotated[
+        list[str],
+        typer.Option("--symbol", help="Ticker to compute; repeat for multiple symbols."),
+    ],
+    feature_names: Annotated[
+        list[str],
+        typer.Option(
+            "--feature",
+            help="Registered price feature; repeat as needed.",
+        ),
+    ],
+    feature_group: Annotated[
+        str,
+        typer.Option(help="Gold feature-group partition name."),
+    ] = "price",
+    env_file: EnvFileOption = None,
+) -> None:
+    """Compute registered causal price features and persist lineage."""
+    environment = _environment(env_file)
+    cutoff = _parse_datetime(observed_at, option="--observed-at")
+    contexts = DailyBarsFeatureLoader().load(
+        bars_files,
+        symbols=symbols,
+        asof_date=_parse_date(asof_date, option="--asof-date"),
+        observed_at=cutoff,
+    )
+    values = FeatureEngine().compute(contexts, feature_names=feature_names)
+    artifact = FeatureStore(LakehouseLayout(environment.data_lake_root)).write(
+        feature_group=feature_group,
+        values=values,
+        computed_at=cutoff,
+    )
+    _echo_json(
+        {
+            "path": str(artifact.path),
+            "sha256": artifact.sha256,
+            "row_count": artifact.row_count,
+            "feature_names": artifact.feature_names,
+        }
+    )
 
 
 @ingest_app.command("earnings")

@@ -33,9 +33,12 @@ EVENT_CANDIDATE_SCHEMA = pa.schema(
         pa.field("quarter", pa.int8(), nullable=False),
         pa.field("eps_estimate", pa.float64()),
         pa.field("revenue_estimate", pa.float64()),
+        pa.field("split_event_ids", pa.list_(pa.string()), nullable=False),
+        pa.field("dividend_event_ids", pa.list_(pa.string()), nullable=False),
         pa.field("universe_snapshot_sha256", pa.string(), nullable=False),
         pa.field("session_file_sha256", pa.string(), nullable=False),
         pa.field("earnings_input_sha256", pa.string(), nullable=False),
+        pa.field("corporate_actions_input_sha256", pa.string(), nullable=False),
     ]
 )
 
@@ -61,6 +64,8 @@ class EventCandidate:
     quarter: int
     eps_estimate: float | None
     revenue_estimate: float | None
+    split_event_ids: tuple[str, ...]
+    dividend_event_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,8 @@ class EventCandidateJob:
         universe_snapshot: Path,
         session_file: Path,
         earnings_files: Sequence[Path],
+        split_files: Sequence[Path],
+        dividend_files: Sequence[Path],
     ) -> EventCandidateArtifact:
         """Build candidates without reading observations newer than ``decision_at``."""
         if decision_at.tzinfo is None or decision_at.utcoffset() is None:
@@ -95,6 +102,8 @@ class EventCandidateJob:
         decision_at = decision_at.astimezone(UTC)
         if not earnings_files:
             raise ValueError("at least one earnings file is required")
+        if not split_files or not dividend_files:
+            raise ValueError("split and dividend files are required for a complete event audit")
 
         session_artifact = SessionFileStore.load(session_file)
         session_dates = tuple(item.session_date for item in session_artifact.sessions)
@@ -122,6 +131,19 @@ class EventCandidateJob:
             earnings_files,
             decision_at=decision_at,
         )
+        splits, split_hash = self._read_known_corporate_actions(
+            split_files,
+            decision_at=decision_at,
+            event_date_field="execution_date",
+        )
+        dividends, dividend_hash = self._read_known_corporate_actions(
+            dividend_files,
+            decision_at=decision_at,
+            event_date_field="ex_dividend_date",
+        )
+        split_ids = self._actions_by_symbol(splits, event_date=trade_date)
+        dividend_ids = self._actions_by_symbol(dividends, event_date=trade_date)
+        corporate_actions_hash = hashlib.sha256(f"{split_hash}{dividend_hash}".encode()).hexdigest()
         candidates: list[EventCandidate] = []
         exclusions = {reason: 0 for reason in CandidateExclusion}
         for event in events:
@@ -151,6 +173,8 @@ class EventCandidateJob:
                     quarter=int(event["quarter"]),
                     eps_estimate=event["eps_estimate"],
                     revenue_estimate=event["revenue_estimate"],
+                    split_event_ids=split_ids.get(symbol, ()),
+                    dividend_event_ids=dividend_ids.get(symbol, ()),
                 )
             )
 
@@ -163,6 +187,7 @@ class EventCandidateJob:
             universe_hash=universe_hash,
             session_hash=session_artifact.sha256,
             earnings_hash=earnings_hash,
+            corporate_actions_hash=corporate_actions_hash,
             exclusions=exclusions,
         )
 
@@ -242,6 +267,46 @@ class EventCandidateJob:
         digest = hashlib.sha256("".join(sorted(file_hashes)).encode()).hexdigest()
         return list(latest.values()), digest
 
+    @staticmethod
+    def _read_known_corporate_actions(
+        paths: Sequence[Path],
+        *,
+        decision_at: datetime,
+        event_date_field: str,
+    ) -> tuple[list[dict[str, Any]], str]:
+        required = {"event_id", "symbol", event_date_field, "ingested_at"}
+        latest: dict[str, dict[str, Any]] = {}
+        file_hashes: list[str] = []
+        for path in sorted(paths):
+            file_hashes.append(_file_sha256(path))
+            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            if not required.issubset(table.column_names):
+                raise ValueError(f"corporate-action file is missing required columns: {path}")
+            for row in table.select(sorted(required)).to_pylist():
+                if row["ingested_at"] > decision_at:
+                    continue
+                event_id = str(row["event_id"])
+                previous = latest.get(event_id)
+                if previous is None or previous["ingested_at"] < row["ingested_at"]:
+                    latest[event_id] = row
+                elif previous["ingested_at"] == row["ingested_at"] and previous != row:
+                    raise ValueError(f"conflicting corporate-action observations: {event_id}")
+        digest = hashlib.sha256("".join(sorted(file_hashes)).encode()).hexdigest()
+        return list(latest.values()), digest
+
+    @staticmethod
+    def _actions_by_symbol(
+        actions: Sequence[dict[str, Any]],
+        *,
+        event_date: date,
+    ) -> dict[str, tuple[str, ...]]:
+        grouped: dict[str, list[str]] = {}
+        for action in actions:
+            action_date = action.get("execution_date", action.get("ex_dividend_date"))
+            if action_date == event_date:
+                grouped.setdefault(str(action["symbol"]), []).append(str(action["event_id"]))
+        return {symbol: tuple(sorted(event_ids)) for symbol, event_ids in sorted(grouped.items())}
+
     def _write(
         self,
         candidates: Sequence[EventCandidate],
@@ -250,6 +315,7 @@ class EventCandidateJob:
         universe_hash: str,
         session_hash: str,
         earnings_hash: str,
+        corporate_actions_hash: str,
         exclusions: dict[CandidateExclusion, int],
     ) -> EventCandidateArtifact:
         records = [
@@ -264,9 +330,12 @@ class EventCandidateJob:
                 "quarter": item.quarter,
                 "eps_estimate": item.eps_estimate,
                 "revenue_estimate": item.revenue_estimate,
+                "split_event_ids": list(item.split_event_ids),
+                "dividend_event_ids": list(item.dividend_event_ids),
                 "universe_snapshot_sha256": universe_hash,
                 "session_file_sha256": session_hash,
                 "earnings_input_sha256": earnings_hash,
+                "corporate_actions_input_sha256": corporate_actions_hash,
             }
             for item in candidates
         ]
@@ -276,6 +345,11 @@ class EventCandidateJob:
             "universe_snapshot_sha256": universe_hash,
             "session_file_sha256": session_hash,
             "earnings_input_sha256": earnings_hash,
+            "corporate_actions_input_sha256": corporate_actions_hash,
+            "candidate_split_overlap_count": sum(bool(item.split_event_ids) for item in candidates),
+            "candidate_dividend_overlap_count": sum(
+                bool(item.dividend_event_ids) for item in candidates
+            ),
             "excluded_counts": {
                 reason.value: count for reason, count in exclusions.items() if count
             },

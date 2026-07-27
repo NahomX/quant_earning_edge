@@ -11,7 +11,14 @@ import pyarrow.parquet as pq
 import pytest
 
 from quant_earning_edge.data import LakehouseLayout, SessionFileStore, SilverWriter
-from quant_earning_edge.data.clients import EarningsEvent, MarketSession
+from quant_earning_edge.data.clients import (
+    CashDividend,
+    DividendDistributionType,
+    EarningsEvent,
+    MarketSession,
+    SplitAdjustmentType,
+    StockSplit,
+)
 from quant_earning_edge.universe import CandidateExclusion, EventCandidateJob
 from quant_earning_edge.universe.snapshot import UNIVERSE_SNAPSHOT_SCHEMA
 
@@ -83,6 +90,45 @@ def _event(symbol: str, event_date: date, timing: str) -> EarningsEvent:
     )
 
 
+def _corporate_actions(
+    tmp_path: Path,
+    *,
+    ingested_at: datetime = DECISION_AT,
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    writer = SilverWriter(LakehouseLayout(tmp_path))
+    splits = writer.write_splits(
+        (
+            StockSplit(
+                event_id="split-aapl",
+                symbol="AAPL",
+                execution_date=TRADE_DATE,
+                adjustment_type=SplitAdjustmentType.FORWARD_SPLIT,
+                split_from=1,
+                split_to=2,
+            ),
+        ),
+        ingested_at=ingested_at,
+    )
+    dividends = writer.write_dividends(
+        (
+            CashDividend(
+                event_id="dividend-goog",
+                symbol="GOOG",
+                ex_dividend_date=TRADE_DATE,
+                distribution_type=DividendDistributionType.RECURRING,
+                cash_amount=0.25,
+                currency="USD",
+                frequency=4,
+            ),
+        ),
+        ingested_at=ingested_at,
+    )
+    return (
+        tuple(item.path for item in splits),
+        tuple(item.path for item in dividends),
+    )
+
+
 def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
     earnings = SilverWriter(LakehouseLayout(tmp_path)).write_earnings(
         (
@@ -94,6 +140,7 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
         ),
         ingested_at=DECISION_AT,
     )
+    split_files, dividend_files = _corporate_actions(tmp_path)
 
     artifact = EventCandidateJob(LakehouseLayout(tmp_path)).run(
         trade_date=TRADE_DATE,
@@ -101,6 +148,8 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
         universe_snapshot=_universe(tmp_path),
         session_file=_sessions(tmp_path),
         earnings_files=tuple(item.path for item in earnings),
+        split_files=split_files,
+        dividend_files=dividend_files,
     )
 
     rows = pq.read_table(artifact.path).to_pylist()  # type: ignore[no-untyped-call]
@@ -112,6 +161,10 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
         CandidateExclusion.NOT_IN_ELIGIBLE_UNIVERSE: 1,
         CandidateExclusion.UNSUPPORTED_DURING_MARKET_HOURS: 1,
     }
+    assert rows[0]["split_event_ids"] == ["split-aapl"]
+    assert rows[0]["dividend_event_ids"] == []
+    assert rows[1]["split_event_ids"] == []
+    assert rows[1]["dividend_event_ids"] == ["dividend-goog"]
     assert "eps_actual" not in rows[0]
 
 
@@ -120,6 +173,7 @@ def test_join_ignores_earnings_observations_ingested_after_decision(tmp_path: Pa
         (_event("AAPL", ASOF_DATE, "amc"),),
         ingested_at=datetime(2026, 7, 28, 2, tzinfo=UTC),
     )
+    split_files, dividend_files = _corporate_actions(tmp_path)
 
     artifact = EventCandidateJob(LakehouseLayout(tmp_path)).run(
         trade_date=TRADE_DATE,
@@ -127,6 +181,8 @@ def test_join_ignores_earnings_observations_ingested_after_decision(tmp_path: Pa
         universe_snapshot=_universe(tmp_path),
         session_file=_sessions(tmp_path),
         earnings_files=tuple(item.path for item in future),
+        split_files=split_files,
+        dividend_files=dividend_files,
     )
 
     assert artifact.row_count == 0
@@ -138,6 +194,7 @@ def test_join_rejects_universe_created_after_decision(tmp_path: Path) -> None:
         (_event("AAPL", ASOF_DATE, "amc"),),
         ingested_at=DECISION_AT,
     )
+    split_files, dividend_files = _corporate_actions(tmp_path)
 
     with pytest.raises(ValueError, match="generated after decision_at"):
         EventCandidateJob(LakehouseLayout(tmp_path)).run(
@@ -149,6 +206,8 @@ def test_join_rejects_universe_created_after_decision(tmp_path: Path) -> None:
             ),
             session_file=_sessions(tmp_path),
             earnings_files=tuple(item.path for item in earnings),
+            split_files=split_files,
+            dividend_files=dividend_files,
         )
 
 
@@ -157,6 +216,7 @@ def test_join_rejects_decision_during_trade_session(tmp_path: Path) -> None:
         (_event("AAPL", ASOF_DATE, "amc"),),
         ingested_at=DECISION_AT,
     )
+    split_files, dividend_files = _corporate_actions(tmp_path)
 
     with pytest.raises(ValueError, match="before the trade session open"):
         EventCandidateJob(LakehouseLayout(tmp_path)).run(
@@ -165,4 +225,31 @@ def test_join_rejects_decision_during_trade_session(tmp_path: Path) -> None:
             universe_snapshot=_universe(tmp_path),
             session_file=_sessions(tmp_path),
             earnings_files=tuple(item.path for item in earnings),
+            split_files=split_files,
+            dividend_files=dividend_files,
         )
+
+
+def test_join_does_not_annotate_actions_observed_after_decision(tmp_path: Path) -> None:
+    earnings = SilverWriter(LakehouseLayout(tmp_path)).write_earnings(
+        (_event("AAPL", ASOF_DATE, "amc"),),
+        ingested_at=DECISION_AT,
+    )
+    split_files, dividend_files = _corporate_actions(
+        tmp_path,
+        ingested_at=datetime(2026, 7, 28, 2, tzinfo=UTC),
+    )
+
+    artifact = EventCandidateJob(LakehouseLayout(tmp_path)).run(
+        trade_date=TRADE_DATE,
+        decision_at=DECISION_AT,
+        universe_snapshot=_universe(tmp_path),
+        session_file=_sessions(tmp_path),
+        earnings_files=tuple(item.path for item in earnings),
+        split_files=split_files,
+        dividend_files=dividend_files,
+    )
+
+    row = pq.read_table(artifact.path).to_pylist()[0]  # type: ignore[no-untyped-call]
+    assert row["split_event_ids"] == []
+    assert row["dividend_event_ids"] == []

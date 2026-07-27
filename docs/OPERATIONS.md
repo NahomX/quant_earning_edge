@@ -97,7 +97,9 @@ uv run qee universe events `
   --universe-snapshot .\data\gold\universe-snapshots\for_trade_date=2026-07-28\snapshot-<hash>.parquet `
   --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
   --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-27\part-<hash>.parquet `
-  --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-28\part-<hash>.parquet
+  --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-28\part-<hash>.parquet `
+  --split-file .\data\silver\asset_class=us-equity\dataset=stock-splits\date=2026-07-28\part-<hash>.parquet `
+  --dividend-file .\data\silver\asset_class=us-equity\dataset=cash-dividends\date=2026-07-28\part-<hash>.parquet
 ```
 
 The decision timestamp must fall after the prior session close and before the
@@ -105,8 +107,10 @@ trade-session open. Only observations whose `ingested_at` is at or before that
 cutoff participate. Prior-session after-close (`amc`) and trade-date
 before-open (`bmo`) events are eligible; during-market-hours events are
 explicitly excluded. Output Parquet contains estimates but never actual results,
-and its manifest hashes every source plus exclusion counts. A valid empty
-candidate set is persisted instead of silently inventing a trade.
+and annotates same-trade-date split and dividend event IDs known by the cutoff.
+Its manifest hashes every source, records corporate-action overlap counts, and
+retains exclusion counts. A valid empty candidate set is persisted instead of
+silently inventing a trade.
 
 ## Evaluate the five-session gate
 

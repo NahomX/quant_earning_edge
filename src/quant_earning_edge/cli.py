@@ -375,6 +375,24 @@ def universe_events(  # noqa: PLR0917 - CLI options are the event-join contract.
             help="Silver earnings Parquet; repeat for every relevant partition/revision.",
         ),
     ],
+    split_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--split-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver split Parquet; repeat for every audited partition/revision.",
+        ),
+    ],
+    dividend_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--dividend-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver dividend Parquet; repeat for every audited partition/revision.",
+        ),
+    ],
     env_file: EnvFileOption = None,
 ) -> None:
     """Join scheduled earnings to a frozen eligible universe without lookahead."""
@@ -385,6 +403,8 @@ def universe_events(  # noqa: PLR0917 - CLI options are the event-join contract.
         universe_snapshot=universe_snapshot,
         session_file=session_file,
         earnings_files=earnings_files,
+        split_files=split_files,
+        dividend_files=dividend_files,
     )
     _echo_json(
         {

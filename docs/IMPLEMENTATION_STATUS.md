@@ -53,6 +53,7 @@ reproducible through `uv.lock`.
 | Fold-level walk-forward gate evidence | Complete | ordered OOS folds and explicit 75% positive-Sharpe gate |
 | Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
 | Fractional-Kelly portfolio constructor | Complete | causal 60-trade history, integer shares, all hard caps |
+| Strict earnings-v1 strategy configuration | Complete | registry feature match and cross-field risk/cost validation |
 
 ## Phase 1 exit gate
 

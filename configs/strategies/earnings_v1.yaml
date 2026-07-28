@@ -30,18 +30,19 @@ features:
   - return_1d
   - return_5d
   - return_20d
-  - vol_20d
-  - vol_60d
-  - vwap_distance_20d
+  - realized_vol_20d
+  - realized_vol_60d
+  - distance_to_vwap_20d
   - kalman_volume_7d        # filtered, not smoothed
   - kalman_volume_30d
   - relative_volume_30d
-  - gap_pct
+  - premarket_gap_pct
   - rsi_14
-  - macd_signal
-  - dist_52w_high
-  - days_since_earnings
-  - earnings_surprise_prior
+  - macd_signal_12_26_9
+  - distance_to_high_52w
+  - earnings_timing_flag
+  - days_since_last_earnings
+  - prior_eps_surprise_pct
 
 # Forward-return label
 label:

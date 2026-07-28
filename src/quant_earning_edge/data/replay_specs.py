@@ -6,16 +6,18 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime annotations.
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from quant_earning_edge.backtest.nbbo_replay import replay_order
 from quant_earning_edge.backtest.nbbo_spec import (
     DecisionSnapshotSpec,
     IntendedOrderSpec,
     NbboQuoteSpec,
+    NbboReplayEvidence,
     NbboReplaySpec,
     ReplayConfigSpec,
     TradePrintSpec,
@@ -24,6 +26,8 @@ from quant_earning_edge.data.market_events import ReplayMarketDataLoader
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class _StrictSpec(BaseModel):
@@ -136,6 +140,38 @@ class ReplayMaterializationManifest:
     input_sha256: str
     artifacts: tuple[ReplaySpecArtifact, ...]
 
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported replay materialization schema")
+        if not _SHA256_PATTERN.fullmatch(self.input_sha256):
+            raise ValueError("invalid replay materialization input hash")
+        identities = tuple(item.order_id for item in self.artifacts)
+        if identities != tuple(sorted(set(identities))):
+            raise ValueError("replay artifacts must have unique sorted order ids")
+        file_names = tuple(item.file_name for item in self.artifacts)
+        if len(file_names) != len(set(file_names)):
+            raise ValueError("replay artifact filenames must be unique")
+        for artifact in self.artifacts:
+            if not artifact.order_id.strip() or not artifact.symbol.strip():
+                raise ValueError("replay artifact identities must not be blank")
+            if Path(artifact.file_name).name != artifact.file_name:
+                raise ValueError("replay artifact filenames must be safe leaf names")
+            if not _SHA256_PATTERN.fullmatch(artifact.sha256):
+                raise ValueError("invalid replay artifact hash")
+            counts = (
+                artifact.source_quote_count,
+                artifact.replay_quote_count,
+                artifact.rejected_one_sided_quote_count,
+                artifact.source_trade_count,
+                artifact.replay_trade_count,
+                artifact.rejected_corrected_trade_count,
+                artifact.rejected_subshare_trade_count,
+            )
+            if any(item < 0 for item in counts):
+                raise ValueError("replay artifact counts cannot be negative")
+            if artifact.fractional_share_quantity_discarded < 0:
+                raise ValueError("discarded fractional quantity cannot be negative")
+
     @property
     def canonical_bytes(self) -> bytes:
         return json.dumps(
@@ -157,6 +193,137 @@ class ReplayMaterializationManifest:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"replay materialization collision at {output}") from None
+
+    @classmethod
+    def load(cls, path: Path) -> ReplayMaterializationManifest:
+        """Load strict canonical materialization evidence."""
+        try:
+            raw = json.loads(path.read_bytes())
+            if set(raw) != {"schema_version", "input_sha256", "artifacts"}:
+                raise ValueError("unsupported replay materialization fields")
+            manifest = cls(
+                schema_version=int(raw["schema_version"]),
+                input_sha256=str(raw["input_sha256"]),
+                artifacts=tuple(ReplaySpecArtifact(**item) for item in raw["artifacts"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid replay materialization manifest: {path}") from error
+        if json.loads(manifest.canonical_bytes) != raw:
+            raise ValueError("replay materialization manifest is not canonical")
+        return manifest
+
+
+@dataclass(frozen=True)
+class ReplayEvidenceIndex:
+    """Immutable index linking materialized specs to replay evidence files."""
+
+    schema_version: int
+    materialization_manifest_sha256: str
+    evidence_files: tuple[str, ...]
+    evidence_sha256: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported replay evidence index schema")
+        if not _SHA256_PATTERN.fullmatch(self.materialization_manifest_sha256):
+            raise ValueError("invalid replay materialization manifest hash")
+        if len(self.evidence_files) != len(self.evidence_sha256):
+            raise ValueError("replay evidence filenames and hashes must align")
+        if len(self.evidence_files) != len(set(self.evidence_files)):
+            raise ValueError("replay evidence filenames must be unique")
+        if any(Path(item).name != item for item in self.evidence_files):
+            raise ValueError("replay evidence filenames must be safe leaf names")
+        if any(not _SHA256_PATTERN.fullmatch(item) for item in self.evidence_sha256):
+            raise ValueError("invalid replay evidence hash")
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            asdict(self),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        _write_once(output, self.canonical_bytes, kind="replay evidence index")
+
+    @classmethod
+    def load(cls, path: Path) -> ReplayEvidenceIndex:
+        """Load a strict canonical replay evidence index."""
+        try:
+            raw = json.loads(path.read_bytes())
+            if set(raw) != {
+                "schema_version",
+                "materialization_manifest_sha256",
+                "evidence_files",
+                "evidence_sha256",
+            }:
+                raise ValueError("unsupported replay evidence index fields")
+            index = cls(
+                schema_version=int(raw["schema_version"]),
+                materialization_manifest_sha256=str(raw["materialization_manifest_sha256"]),
+                evidence_files=tuple(str(item) for item in raw["evidence_files"]),
+                evidence_sha256=tuple(str(item) for item in raw["evidence_sha256"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid replay evidence index: {path}") from error
+        if json.loads(index.canonical_bytes) != raw:
+            raise ValueError("replay evidence index is not canonical")
+        return index
+
+
+class ReplayManifestRunner:
+    """Replay every verified spec in one materialization manifest."""
+
+    def run(
+        self,
+        manifest: ReplayMaterializationManifest,
+        *,
+        spec_directory: Path,
+        output_directory: Path,
+        index_output: Path,
+    ) -> ReplayEvidenceIndex:
+        output_directory.mkdir(parents=True, exist_ok=True)
+        evidence_files: list[str] = []
+        evidence_hashes: list[str] = []
+        for artifact in manifest.artifacts:
+            spec_path = spec_directory / artifact.file_name
+            encoded_spec = spec_path.read_bytes()
+            replay_spec = NbboReplaySpec.model_validate_json(encoded_spec)
+            if replay_spec.sha256 != artifact.sha256:
+                raise ValueError(f"replay spec hash differs from manifest: {spec_path}")
+            if replay_spec.canonical_bytes != encoded_spec:
+                raise ValueError(f"replay spec is not canonical: {spec_path}")
+            if (
+                replay_spec.order.order_id != artifact.order_id
+                or replay_spec.order.ticker.strip().upper() != artifact.symbol
+            ):
+                raise ValueError(f"replay spec identity differs from manifest: {spec_path}")
+            order, snapshot, quotes, trades, config = replay_spec.domain_inputs()
+            result = replay_order(
+                order,
+                decision_snapshot=snapshot,
+                quotes=quotes,
+                trades=trades,
+                config=config,
+            )
+            evidence = NbboReplayEvidence.build(spec=replay_spec, result=result)
+            file_name = f"replay-evidence-{_slug(order.order_id)}-{evidence.sha256[:16]}.json"
+            evidence.write(output_directory / file_name)
+            evidence_files.append(file_name)
+            evidence_hashes.append(evidence.sha256)
+        index = ReplayEvidenceIndex(
+            schema_version=1,
+            materialization_manifest_sha256=manifest.sha256,
+            evidence_files=tuple(evidence_files),
+            evidence_sha256=tuple(evidence_hashes),
+        )
+        index.write(index_output)
+        return index
 
 
 class ReplaySpecMaterializer:
@@ -247,6 +414,7 @@ def _file_sha256(path: Path) -> str:
 
 
 def _write_once(path: Path, encoded: bytes, *, kind: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("xb") as destination:
             destination.write(encoded)

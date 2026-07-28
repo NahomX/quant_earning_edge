@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
+from quant_earning_edge.data import BronzeWriter, LakehouseLayout
 from quant_earning_edge.data.clients import ProviderResponseError
 from quant_earning_edge.live import AlpacaPaperClient, PaperOrderRequest
 from quant_earning_edge.monitoring import CircuitBreakerEvaluator, CircuitBreakerObservation
@@ -174,6 +175,33 @@ def test_broker_fill_quantity_and_price_must_reconcile() -> None:
             secret_key="secret",
             http_client=http_client,
         ).get_by_client_order_id("qee-entry-1")
+
+
+def test_after_close_order_fetch_is_captured_in_bronze(tmp_path: Path) -> None:
+    http_client = httpx.Client(
+        base_url="https://paper-api.alpaca.markets",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json=_order_payload(status="filled"))
+        ),
+    )
+    layout = LakehouseLayout(tmp_path / "lake")
+    with http_client:
+        order = AlpacaPaperClient(
+            api_key_id="key",
+            secret_key="secret",
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        ).get_by_client_order_id("qee-entry-1")
+
+    artifacts = tuple(
+        layout.bronze(
+            source="alpaca-paper",
+            dataset="orders",
+            event_date=order.submitted_at.date(),
+        ).glob("*.json")
+    )
+    assert len(artifacts) == 1
+    assert json.loads(artifacts[0].read_bytes())["client_order_id"] == "qee-entry-1"
 
 
 def test_submit_cli_refuses_halted_breaker_before_network(tmp_path: Path) -> None:

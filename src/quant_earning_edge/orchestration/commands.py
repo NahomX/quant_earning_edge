@@ -54,11 +54,17 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
         {
             ("backtest", "materialize-frozen-replay-specs"),
             ("backtest", "materialize-replay-specs"),
+            ("backtest", "replay-materialization"),
             ("backtest", "replay-nbbo"),
             ("evaluation", "replay-session"),
         }
     ),
-    WorkflowStage.RECONCILE_SESSION: frozenset({("paper", "reconcile")}),
+    WorkflowStage.RECONCILE_SESSION: frozenset(
+        {
+            ("paper", "reconcile"),
+            ("paper", "reconcile-frozen"),
+        }
+    ),
     WorkflowStage.EVALUATE_PHASE6_PROGRESS: frozenset({("evaluation", "phase6-gate")}),
 }
 _SECRET_ARGUMENT_MARKERS = frozenset(

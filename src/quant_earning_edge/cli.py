@@ -35,6 +35,8 @@ from quant_earning_edge.data import (
     EarningsIngestor,
     LakehouseLayout,
     MarketEventsIngestor,
+    ReplayManifestRunner,
+    ReplayMaterializationManifest,
     ReplayMaterializationSpec,
     ReplaySpecMaterializer,
     SessionFileStore,
@@ -709,6 +711,57 @@ def materialize_frozen_replay_specs(  # noqa: PLR0917 - explicit replay source c
     )
 
 
+@backtest_app.command("replay-materialization")
+def replay_materialization(
+    manifest_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical replay materialization manifest.",
+        ),
+    ],
+    spec_directory: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            file_okay=False,
+            help="Directory containing the manifest's replay specs.",
+        ),
+    ],
+    output_directory: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Directory for immutable replay evidence."),
+    ],
+    index_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable replay evidence index."),
+    ],
+) -> None:
+    """Verify and replay every order in one materialization manifest."""
+    try:
+        manifest = ReplayMaterializationManifest.load(manifest_file)
+        index = ReplayManifestRunner().run(
+            manifest,
+            spec_directory=spec_directory,
+            output_directory=output_directory,
+            index_output=index_output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="replay materialization inputs") from error
+    _echo_json(
+        {
+            "index_path": str(index_output.resolve()),
+            "index_sha256": index.sha256,
+            "materialization_manifest_sha256": (index.materialization_manifest_sha256),
+            "order_count": len(index.evidence_files),
+            "replay_evidence_paths": [
+                str((output_directory / item).resolve()) for item in index.evidence_files
+            ],
+        }
+    )
+
+
 @backtest_app.command("replay-nbbo")
 def replay_nbbo(
     spec_file: Annotated[
@@ -1305,6 +1358,88 @@ def reconcile_paper_orders(
         report.write(output)
     except (OSError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="paper reconciliation inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "session_date": report.session_date,
+            "order_count": len(report.orders),
+            "reconciliation_break_count": report.reconciliation_break_count,
+            "all_orders_terminal": report.all_orders_terminal,
+            "paper_pnl_is_gate_input": report.paper_pnl_is_gate_input,
+        }
+    )
+    if report.reconciliation_break_count:
+        raise typer.Exit(code=1)
+
+
+@paper_app.command("reconcile-frozen")
+def reconcile_frozen_paper_orders(
+    frozen_orders: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical frozen daily orders."),
+    ],
+    evidence_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--evidence-file",
+            exists=True,
+            dir_okay=False,
+            help="Immutable per-order replay evidence; repeat for every frozen order.",
+        ),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable paper/replay reconciliation JSON."),
+    ] = Path("paper-reconciliation.json"),
+    env_file: EnvFileOption = None,
+) -> None:
+    """Fetch frozen orders from Alpaca paper and reconcile them to replay."""
+    try:
+        frozen = FrozenDailyOrders.load(frozen_orders)
+        evidence = tuple(NbboReplayEvidence.load(path) for path in tuple(evidence_files or ()))
+        reconciler = PaperOrderReconciler()
+        evaluated_at = datetime.now(UTC)
+        if frozen.intended_orders:
+            environment = _environment(env_file)
+            api_key_id, secret_key = environment.require_alpaca_credentials()
+            layout = LakehouseLayout(environment.data_lake_root)
+            with httpx.Client(
+                base_url=environment.alpaca_trading_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as http_client:
+                report = reconciler.fetch_and_evaluate(
+                    evidence=evidence,
+                    intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
+                    order_lookup=AlpacaPaperClient(
+                        api_key_id=api_key_id,
+                        secret_key=secret_key,
+                        http_client=http_client,
+                        bronze_writer=BronzeWriter(layout),
+                    ),
+                    session_date=frozen.trade_date,
+                    evaluated_at=evaluated_at,
+                )
+        else:
+            if evidence:
+                raise ValueError("no-trade frozen orders must not have replay evidence")
+            report = reconciler.evaluate(
+                evidence=(),
+                broker_orders=(),
+                session_date=frozen.trade_date,
+                evaluated_at=evaluated_at,
+            )
+        report.write(output)
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(
+            str(error), param_hint="frozen paper reconciliation inputs"
+        ) from error
     _echo_json(
         {
             "output": str(output.resolve()),

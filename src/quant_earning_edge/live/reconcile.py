@@ -19,8 +19,15 @@ from quant_earning_edge.live.alpaca_paper import (  # noqa: TC001 - Pydantic res
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from typing import Protocol
 
-    from quant_earning_edge.backtest import NbboReplayEvidence
+    from quant_earning_edge.backtest import IntendedOrder, NbboReplayEvidence
+
+    class PaperOrderLookup(Protocol):
+        """Read-only broker boundary used by automated reconciliation."""
+
+        def get_by_client_order_id(self, client_order_id: str) -> BrokerOrder: ...
+
 
 _MARKET_TIMEZONE = ZoneInfo("America/New_York")
 _TERMINAL_STATUSES = frozenset({"filled", "canceled", "expired", "rejected"})
@@ -95,6 +102,35 @@ class PaperReconciliationReport:
 
 class PaperOrderReconciler:
     """Require exact paper/replay identities and retain divergence as diagnostics."""
+
+    def fetch_and_evaluate(
+        self,
+        *,
+        evidence: Sequence[NbboReplayEvidence],
+        intended_orders: Sequence[IntendedOrder],
+        order_lookup: PaperOrderLookup,
+        session_date: date,
+        evaluated_at: datetime,
+    ) -> PaperReconciliationReport:
+        """Verify frozen identities, fetch exact broker orders, and reconcile them."""
+        intended_ids = tuple(item.order_id for item in intended_orders)
+        if intended_ids != tuple(sorted(set(intended_ids))):
+            raise ValueError("frozen intended order ids must be unique and sorted")
+        replay_by_id = {item.result.order.order_id: item.result.order for item in evidence}
+        if len(replay_by_id) != len(evidence) or set(replay_by_id) != set(intended_ids):
+            raise ValueError("replay evidence does not exactly match frozen intended order ids")
+        intended_by_id = {item.order_id: item for item in intended_orders}
+        if any(replay_by_id[order_id] != intended_by_id[order_id] for order_id in intended_ids):
+            raise ValueError("replay evidence order fields differ from frozen intended orders")
+        broker_orders = tuple(
+            order_lookup.get_by_client_order_id(order_id) for order_id in intended_ids
+        )
+        return self.evaluate(
+            evidence=evidence,
+            broker_orders=broker_orders,
+            session_date=session_date,
+            evaluated_at=evaluated_at,
+        )
 
     def evaluate(
         self,

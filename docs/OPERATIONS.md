@@ -625,6 +625,23 @@ The command exits `1` for identity, quantity, or non-terminal-order breaks.
 Paper-versus-replay price divergence is diagnostic only; Alpaca paper P&L is
 explicitly prohibited from entering the strategy proof gate.
 
+For the frozen live workflow, do not copy broker resources into a spec. Fetch
+the exact paper orders by their deterministic frozen client IDs:
+
+```powershell
+uv run qee paper reconcile-frozen `
+  --frozen-orders .\frozen-daily-orders.json `
+  --evidence-file .\replay-evidence-entry.json `
+  --evidence-file .\replay-evidence-exit.json `
+  --output .\paper-reconciliation.json
+```
+
+Before any Alpaca request, this command requires the replay evidence IDs and
+complete intended-order fields to exactly equal the frozen artifact. It queries
+only those verified client IDs from the canonical paper host, writes the same
+non-gating reconciliation report, and exits `1` for operational breaks. An
+explicit frozen no-trade day needs no evidence files or broker credentials.
+
 ## Inspect the restart-safe daily workflow
 
 Initialize one append-only state chain for an authoritative trade date:
@@ -798,6 +815,23 @@ uv run qee backtest materialize-frozen-replay-specs `
 The strategy file must match the hash frozen with the orders. Silver files are
 grouped by their stored symbol rather than trusted filenames, and their symbol
 set must exactly match the selected portfolio.
+
+Replay every spec in the resulting immutable manifest as one restart-safe
+batch:
+
+```powershell
+uv run qee backtest replay-materialization `
+  --manifest-file .\replay-materialization-manifest.json `
+  --spec-directory .\replay-specs `
+  --output-directory .\replay-evidence `
+  --index-output .\replay-evidence\index.json
+```
+
+The runner reloads a canonical manifest, verifies each safe leaf filename,
+identity, and SHA-256 digest before execution, and writes one immutable replay
+evidence file per sorted order plus a canonical evidence index. Repeating the
+same batch is idempotent; a changed spec or output collision fails closed. A
+no-trade manifest writes an empty evidence index.
 
 Workflow command specs may consume content-addressed outputs through typed
 `artifact_bindings`. A binding names an earlier stage, a repeated long option,

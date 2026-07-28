@@ -26,6 +26,8 @@ from quant_earning_edge.data.layout import DataTier, LakehouseLayout
 from quant_earning_edge.data.market_events import ReplayMarketDataLoader, ReplayMarketEvents
 from quant_earning_edge.data.replay_specs import (
     ReplayEventSourceSpec,
+    ReplayEvidenceIndex,
+    ReplayManifestRunner,
     ReplayMaterializationManifest,
     ReplayMaterializationSpec,
     ReplaySpecMaterializer,
@@ -74,6 +76,8 @@ __all__ = [
     "MarketEventsIngestionResult",
     "MarketEventsIngestor",
     "ReplayEventSourceSpec",
+    "ReplayEvidenceIndex",
+    "ReplayManifestRunner",
     "ReplayMarketDataLoader",
     "ReplayMarketEvents",
     "ReplayMaterializationManifest",

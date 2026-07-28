@@ -350,7 +350,16 @@ class AlpacaPaperClient:
             headers=self._headers,
         )
         self._raise_for_status(response)
-        return self._broker_order(self._decode(response))
+        raw = self._decode(response)
+        broker_order = self._broker_order(raw)
+        if self._bronze_writer is not None:
+            self._bronze_writer.write_json(
+                raw,
+                source="alpaca-paper",
+                dataset="orders",
+                event_date=broker_order.submitted_at.date(),
+            )
+        return broker_order
 
     @property
     def _headers(self) -> dict[str, str]:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,7 +14,8 @@ from typer.testing import CliRunner
 
 from quant_earning_edge.backtest import NbboReplayEvidence, NbboReplaySpec, replay_order
 from quant_earning_edge.cli import app
-from quant_earning_edge.live import BrokerOrder, PaperOrderReconciler
+from quant_earning_edge.live import AlpacaPaperClient, BrokerOrder, PaperOrderReconciler
+from quant_earning_edge.signals import FrozenDailyOrders
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -137,6 +140,48 @@ def test_reconciliation_requires_exact_client_order_id_set() -> None:
         )
 
 
+def test_frozen_reconciliation_fetches_only_verified_client_ids() -> None:
+    evidence = _evidence()
+    calls: list[str] = []
+
+    class Lookup:
+        def get_by_client_order_id(self, client_order_id: str) -> BrokerOrder:
+            calls.append(client_order_id)
+            return _broker_order(client_order_id=client_order_id)
+
+    report = PaperOrderReconciler().fetch_and_evaluate(
+        evidence=(evidence,),
+        intended_orders=(evidence.result.order,),
+        order_lookup=Lookup(),
+        session_date=date(2025, 1, 3),
+        evaluated_at=datetime(2025, 1, 3, 21, 5, tzinfo=UTC),
+    )
+
+    assert calls == ["entry-1"]
+    assert report.reconciliation_break_count == 0
+
+
+def test_frozen_reconciliation_refuses_changed_order_before_broker_fetch() -> None:
+    evidence = _evidence()
+    calls: list[str] = []
+
+    class Lookup:
+        def get_by_client_order_id(self, client_order_id: str) -> BrokerOrder:
+            calls.append(client_order_id)
+            return _broker_order()
+
+    with pytest.raises(ValueError, match="order fields differ"):
+        PaperOrderReconciler().fetch_and_evaluate(
+            evidence=(evidence,),
+            intended_orders=(replace(evidence.result.order, quantity=99),),
+            order_lookup=Lookup(),
+            session_date=date(2025, 1, 3),
+            evaluated_at=datetime(2025, 1, 3, 21, 5, tzinfo=UTC),
+        )
+
+    assert calls == []
+
+
 def test_paper_fill_decimal_fields_remain_exact() -> None:
     order = _broker_order(filled_avg_price="100.123456789")
 
@@ -179,3 +224,59 @@ def test_paper_reconciliation_cli_reloads_replay_evidence(tmp_path: Path) -> Non
     assert command_result["reconciliation_break_count"] == 0
     assert not report["paper_pnl_is_gate_input"]
     assert report["replay_evidence_sha256"] == [evidence.sha256]
+
+
+def test_frozen_reconciliation_cli_fetches_alpaca_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _evidence()
+    evidence_file = tmp_path / "replay.json"
+    evidence.write(evidence_file)
+    frozen_path = tmp_path / "frozen.json"
+    frozen_path.write_text("{}", encoding="utf-8")
+    frozen = SimpleNamespace(
+        intended_orders=(SimpleNamespace(to_domain=lambda: evidence.result.order),),
+        trade_date=date(2025, 1, 3),
+    )
+    monkeypatch.setattr(FrozenDailyOrders, "load", staticmethod(lambda _: frozen))
+    fetched: list[str] = []
+
+    def fetch(_: AlpacaPaperClient, client_order_id: str) -> BrokerOrder:
+        fetched.append(client_order_id)
+        return _broker_order(client_order_id=client_order_id)
+
+    monkeypatch.setattr(AlpacaPaperClient, "get_by_client_order_id", fetch)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            (
+                "APCA_API_KEY_ID=test-key",
+                "APCA_API_SECRET_KEY=test-secret",
+                f"DATA_LAKE_ROOT={tmp_path / 'lake'}",
+            )
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "paper-report.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "paper",
+            "reconcile-frozen",
+            "--frozen-orders",
+            str(frozen_path),
+            "--evidence-file",
+            str(evidence_file),
+            "--output",
+            str(output),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert fetched == ["entry-1"]
+    assert json.loads(result.stdout)["reconciliation_break_count"] == 0
+    assert json.loads(output.read_bytes())["orders"][0]["client_order_id"] == "entry-1"

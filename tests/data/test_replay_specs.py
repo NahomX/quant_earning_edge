@@ -8,10 +8,13 @@ from typing import TYPE_CHECKING
 
 from typer.testing import CliRunner
 
-from quant_earning_edge.backtest import NbboReplaySpec
+from quant_earning_edge.backtest import NbboReplayEvidence, NbboReplaySpec
 from quant_earning_edge.cli import app
 from quant_earning_edge.data import (
     LakehouseLayout,
+    ReplayEvidenceIndex,
+    ReplayManifestRunner,
+    ReplayMaterializationManifest,
     ReplayMaterializationSpec,
     ReplaySpecMaterializer,
     SilverWriter,
@@ -174,3 +177,121 @@ def test_explicit_no_trade_materialization_needs_no_market_files(tmp_path: Path)
 
     assert manifest.artifacts == ()
     assert (tmp_path / "manifest.json").exists()
+
+
+def test_manifest_runner_replays_every_verified_spec_idempotently(tmp_path: Path) -> None:
+    spec = _inputs(tmp_path)
+    spec_directory = tmp_path / "specs"
+    manifest_path = tmp_path / "manifest.json"
+    evidence_directory = tmp_path / "evidence"
+    index_path = tmp_path / "indexes" / "replay-index.json"
+    materialized = ReplaySpecMaterializer().materialize(
+        spec,
+        output_dir=spec_directory,
+        manifest_output=manifest_path,
+    )
+
+    manifest = ReplayMaterializationManifest.load(manifest_path)
+    index = ReplayManifestRunner().run(
+        manifest,
+        spec_directory=spec_directory,
+        output_directory=evidence_directory,
+        index_output=index_path,
+    )
+    repeated = ReplayManifestRunner().run(
+        manifest,
+        spec_directory=spec_directory,
+        output_directory=evidence_directory,
+        index_output=index_path,
+    )
+
+    assert manifest == materialized
+    assert repeated == index
+    assert ReplayEvidenceIndex.load(index_path) == index
+    assert index.materialization_manifest_sha256 == manifest.sha256
+    assert len(index.evidence_files) == 2
+    for file_name, expected_hash in zip(
+        index.evidence_files,
+        index.evidence_sha256,
+        strict=True,
+    ):
+        evidence = NbboReplayEvidence.load(evidence_directory / file_name)
+        assert evidence.sha256 == expected_hash
+
+
+def test_manifest_runner_rejects_tampered_spec(tmp_path: Path) -> None:
+    spec_directory = tmp_path / "specs"
+    manifest = ReplaySpecMaterializer().materialize(
+        _inputs(tmp_path),
+        output_dir=spec_directory,
+        manifest_output=tmp_path / "manifest.json",
+    )
+    spec_path = spec_directory / manifest.artifacts[0].file_name
+    spec_path.write_bytes(spec_path.read_bytes() + b"\n")
+
+    try:
+        ReplayManifestRunner().run(
+            manifest,
+            spec_directory=spec_directory,
+            output_directory=tmp_path / "evidence",
+            index_output=tmp_path / "index.json",
+        )
+    except ValueError as error:
+        assert "not canonical" in str(error)
+    else:
+        raise AssertionError("tampered replay spec should fail closed")
+
+
+def test_no_trade_manifest_runner_writes_empty_index(tmp_path: Path) -> None:
+    spec_directory = tmp_path / "specs"
+    manifest = ReplaySpecMaterializer().materialize(
+        ReplayMaterializationSpec(),
+        output_dir=spec_directory,
+        manifest_output=tmp_path / "manifest.json",
+    )
+
+    index = ReplayManifestRunner().run(
+        manifest,
+        spec_directory=spec_directory,
+        output_directory=tmp_path / "evidence",
+        index_output=tmp_path / "index.json",
+    )
+
+    assert index.evidence_files == ()
+    assert index.evidence_sha256 == ()
+    assert ReplayEvidenceIndex.load(tmp_path / "index.json") == index
+
+
+def test_replay_materialization_cli_emits_batch_evidence_paths(tmp_path: Path) -> None:
+    spec_directory = tmp_path / "specs"
+    manifest_path = tmp_path / "manifest.json"
+    manifest = ReplaySpecMaterializer().materialize(
+        _inputs(tmp_path),
+        output_dir=spec_directory,
+        manifest_output=manifest_path,
+    )
+    evidence_directory = tmp_path / "evidence"
+    index_path = tmp_path / "index.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "backtest",
+            "replay-materialization",
+            "--manifest-file",
+            str(manifest_path),
+            "--spec-directory",
+            str(spec_directory),
+            "--output-directory",
+            str(evidence_directory),
+            "--index-output",
+            str(index_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["order_count"] == 2
+    assert len(payload["replay_evidence_paths"]) == 2
+    assert payload["materialization_manifest_sha256"] == manifest.sha256
+    assert ReplayEvidenceIndex.load(index_path).sha256 == payload["index_sha256"]

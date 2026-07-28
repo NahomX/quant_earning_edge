@@ -65,6 +65,8 @@ from quant_earning_edge.labels import (
 )
 from quant_earning_edge.live import (
     AlpacaPaperClient,
+    PaperBatchSubmitter,
+    PaperOrderBatchSpec,
     PaperOrderReconciler,
     PaperOrderRequest,
     PaperReconciliationSpec,
@@ -1020,6 +1022,62 @@ def submit_paper_order(
             "broker_order_id": submission.broker_order.order_id,
             "status": submission.broker_order.status,
             "idempotent_reuse": submission.idempotent_reuse,
+        }
+    )
+
+
+@paper_app.command("submit-batch")
+def submit_paper_batch(
+    spec_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Sorted session paper-order batch JSON."),
+    ],
+    breaker_decision: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Fresh non-halted breaker decision."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable complete session submission evidence."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Submit or safely resume a complete paper session order batch."""
+    environment = _environment(env_file)
+    try:
+        api_key_id, secret_key = environment.require_alpaca_credentials()
+    except RuntimeConfigurationError as error:
+        raise typer.BadParameter(str(error), param_hint="environment") from error
+    try:
+        spec = PaperOrderBatchSpec.model_validate_json(spec_file.read_bytes())
+        decision = CircuitBreakerDecision.load(breaker_decision)
+        layout = LakehouseLayout(environment.data_lake_root)
+        with httpx.Client(
+            base_url=environment.alpaca_trading_base_url,
+            timeout=environment.http_timeout_seconds,
+        ) as http_client:
+            batch = PaperBatchSubmitter(
+                AlpacaPaperClient(
+                    api_key_id=api_key_id,
+                    secret_key=secret_key,
+                    http_client=http_client,
+                    bronze_writer=BronzeWriter(layout),
+                )
+            ).submit(
+                spec,
+                breaker_decision=decision,
+                evaluated_at=datetime.now(UTC),
+            )
+        batch.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="paper batch inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": batch.sha256,
+            "session_date": batch.session_date,
+            "order_count": len(batch.submissions),
+            "idempotent_reuse_count": sum(item.idempotent_reuse for item in batch.submissions),
         }
     )
 

@@ -78,6 +78,7 @@ reproducible through `uv.lock`.
 | Restart-safe daily workflow state machine | Complete | ordered stages, leases, retries, hash-chained revisions, artifact verification |
 | In-process workflow advancement loop | Complete | advances until complete/leased/failed and durably records every transition |
 | Concrete qee stage-command adapter | Complete | shell-free allowlist, environment-only secrets, JSON artifact discovery, CLI run |
+| Restart-safe session paper-order batch | Complete | sorted client IDs, partial-process resume, explicit no-trade evidence, CLI |
 
 ## Phase 1 exit gate
 
@@ -109,9 +110,8 @@ data completeness or strategy performance.
 ## Next implementation slice
 
 Add unattended-loop health evidence, command receipts, and deployment
-packaging. Add a batch paper-order boundary so a session order plan is handled
-as one atomic operational unit. After credentialed historical/strategy gates
-pass, begin the real 90-session run.
+packaging. After credentialed historical/strategy gates pass, begin the real
+90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

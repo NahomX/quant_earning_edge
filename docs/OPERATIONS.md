@@ -597,6 +597,21 @@ the client ID before posting, rejects a conflicting existing order, captures the
 provider response in bronze, and writes immutable submission evidence. It never
 targets a live-capital account.
 
+For the production workflow, submit the complete sorted session plan as one
+restart-safe operational unit:
+
+```powershell
+uv run qee paper submit-batch `
+  --spec-file .\paper-order-batch.json `
+  --breaker-decision .\breaker-decision.json `
+  --output .\paper-batch-submission.json
+```
+
+If the process fails after some orders reach Alpaca, rerunning the same command
+verifies and reuses those client IDs before continuing. The batch artifact is
+written only after every planned order is accounted for. An empty `orders` list
+is valid and creates explicit no-trade evidence without calling the broker.
+
 After the close, construct a reconciliation spec with the replay evidence paths
 and Alpaca order resources, then run:
 

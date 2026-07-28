@@ -3,6 +3,9 @@
 from quant_earning_edge.live.alpaca_paper import (
     AlpacaPaperClient,
     BrokerOrder,
+    PaperBatchSubmission,
+    PaperBatchSubmitter,
+    PaperOrderBatchSpec,
     PaperOrderRequest,
     PaperSubmission,
 )
@@ -16,6 +19,9 @@ from quant_earning_edge.live.reconcile import (
 __all__ = [
     "AlpacaPaperClient",
     "BrokerOrder",
+    "PaperBatchSubmission",
+    "PaperBatchSubmitter",
+    "PaperOrderBatchSpec",
     "PaperOrderReconciler",
     "PaperOrderReconciliation",
     "PaperOrderRequest",

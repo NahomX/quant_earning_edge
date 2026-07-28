@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
+from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from quant_earning_edge.data.bronze import BronzeWriter
+    from quant_earning_edge.monitoring import CircuitBreakerDecision
 
 _PAPER_BASE_URL = "https://paper-api.alpaca.markets"
 
@@ -147,6 +148,114 @@ class PaperSubmission:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"paper-submission evidence collision at {output}") from None
+
+
+class PaperOrderBatchSpec(BaseModel):
+    """A complete, deterministic session order batch, including explicit no-trade days."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_date: date
+    orders: tuple[PaperOrderRequest, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_batch(self) -> PaperOrderBatchSpec:
+        client_ids = tuple(order.client_order_id for order in self.orders)
+        if client_ids != tuple(sorted(set(client_ids))):
+            raise ValueError("batch client_order_id values must be unique and sorted")
+        return self
+
+
+@dataclass(frozen=True)
+class PaperBatchSubmission:
+    """All-or-resume session evidence; written only after every order is verified."""
+
+    schema_version: int
+    session_date: date
+    breaker_decision_sha256: str
+    submissions: tuple[PaperSubmission, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported paper batch schema version")
+        if len(self.breaker_decision_sha256) != 64:
+            raise ValueError("paper batch breaker digest must be SHA-256")
+        client_ids = tuple(item.request.client_order_id for item in self.submissions)
+        if client_ids != tuple(sorted(set(client_ids))):
+            raise ValueError("paper batch submissions must have unique sorted client ids")
+        if any(
+            item.broker_order.submitted_at.date() != self.session_date for item in self.submissions
+        ):
+            raise ValueError("paper batch broker submission dates must match the session date")
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            {
+                "schema_version": self.schema_version,
+                "session_date": self.session_date.isoformat(),
+                "breaker_decision_sha256": self.breaker_decision_sha256,
+                "submissions": [
+                    {
+                        "schema_version": item.schema_version,
+                        "request": item.request.model_dump(mode="json"),
+                        "broker_order": item.broker_order.model_dump(mode="json"),
+                        "provider_request_id": item.provider_request_id,
+                        "idempotent_reuse": item.idempotent_reuse,
+                    }
+                    for item in self.submissions
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        encoded = self.canonical_bytes
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(encoded)
+        except FileExistsError:
+            if output.read_bytes() != encoded:
+                raise RuntimeError(f"paper-batch evidence collision at {output}") from None
+
+
+class PaperBatchSubmitter:
+    """Submit a sorted session plan and safely resume after partial process failure."""
+
+    def __init__(self, client: AlpacaPaperClient) -> None:
+        self._client = client
+
+    def submit(
+        self,
+        spec: PaperOrderBatchSpec,
+        *,
+        breaker_decision: CircuitBreakerDecision,
+        evaluated_at: datetime,
+    ) -> PaperBatchSubmission:
+        if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
+            raise ValueError("paper batch evaluated_at must be timezone-aware")
+        if breaker_decision.halt_new_orders:
+            raise ValueError("paper batch refused because circuit breakers halt new orders")
+        if breaker_decision.session_date != spec.session_date:
+            raise ValueError("paper batch and circuit-breaker session dates must match")
+        decision_age = (
+            evaluated_at - breaker_decision.evaluated_at.astimezone(evaluated_at.tzinfo)
+        ).total_seconds()
+        if not 0 <= decision_age <= 30 * 60:
+            raise ValueError("paper batch requires a breaker decision no more than 30 minutes old")
+        submissions = tuple(self._client.submit(order) for order in spec.orders)
+        return PaperBatchSubmission(
+            schema_version=1,
+            session_date=spec.session_date,
+            breaker_decision_sha256=breaker_decision.sha256,
+            submissions=submissions,
+        )
 
 
 class AlpacaPaperClient:

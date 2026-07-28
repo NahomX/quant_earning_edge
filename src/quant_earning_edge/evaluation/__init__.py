@@ -5,6 +5,10 @@ from quant_earning_edge.evaluation.folds import (
     WalkForwardEvaluation,
     WalkForwardEvaluator,
 )
+from quant_earning_edge.evaluation.phase6_controls import (
+    Phase6ControlArtifacts,
+    Phase6ControlBuilder,
+)
 from quant_earning_edge.evaluation.phase6_gate import (
     Phase6AggregationSpec,
     Phase6GateEvaluator,
@@ -50,6 +54,8 @@ __all__ = [
     "Phase4GateEvaluation",
     "Phase4GateEvaluator",
     "Phase6AggregationSpec",
+    "Phase6ControlArtifacts",
+    "Phase6ControlBuilder",
     "Phase6GateEvaluator",
     "Phase6GateReport",
     "ReplayRoundTrip",

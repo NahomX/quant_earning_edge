@@ -54,6 +54,7 @@ from quant_earning_edge.evaluation import (
     Phase4AggregationSpec,
     Phase4GateEvaluator,
     Phase6AggregationSpec,
+    Phase6ControlBuilder,
     Phase6GateEvaluator,
     ReplaySessionAggregationSpec,
     ReplaySessionAggregator,
@@ -1214,6 +1215,77 @@ def evaluate_phase6_gate(
             "scheduled_complete_session_count": report.scheduled_complete_session_count,
             "operational_uptime": report.operational_uptime,
             "passes_phase6_gate": report.passes_phase6_gate,
+        }
+    )
+
+
+@evaluation_app.command("prepare-phase6-controls")
+def prepare_phase6_controls(  # noqa: PLR0917 - explicit proof-control contract.
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative market sessions."),
+    ],
+    proof_start: Annotated[str, typer.Option(help="First proof session date.")],
+    proof_end: Annotated[str, typer.Option(help="Current proof session date.")],
+    current_trade_date: Annotated[
+        str,
+        typer.Option(help="Daily report path to include before it exists."),
+    ],
+    initial_cash: Annotated[
+        float,
+        typer.Option(min=0.01, help="Proof starting equity."),
+    ],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Root of deterministic daily artifacts."),
+    ],
+    health_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable pre-run workflow health report."),
+    ],
+    aggregation_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Canonical Phase 6 aggregation input."),
+    ],
+    bootstrap_resamples: Annotated[
+        int,
+        typer.Option(min=1, help="Terminal Sharpe bootstrap resamples."),
+    ] = 10_000,
+    seed: Annotated[int, typer.Option(help="Deterministic bootstrap seed.")] = 20260427,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Prepare rolling Phase 6 controls from durable workflow/report evidence."""
+    environment = _environment(env_file)
+    try:
+        calendar = SessionFileStore.load(session_file)
+        controls = Phase6ControlBuilder().build(
+            calendar=calendar,
+            session_file=session_file,
+            workflow_store=DailyWorkflowStore(environment.data_lake_root),
+            proof_start=_parse_date(proof_start, option="--proof-start"),
+            proof_end=_parse_date(proof_end, option="--proof-end"),
+            current_trade_date=_parse_date(
+                current_trade_date,
+                option="--current-trade-date",
+            ),
+            initial_cash=initial_cash,
+            artifact_root=artifact_root,
+            health_output=health_output,
+            aggregation_output=aggregation_output,
+            bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="Phase 6 control inputs") from error
+    _echo_json(
+        {
+            "aggregation_output": str(aggregation_output.resolve()),
+            "health_output": str(health_output.resolve()),
+            "health_sha256": controls.health_sha256,
+            "proof_start": controls.aggregation_spec.proof_start,
+            "proof_end": controls.aggregation_spec.proof_end,
+            "report_count": len(controls.included_report_files),
+            "session_report_files": [str(item) for item in controls.included_report_files],
         }
     )
 

@@ -93,6 +93,7 @@ reproducible through `uv.lock`.
 | Frozen market-event batch capture | Complete | per-symbol full execution windows, post-expiry readiness gate, immutable capture manifest |
 | Complete daily workflow generation | Complete | one validated command emits all eight stages and dynamic artifact bindings |
 | Temporal workflow readiness | Complete | post-close stages remain pending without false attempts while the worker loop polls |
+| Rolling Phase 6 control preparation | Complete | calendar-bound workflow health, discovered prior reports, deterministic current report path |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -124,10 +125,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Automate rolling circuit-breaker observations plus Phase 6 aggregation/health
-inputs so the generated daily workflow needs only the causal planning input and
-strategy configuration. After credentialed historical/strategy gates pass,
-begin the real 90-session run.
+Automate rolling circuit-breaker observations with an explicit distinction
+between the new control date and the completed replay session supplying P&L and
+fill evidence. Then the generated daily workflow will need only causal planning
+and current provider-freshness inputs. After credentialed historical/strategy
+gates pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

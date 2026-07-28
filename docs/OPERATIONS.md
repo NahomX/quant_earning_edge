@@ -673,6 +673,27 @@ output artifact, so a missing step cannot be silently marked complete.
 
 Generate the complete eight-stage run spec from the four daily control inputs:
 
+First prepare the rolling Phase 6 health and aggregation files:
+
+```powershell
+uv run qee evaluation prepare-phase6-controls `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --proof-start 2026-07-28 `
+  --proof-end 2026-07-29 `
+  --current-trade-date 2026-07-29 `
+  --initial-cash 100000 `
+  --artifact-root .\workflow-artifacts `
+  --health-output .\controls\2026-07-29-health.json `
+  --aggregation-output .\controls\2026-07-29-phase6.json
+```
+
+The command evaluates workflow health from the append-only state store, reloads
+and validates every existing deterministic daily replay report, and includes
+the current workflow's expected report path before that file exists. Both
+outputs are immutable and idempotent. The pre-run health snapshot will classify
+the current date as incomplete; a final terminal verdict must be reevaluated
+after the workflow completes with refreshed health evidence.
+
 ```powershell
 uv run qee workflow generate `
   --trade-date 2026-07-28 `

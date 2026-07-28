@@ -211,6 +211,49 @@ def test_not_after_stage_fails_once_and_stops_retrying_expired_window(
     assert calls == []
 
 
+def test_retry_policy_backs_off_and_terminalizes_exhausted_stage(
+    tmp_path: Path,
+) -> None:
+    current = [datetime(2026, 7, 28, 12, 0, tzinfo=UTC)]
+    raw = _run_spec().model_dump(mode="json")
+    raw["stages"][0]["maximum_attempts"] = 2
+    raw["stages"][0]["retry_delay_seconds"] = 60
+    raw["stages"][0]["maximum_retry_delay_seconds"] = 60
+    spec = WorkflowRunSpec.model_validate(raw)
+    calls = 0
+
+    def reject(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        nonlocal calls
+        del argv, cwd, timeout_seconds
+        calls += 1
+        return QeeCommandResult(return_code=2, stdout="")
+
+    runner = DailyWorkflowRunner(
+        store=DailyWorkflowStore(tmp_path / "lake"),
+        handlers=spec.handlers(working_directory=tmp_path, executor=reject),
+        worker_id=spec.worker_id,
+        clock=lambda: current[0],
+        trigger=spec.trigger,
+    )
+    first = runner.run_until_idle(trade_date=spec.trade_date)
+    waiting = runner.run_until_idle(trade_date=spec.trade_date)
+    current[0] += timedelta(seconds=60)
+    second_attempt = runner.run_until_idle(trade_date=spec.trade_date)
+    exhausted = runner.run_until_idle(trade_date=spec.trade_date)
+
+    assert waiting.sha256 == first.sha256
+    assert second_attempt.stages[0].attempts == 2
+    assert second_attempt.stages[0].error_type == "RuntimeError"
+    assert exhausted.stages[0].attempts == 2
+    assert exhausted.stages[0].error_type == "WorkflowRetryExhausted"
+    assert calls == 2
+
+
 def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Path) -> None:
     artifact = tmp_path / "sessions-content-addressed.json"
     artifact.write_text("{}", encoding="utf-8")

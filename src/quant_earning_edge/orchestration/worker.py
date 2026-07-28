@@ -20,6 +20,7 @@ from quant_earning_edge.orchestration.commands import (
 from quant_earning_edge.orchestration.workflow import (
     DailyWorkflowRunner,
     DailyWorkflowStore,
+    WorkflowRetryExhausted,
     WorkflowWindowExpired,
 )
 
@@ -217,7 +218,10 @@ class WorkflowInboxWorker:
             results=results,
         )
         for result in results:
-            if result.trade_date is None or result.error_type == WorkflowWindowExpired.__name__:
+            if result.trade_date is None or result.error_type in {
+                WorkflowRetryExhausted.__name__,
+                WorkflowWindowExpired.__name__,
+            }:
                 self._cycle_store.write_attention(
                     OperatorAttentionEvidence(
                         schema_version=1,

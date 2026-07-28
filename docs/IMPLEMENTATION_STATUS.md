@@ -106,6 +106,7 @@ reproducible through `uv.lock`.
 | External env-file propagation to stage subprocesses | Complete | child-only merged environment; process precedence; no secret arguments or mutation |
 | Expiring pre-open execution boundary | Complete | first four stages stop permanently at entry expiry instead of submitting or retrying late |
 | Durable operator-attention evidence | Complete | invalid specs and expired windows emit idempotent content-addressed attention records |
+| Bounded exponential workflow retries | Complete | per-stage attempt budgets, capped backoff, terminal exhaustion, attention evidence |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -137,12 +138,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add bounded retry policy and classified failure evidence for transient provider
-errors, so retry cadence and exhaustion are explicit rather than implicit in
-worker polling. Then add a credentialed smoke-run command that exercises the
-complete no-trade operational path before the first real proof session. After
-the readiness audit and credentialed historical/strategy gates pass, begin the
-real 90-session run.
+Add a credentialed smoke-run command that exercises the complete no-trade
+operational path before the first real proof session. Then audit the daily
+planning-input production path and remove any remaining hand-authored boundary.
+After the readiness audit and credentialed historical/strategy gates pass,
+begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

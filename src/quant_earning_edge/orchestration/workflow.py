@@ -52,6 +52,10 @@ class WorkflowWindowExpired(RuntimeError):
     """A time-sensitive stage can no longer execute causally or usefully."""
 
 
+class WorkflowRetryExhausted(RuntimeError):
+    """A stage consumed its explicit bounded command-attempt budget."""
+
+
 @dataclass(frozen=True)
 class ArtifactReference:
     """Content identity for one stage output."""
@@ -325,6 +329,28 @@ class DailyWorkflowController:
         )
         return _advance(state, now=now, stages=_replace_stage(state.stages, index, failed))
 
+    def terminalize_failed(
+        self,
+        state: DailyWorkflowState,
+        *,
+        stage: WorkflowStage,
+        error: Exception,
+        now: datetime,
+    ) -> DailyWorkflowState:
+        """Replace a retryable failure reason without incrementing command attempts."""
+        index = next(index for index, record in enumerate(state.stages) if record.stage is stage)
+        current = state.stages[index]
+        if current.status is not StageStatus.FAILED:
+            raise ValueError("only a failed workflow stage can be terminalized")
+        message = str(error).strip() or "workflow stage requires operator attention"
+        terminal = replace(
+            current,
+            completed_at=now,
+            error_type=type(error).__name__,
+            error_message=message[:1000],
+        )
+        return _advance(state, now=now, stages=_replace_stage(state.stages, index, terminal))
+
 
 class StageHandler(Protocol):
     """Produce durable artifact files for one claimed workflow stage."""
@@ -364,7 +390,7 @@ class DailyWorkflowRunner:
         self._lease_duration = lease_duration
         self._controller = DailyWorkflowController()
 
-    def run_until_idle(  # noqa: PLR0911 - explicit durable terminal states.
+    def run_until_idle(  # noqa: PLR0911,PLR0912 - explicit durable terminal states.
         self,
         *,
         trade_date: date,
@@ -388,10 +414,10 @@ class DailyWorkflowRunner:
             pending_record = next(
                 item for item in state.stages if item.status is not StageStatus.SUCCEEDED
             )
-            if (
-                pending_record.status is StageStatus.FAILED
-                and pending_record.error_type == WorkflowWindowExpired.__name__
-            ):
+            if pending_record.status is StageStatus.FAILED and pending_record.error_type in {
+                WorkflowWindowExpired.__name__,
+                WorkflowRetryExhausted.__name__,
+            }:
                 return state
             pending_stage = pending_record.stage
             pending_handler = self._handlers.get(pending_stage)
@@ -401,9 +427,18 @@ class DailyWorkflowRunner:
                 if pending_handler is not None
                 else None
             )
-            if callable(expiration):
-                expiration_error = expiration(claim_time)
-                if expiration_error is not None:
+            expiration_error = expiration(claim_time) if callable(expiration) else None
+            if expiration_error is not None:
+                if pending_record.status is StageStatus.FAILED:
+                    state = self._store.write(
+                        self._controller.terminalize_failed(
+                            state,
+                            stage=pending_stage,
+                            error=expiration_error,
+                            now=claim_time,
+                        )
+                    )
+                else:
                     claimed = self._controller.claim_next(
                         state,
                         worker_id=self._worker_id,
@@ -422,6 +457,33 @@ class DailyWorkflowRunner:
                             now=self._transition_time(state),
                         )
                     )
+                return state
+            if pending_record.status is StageStatus.FAILED:
+                exhaustion = (
+                    getattr(pending_handler, "retry_exhaustion_error", None)
+                    if pending_handler is not None
+                    else None
+                )
+                exhaustion_error = exhaustion(pending_record) if callable(exhaustion) else None
+                if exhaustion_error is not None:
+                    state = self._store.write(
+                        self._controller.terminalize_failed(
+                            state,
+                            stage=pending_stage,
+                            error=exhaustion_error,
+                            now=claim_time,
+                        )
+                    )
+                    return state
+                retry_ready = (
+                    getattr(pending_handler, "is_retry_ready", None)
+                    if pending_handler is not None
+                    else None
+                )
+                if callable(retry_ready) and not retry_ready(
+                    pending_record,
+                    claim_time,
+                ):
                     return state
             readiness = (
                 getattr(pending_handler, "is_ready", None) if pending_handler is not None else None

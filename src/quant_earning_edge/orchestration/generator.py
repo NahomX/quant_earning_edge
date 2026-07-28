@@ -141,12 +141,18 @@ class DailyWorkflowSpecGenerator:
                 stage=WorkflowStage.FREEZE_INPUTS,
                 not_before=order_controls_not_before,
                 not_after=order_submission_not_after,
+                maximum_attempts=6,
+                retry_delay_seconds=10,
+                maximum_retry_delay_seconds=60,
                 commands=freeze_commands,
                 output_files=freeze_outputs,
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.GENERATE_ORDER_PLAN,
                 not_after=order_submission_not_after,
+                maximum_attempts=3,
+                retry_delay_seconds=5,
+                maximum_retry_delay_seconds=30,
                 commands=(
                     QeeCommandSpec(
                         arguments=(
@@ -168,12 +174,18 @@ class DailyWorkflowSpecGenerator:
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.EVALUATE_BREAKERS,
                 not_after=order_submission_not_after,
+                maximum_attempts=6,
+                retry_delay_seconds=10,
+                maximum_retry_delay_seconds=60,
                 commands=(evaluate_breaker_command,),
                 output_files=(breaker_decision,),
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.SUBMIT_PAPER_ORDERS,
                 not_after=order_submission_not_after,
+                maximum_attempts=6,
+                retry_delay_seconds=10,
+                maximum_retry_delay_seconds=60,
                 commands=(
                     QeeCommandSpec(
                         arguments=(
@@ -193,6 +205,9 @@ class DailyWorkflowSpecGenerator:
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.CAPTURE_MARKET_EVENTS,
                 not_before=market_events_not_before,
+                maximum_attempts=12,
+                retry_delay_seconds=60,
+                maximum_retry_delay_seconds=900,
                 commands=(
                     QeeCommandSpec(
                         arguments=(
@@ -210,6 +225,9 @@ class DailyWorkflowSpecGenerator:
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.REPLAY_ORDERS,
+                maximum_attempts=6,
+                retry_delay_seconds=30,
+                maximum_retry_delay_seconds=300,
                 commands=(
                     QeeCommandSpec(
                         arguments=(
@@ -278,6 +296,9 @@ class DailyWorkflowSpecGenerator:
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.RECONCILE_SESSION,
+                maximum_attempts=24,
+                retry_delay_seconds=60,
+                maximum_retry_delay_seconds=900,
                 commands=(
                     QeeCommandSpec(
                         arguments=(
@@ -303,6 +324,9 @@ class DailyWorkflowSpecGenerator:
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.EVALUATE_PHASE6_PROGRESS,
+                maximum_attempts=6,
+                retry_delay_seconds=60,
+                maximum_retry_delay_seconds=600,
                 commands=(
                     QeeCommandSpec(
                         arguments=(

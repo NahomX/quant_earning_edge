@@ -246,3 +246,41 @@ def test_worker_emits_one_attention_record_for_expired_order_window(
     state = DailyWorkflowStore(data_lake).load_latest(date(2026, 7, 28))
     assert state is not None
     assert state.stages[0].attempts == 1
+
+
+def test_worker_emits_attention_after_retry_budget_is_exhausted(
+    tmp_path: Path,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    spec_path = _write_spec(inbox)
+    raw = json.loads(spec_path.read_bytes())
+    raw["stages"][0]["maximum_attempts"] = 1
+    raw["stages"][0]["retry_delay_seconds"] = 0
+    spec_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    def reject(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        del argv, cwd, timeout_seconds
+        return QeeCommandResult(return_code=2, stdout="")
+
+    data_lake = tmp_path / "lake"
+    worker = WorkflowInboxWorker(
+        data_lake_root=data_lake,
+        worker_id="worker",
+        clock=lambda: datetime.now(UTC),
+        executor=reject,
+    )
+
+    first, _ = worker.run_once(inbox)
+    exhausted, _ = worker.run_once(inbox)
+    repeated, _ = worker.run_once(inbox)
+
+    assert first.results[0].error_type == "RuntimeError"
+    assert exhausted.results[0].error_type == "WorkflowRetryExhausted"
+    assert repeated.results[0].error_type == "WorkflowRetryExhausted"
+    assert len(tuple(data_lake.rglob("attention-*.json"))) == 1

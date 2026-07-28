@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
+from datetime import date, datetime, timedelta
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -19,6 +19,8 @@ from quant_earning_edge.orchestration.workflow import (
     STAGE_ORDER,
     DailyWorkflowState,
     StageHandler,
+    StageRecord,
+    WorkflowRetryExhausted,
     WorkflowStage,
     WorkflowTrigger,
     WorkflowWindowExpired,
@@ -239,6 +241,9 @@ class WorkflowStageCommandSpec(_StrictSpec):
     output_files: tuple[Path, ...] = ()
     not_before: datetime | None = None
     not_after: datetime | None = None
+    maximum_attempts: int = Field(default=20, ge=1, le=100)
+    retry_delay_seconds: float = Field(default=30, ge=0, le=3600)
+    maximum_retry_delay_seconds: float = Field(default=900, ge=0, le=7200)
 
     @model_validator(mode="after")
     def validate_stage_commands(self) -> WorkflowStageCommandSpec:
@@ -256,6 +261,8 @@ class WorkflowStageCommandSpec(_StrictSpec):
             and self.not_after <= self.not_before
         ):
             raise ValueError("workflow stage not_after must follow not_before")
+        if self.maximum_retry_delay_seconds < self.retry_delay_seconds:
+            raise ValueError("maximum retry delay cannot be below the base retry delay")
         allowed = _ALLOWED_PREFIXES[self.stage]
         for command in self.commands:
             prefix = (command.arguments[0], command.arguments[1])
@@ -365,6 +372,29 @@ class ConfiguredQeeStageHandler:
         return WorkflowWindowExpired(
             f"{self._spec.stage.value} expired at {self._spec.not_after.isoformat()}"
         )
+
+    def retry_exhaustion_error(
+        self,
+        record: StageRecord,
+    ) -> WorkflowRetryExhausted | None:
+        """Return a terminal error after the configured command-attempt budget."""
+        if record.attempts < self._spec.maximum_attempts:
+            return None
+        return WorkflowRetryExhausted(
+            f"{record.stage.value} exhausted {self._spec.maximum_attempts} attempts"
+        )
+
+    def is_retry_ready(self, record: StageRecord, now: datetime) -> bool:
+        """Apply capped exponential delay after a durable failed attempt."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("workflow retry time must be timezone-aware")
+        if record.completed_at is None:
+            raise ValueError("failed workflow stage lacks a completion timestamp")
+        delay_seconds = min(
+            self._spec.maximum_retry_delay_seconds,
+            self._spec.retry_delay_seconds * (2 ** max(0, record.attempts - 1)),
+        )
+        return now >= record.completed_at + timedelta(seconds=delay_seconds)
 
     def __call__(
         self,

@@ -910,6 +910,15 @@ content-addressed records under
 `manifests/job=workflow-worker/attention`; repeated polling does not duplicate
 them. Provider or infrastructure failures before expiry remain retryable.
 
+Every stage also declares `maximum_attempts`, `retry_delay_seconds`, and
+`maximum_retry_delay_seconds`. Failed command attempts use capped exponential
+backoff and are not reclaimed on every inbox poll. When the attempt budget is
+consumed, the state is terminalized as `WorkflowRetryExhausted` without adding
+a synthetic command attempt, and the worker writes operator-attention evidence.
+Generated workflows use shorter retry budgets inside the entry window, 12
+attempts for post-close market capture, and 24 attempts for broker
+reconciliation.
+
 Evaluate unattended readiness only against an authoritative calendar:
 
 ```powershell

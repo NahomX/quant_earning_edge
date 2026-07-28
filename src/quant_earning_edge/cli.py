@@ -101,12 +101,14 @@ from quant_earning_edge.orchestration import (
     DailyWorkflowSpecGenerator,
     DailyWorkflowState,
     DailyWorkflowStore,
+    OperationalReadinessEvaluator,
     StageStatus,
     WorkflowHealthEvaluator,
     WorkflowHealthReport,
     WorkflowInboxWorker,
     WorkflowRunSpec,
     WorkflowTrigger,
+    WorkflowWorkerStore,
 )
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
@@ -143,6 +145,8 @@ from quant_earning_edge.universe.config import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from quant_earning_edge.data.calendar import SessionFile
 
 app = typer.Typer(no_args_is_help=True, help="quant_earning_edge command-line interface.")
 ingest_app = typer.Typer(no_args_is_help=True, help="Ingest provider data.")
@@ -1403,6 +1407,37 @@ def _capture_provider_freshness(
         ).probe(symbol=symbol)
 
 
+def _probe_polygon_nbbo_entitlement(
+    *,
+    environment: RuntimeEnvironment,
+    calendar: SessionFile,
+    control_date: date,
+    symbol: str,
+) -> str:
+    prior_sessions = tuple(item for item in calendar.sessions if item.session_date < control_date)
+    if not prior_sessions:
+        raise ValueError("NBBO entitlement probe requires a prior authoritative session")
+    session = prior_sessions[-1]
+    end_at = min(session.open_at + timedelta(minutes=1), session.close_at)
+    layout = LakehouseLayout(environment.data_lake_root)
+    with httpx.Client(
+        base_url=environment.polygon_base_url,
+        timeout=environment.http_timeout_seconds,
+    ) as http_client:
+        quotes = PolygonClient(
+            api_key=environment.require_polygon_api_key(),
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        ).stock_quotes(
+            symbol=symbol,
+            start_at=session.open_at,
+            end_at=end_at,
+        )
+    if not quotes:
+        raise ValueError("Polygon NBBO probe returned no historical quotes")
+    return f"{session.session_date.isoformat()}; quote_count={len(quotes)}"
+
+
 @monitoring_app.command("reconciliation-age")
 def evaluate_reconciliation_age(
     session_file: Annotated[
@@ -2448,6 +2483,150 @@ def daily_workflow_health(
         raise typer.Exit(code=1)
 
 
+@workflow_app.command("audit-readiness")
+def audit_workflow_readiness(  # noqa: PLR0917 - explicit deployment audit boundary.
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative proof sessions."),
+    ],
+    control_date: Annotated[str, typer.Option(help="Next workflow session (YYYY-MM-DD).")],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Daily workflow artifact root."),
+    ],
+    inbox: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Persistent workflow inbox."),
+    ],
+    worker_id: Annotated[str, typer.Option(help="Expected persistent worker identity.")],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable operational readiness report."),
+    ],
+    symbol: Annotated[
+        str,
+        typer.Option(help="Liquid Polygon symbol for the live provider probe."),
+    ] = "SPY",
+    minimum_calendar_sessions: Annotated[
+        int,
+        typer.Option(min=1, help="Minimum authoritative proof-calendar span."),
+    ] = 90,
+    maximum_heartbeat_age_minutes: Annotated[
+        float,
+        typer.Option(min=0.1, max=60, help="Maximum accepted worker heartbeat age."),
+    ] = 5,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Write a secret-free fail-closed audit before unattended operation."""
+    environment = _environment(env_file)
+    selected_date = _parse_date(control_date, option="--control-date")
+    evaluated_at = datetime.now(UTC)
+    calendar = SessionFileStore.load(session_file)
+    polygon_configured = _credential_available(environment.require_polygon_api_key)
+    finnhub_configured = _credential_available(environment.require_finnhub_api_key)
+    alpaca_configured = _credential_available(environment.require_alpaca_credentials)
+
+    freshness: ProviderFreshnessEvidence | None = None
+    provider_error: str | None = None
+    if polygon_configured and alpaca_configured:
+        try:
+            freshness = _capture_provider_freshness(
+                environment=environment,
+                symbol=symbol,
+            )
+        except (
+            OSError,
+            RuntimeConfigurationError,
+            ValidationError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            provider_error = _safe_audit_error(error)
+    else:
+        provider_error = "required Polygon/Alpaca credentials are missing"
+
+    nbbo_entitlement_verified = False
+    nbbo_entitlement_detail = "Polygon credential is missing"
+    if polygon_configured:
+        try:
+            nbbo_entitlement_detail = _probe_polygon_nbbo_entitlement(
+                environment=environment,
+                calendar=calendar,
+                control_date=selected_date,
+                symbol=symbol,
+            )
+            nbbo_entitlement_verified = True
+        except (
+            OSError,
+            RuntimeConfigurationError,
+            ValidationError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            nbbo_entitlement_detail = _safe_audit_error(error)
+
+    latest_cycle = None
+    try:
+        latest_cycle = WorkflowWorkerStore(environment.data_lake_root).load_latest()
+    except (OSError, TypeError, ValueError, RuntimeError):
+        latest_cycle = None
+
+    bootstrap_count = 0
+    bootstrap_error: str | None = None
+    try:
+        discovered = DailyControlEvidenceDiscovery().discover(
+            calendar=calendar,
+            artifact_root=artifact_root,
+            control_date=selected_date,
+        )
+        bootstrap_count = len(discovered.replay_sources)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        bootstrap_error = _safe_audit_error(error)
+
+    report = OperationalReadinessEvaluator().evaluate(
+        calendar=calendar,
+        control_date=selected_date,
+        evaluated_at=evaluated_at,
+        minimum_calendar_sessions=minimum_calendar_sessions,
+        data_lake_root=environment.data_lake_root,
+        artifact_root=artifact_root,
+        inbox=inbox,
+        polygon_base_url=environment.polygon_base_url,
+        finnhub_base_url=environment.finnhub_base_url,
+        alpaca_base_url=environment.alpaca_trading_base_url,
+        polygon_credential_configured=polygon_configured,
+        finnhub_credential_configured=finnhub_configured,
+        alpaca_credentials_configured=alpaca_configured,
+        provider_freshness=freshness,
+        provider_probe_error=provider_error,
+        polygon_nbbo_entitlement_verified=nbbo_entitlement_verified,
+        polygon_nbbo_entitlement_detail=nbbo_entitlement_detail,
+        worker_id=worker_id,
+        latest_worker_cycle=latest_cycle,
+        maximum_heartbeat_age=timedelta(minutes=maximum_heartbeat_age_minutes),
+        bootstrap_source_count=bootstrap_count,
+        bootstrap_error=bootstrap_error,
+    )
+    try:
+        report.write(output)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="readiness output") from error
+    failed_checks = [item.name for item in report.checks if not item.passed]
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "evaluated_at": report.evaluated_at,
+            "ready": report.ready,
+            "failed_checks": failed_checks,
+            "provider_freshness_sha256": report.provider_freshness_sha256,
+            "latest_worker_cycle_sha256": report.latest_worker_cycle_sha256,
+        }
+    )
+    if not report.ready:
+        raise typer.Exit(code=1)
+
+
 @workflow_app.command("worker")
 def run_workflow_worker(
     inbox: Annotated[
@@ -3090,6 +3269,19 @@ def _required_key(getter: Callable[[], str]) -> str:
         return getter()
     except RuntimeConfigurationError as error:
         raise typer.BadParameter(str(error), param_hint="environment") from error
+
+
+def _credential_available(getter: Callable[[], object]) -> bool:
+    try:
+        getter()
+    except RuntimeConfigurationError:
+        return False
+    return True
+
+
+def _safe_audit_error(error: Exception) -> str:
+    message = str(error).strip()
+    return f"{type(error).__name__}: {message or 'operation failed'}"[:500]
 
 
 def _parse_date(value: str, *, option: str) -> date:

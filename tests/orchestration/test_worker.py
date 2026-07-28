@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from quant_earning_edge.cli import app
 from quant_earning_edge.orchestration import (
     QeeCommandResult,
+    WorkerCycleReport,
     WorkflowInboxWorker,
     WorkflowStage,
 )
@@ -87,6 +88,7 @@ def test_worker_completes_inbox_and_persists_cycle_report(tmp_path: Path) -> Non
     assert report.all_complete
     assert report.results[0].trade_date == "2026-07-28"
     assert report_path.exists()
+    assert WorkerCycleReport.load(report_path) == report
     assert json.loads(report_path.read_bytes())["worker_id"] == "inbox-worker"
 
 

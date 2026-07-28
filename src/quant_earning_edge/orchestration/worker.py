@@ -34,6 +34,12 @@ class WorkerSpecResult:
     error_type: str | None
     error_message: str | None
 
+    def __post_init__(self) -> None:
+        if not self.spec_path.strip() or not _is_sha256(self.spec_sha256):
+            raise ValueError("worker spec result identity is invalid")
+        if self.complete and (self.error_type is not None or self.error_message is not None):
+            raise ValueError("complete worker result cannot retain an error")
+
 
 @dataclass(frozen=True)
 class WorkerCycleReport:
@@ -44,6 +50,15 @@ class WorkerCycleReport:
     evaluated_at: datetime
     inbox_path: str
     results: tuple[WorkerSpecResult, ...]
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1 or not self.worker_id.strip() or not self.inbox_path.strip():
+            raise ValueError("worker cycle identity is invalid")
+        if self.evaluated_at.tzinfo is None or self.evaluated_at.utcoffset() is None:
+            raise ValueError("worker cycle time must be timezone-aware")
+        spec_paths = tuple(item.spec_path for item in self.results)
+        if spec_paths != tuple(sorted(set(spec_paths))):
+            raise ValueError("worker cycle results must be unique and sorted")
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -61,6 +76,40 @@ class WorkerCycleReport:
     @property
     def all_complete(self) -> bool:
         return all(item.complete for item in self.results)
+
+    @classmethod
+    def load(cls, path: Path) -> WorkerCycleReport:
+        """Strictly reload one canonical worker heartbeat."""
+        try:
+            raw = json.loads(path.read_bytes())
+            allowed = {
+                "schema_version",
+                "worker_id",
+                "evaluated_at",
+                "inbox_path",
+                "results",
+            }
+            if not isinstance(raw, dict) or set(raw) != allowed:
+                raise ValueError("worker cycle fields are invalid")
+            raw_results = raw["results"]
+            if not isinstance(raw_results, list):
+                raise ValueError("worker cycle results are invalid")
+            report = cls(
+                schema_version=int(raw["schema_version"]),
+                worker_id=str(raw["worker_id"]),
+                evaluated_at=datetime.fromisoformat(str(raw["evaluated_at"])),
+                inbox_path=str(raw["inbox_path"]),
+                results=tuple(
+                    WorkerSpecResult(**item) for item in raw_results if isinstance(item, dict)
+                ),
+            )
+            if len(report.results) != len(raw_results):
+                raise ValueError("worker cycle result is invalid")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid workflow worker cycle: {path}") from error
+        if json.loads(report.canonical_bytes) != raw:
+            raise ValueError("workflow worker cycle is not canonical")
+        return report
 
 
 class WorkflowWorkerStore:
@@ -80,6 +129,11 @@ class WorkflowWorkerStore:
             if path.read_bytes() != report.canonical_bytes:
                 raise RuntimeError(f"workflow worker cycle collision at {path}") from None
         return path
+
+    def load_latest(self) -> WorkerCycleReport | None:
+        """Load the newest canonical worker heartbeat, if one exists."""
+        paths = tuple(sorted(self._root.glob("cycle-*.json")))
+        return WorkerCycleReport.load(paths[-1]) if paths else None
 
 
 class WorkflowInboxWorker:
@@ -159,3 +213,7 @@ class WorkflowInboxWorker:
                 error_type=type(error).__name__,
                 error_message=(str(error).strip() or "workflow spec failed")[:1000],
             )
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(item in "0123456789abcdef" for item in value)

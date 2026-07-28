@@ -933,6 +933,28 @@ uv run qee workflow worker `
   --poll-seconds 10
 ```
 
+Before starting a real unattended proof, run the fail-closed deployment audit:
+
+```powershell
+uv run qee workflow audit-readiness `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --control-date 2026-07-29 `
+  --artifact-root .\workflow-artifacts `
+  --inbox .\workflow-inbox `
+  --worker-id paper-worker-1 `
+  --output .\controls\2026-07-29-readiness.json
+```
+
+The immutable report contains no credential values. It requires configured
+Polygon, Finnhub, and Alpaca credentials; exact Polygon and Alpaca paper hosts;
+a live provider-clock/snapshot probe; successful historical Polygon NBBO access
+with at least one quote; at least 90 authoritative calendar sessions; writable
+data, artifact, and inbox roots; a recent heartbeat from the expected worker;
+and a complete prior frozen/replay bootstrap pair. It exits `1` and records
+every failed check until all prerequisites pass. Include at least one
+authoritative pre-proof bootstrap session in the calendar so the first proof
+day has prior control evidence.
+
 Use `--once` for a deployment smoke test. Every scan writes a
 content-addressed heartbeat under `manifests/job=workflow-worker/cycles`,
 including empty inboxes and invalid specifications. A bad spec is reported

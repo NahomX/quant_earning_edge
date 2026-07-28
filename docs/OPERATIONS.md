@@ -609,3 +609,32 @@ uv run qee paper reconcile `
 The command exits `1` for identity, quantity, or non-terminal-order breaks.
 Paper-versus-replay price divergence is diagnostic only; Alpaca paper P&L is
 explicitly prohibited from entering the strategy proof gate.
+
+## Inspect the restart-safe daily workflow
+
+Initialize one append-only state chain for an authoritative trade date:
+
+```powershell
+uv run qee workflow initialize `
+  --trade-date 2026-07-28
+```
+
+Initialization is idempotent. Inspect the current stage at any time:
+
+```powershell
+uv run qee workflow status `
+  --trade-date 2026-07-28
+```
+
+Status exits `1` until all required stages have succeeded and every recorded
+artifact still matches its captured SHA-256 digest. It reports the current
+stage, retry count, worker ID, and lease expiry. State revisions are append-only
+under `manifests/job=daily-paper-workflow/trade_date=<date>` and form a verified
+hash chain.
+
+The in-process runner loops through these mandatory stages in order: freeze
+inputs, generate the order plan, evaluate breakers, submit paper orders,
+capture market events, replay orders, reconcile the session, and evaluate Phase
+6 progress. A worker crash leaves a lease; another worker can reclaim the same
+stage only after expiry. A stage cannot succeed without at least one immutable
+output artifact, so a missing step cannot be silently marked complete.

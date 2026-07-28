@@ -74,6 +74,11 @@ from quant_earning_edge.monitoring import (
     CircuitBreakerEvaluationSpec,
     CircuitBreakerEvaluator,
 )
+from quant_earning_edge.orchestration import (
+    DailyWorkflowState,
+    DailyWorkflowStore,
+    StageStatus,
+)
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
     PortfolioConfig,
@@ -119,6 +124,7 @@ model_app = typer.Typer(no_args_is_help=True, help="Train deterministic signal m
 evaluation_app = typer.Typer(no_args_is_help=True, help="Aggregate strategy gate evidence.")
 monitoring_app = typer.Typer(no_args_is_help=True, help="Evaluate operational safety gates.")
 paper_app = typer.Typer(no_args_is_help=True, help="Operate the isolated Alpaca paper account.")
+workflow_app = typer.Typer(no_args_is_help=True, help="Inspect restart-safe daily workflow state.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
@@ -131,6 +137,7 @@ app.add_typer(model_app, name="model")
 app.add_typer(evaluation_app, name="evaluation")
 app.add_typer(monitoring_app, name="monitoring")
 app.add_typer(paper_app, name="paper")
+app.add_typer(workflow_app, name="workflow")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -1062,6 +1069,82 @@ def reconcile_paper_orders(
         }
     )
     if report.reconciliation_break_count:
+        raise typer.Exit(code=1)
+
+
+@workflow_app.command("initialize")
+def initialize_daily_workflow(
+    trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Create the initial append-only workflow revision if it does not exist."""
+    selected_date = _parse_date(trade_date, option="--trade-date")
+    environment = _environment(env_file)
+    store = DailyWorkflowStore(environment.data_lake_root)
+    state = store.load_latest(selected_date)
+    created = state is None
+    if state is None:
+        state = store.write(
+            DailyWorkflowState.initialize(
+                trade_date=selected_date,
+                now=datetime.now(UTC),
+            )
+        )
+    _echo_json(
+        {
+            "trade_date": state.trade_date,
+            "created": created,
+            "revision": state.revision,
+            "sha256": state.sha256,
+            "complete": state.complete,
+        }
+    )
+
+
+@workflow_app.command("status")
+def daily_workflow_status(
+    trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Report the latest verified revision and the stage requiring attention."""
+    selected_date = _parse_date(trade_date, option="--trade-date")
+    environment = _environment(env_file)
+    state = DailyWorkflowStore(environment.data_lake_root).load_latest(selected_date)
+    if state is None:
+        _echo_json(
+            {
+                "trade_date": selected_date,
+                "initialized": False,
+                "complete": False,
+            }
+        )
+        raise typer.Exit(code=1)
+    artifact_error: str | None = None
+    try:
+        state.verify_artifacts()
+    except ValueError as error:
+        artifact_error = str(error)
+    current = next(
+        (record for record in state.stages if record.status is not StageStatus.SUCCEEDED),
+        None,
+    )
+    _echo_json(
+        {
+            "trade_date": state.trade_date,
+            "initialized": True,
+            "revision": state.revision,
+            "sha256": state.sha256,
+            "complete": state.complete,
+            "artifacts_intact": artifact_error is None,
+            "artifact_error": artifact_error,
+            "current_stage": current.stage if current else None,
+            "current_status": current.status if current else None,
+            "attempts": current.attempts if current else None,
+            "worker_id": current.worker_id if current else None,
+            "lease_expires_at": current.lease_expires_at if current else None,
+        }
+    )
+    if not state.complete or artifact_error is not None:
         raise typer.Exit(code=1)
 
 

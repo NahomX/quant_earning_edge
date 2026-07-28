@@ -75,6 +75,8 @@ reproducible through `uv.lock`.
 | Immutable paper submission/reconciliation evidence | Complete | CLI records, exact paper/replay identity checks, non-gating divergence |
 | Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts |
 | Fail-closed paper submission boundary | Complete | fresh non-halted breaker decision required before any broker request |
+| Restart-safe daily workflow state machine | Complete | ordered stages, leases, retries, hash-chained revisions, artifact verification |
+| In-process workflow advancement loop | Complete | advances until complete/leased/failed and durably records every transition |
 
 ## Phase 1 exit gate
 
@@ -105,11 +107,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add the restart-safe daily workflow state machine that connects frozen inputs,
-order planning, breaker evaluation, paper submission, market-event replay, and
-after-close reconciliation without silently skipping a stage. Then add
-unattended-loop health evidence and deployment packaging. After credentialed
-historical/strategy gates pass, begin the real 90-session run.
+Connect concrete stage handlers for frozen inputs, order planning, breaker
+evaluation, paper submission, market-event replay, and after-close
+reconciliation to the restart-safe loop. Then add unattended-loop health
+evidence and deployment packaging. After credentialed historical/strategy gates
+pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

@@ -44,6 +44,7 @@ src/quant_earning_edge/
   evaluation/   metrics, bootstrap CI, tearsheets
   live/         Alpaca paper executor + reconciliation
   monitoring/   drift detection, circuit breakers
+  orchestration/restart-safe daily workflow loop + append-only state
 configs/        YAML strategy/universe configs (pydantic-validated)
 tests/property/ no-lookahead + no-future-read property tests (block PRs)
 ops/            Prefect flows, deploy scripts

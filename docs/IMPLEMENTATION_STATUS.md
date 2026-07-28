@@ -5,7 +5,7 @@ implementation state, not intended or assumed progress.
 
 ## Current phase
 
-**Phase 1 operational proof pending; Phase 2 feature store in progress**
+**Phase 1 operational proof pending; Phase 2 code gate complete**
 
 Phase 0 repository hygiene is complete. The local Python 3.12 environment is
 reproducible through `uv.lock`.
@@ -21,6 +21,7 @@ reproducible through `uv.lock`.
 | DuckDB connection/query boundary | Complete | `data/store.py`, persistence test |
 | Finnhub earnings client and retry/rate-limit handling | Complete | `data/clients/finnhub.py`, contract tests |
 | Polygon aggregate-bars client and pagination | Complete | `data/clients/polygon.py`, contract tests |
+| Polygon pre-market minute aggregates | Complete | adjusted minute client/silver schema/cutoff tests |
 | Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
 | US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
@@ -37,7 +38,7 @@ reproducible through `uv.lock`.
 | Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
 | Credential-safe CLI and validated universe config | Complete | `cli.py`, `runtime.py`, CLI/config tests |
 | Typed feature registry with code hashes and PIT input boundary | Complete | `features/registry.py`, active property tests |
-| Baseline causal feature set | 15 of 15 complete | price, Kalman volume, momentum, and earnings-event features |
+| Baseline causal feature set | 16 scalar features complete | price, gap, Kalman volume, momentum, and earnings-event features |
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
 | Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, explicit-offset tests |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
@@ -57,9 +58,21 @@ Phase 1 is complete only when:
 Items 6–7 require valid provider access and elapsed observation time. They must
 not be marked complete from fixtures or synthetic data.
 
+## Phase 2 code gate
+
+The documented registry, monthly gold persistence, scalar baseline feature set,
+and D+1/D+5 label maker are implemented. Every one of the 16 registered scalar
+features runs through the non-vacuous property suite with 30 generated histories:
+the value and PIT input lineage must remain exactly equal after future daily
+bars, earnings events, and pre-market observations are appended. Training
+assembly independently rejects any feature computed at or after target open.
+
+This proves the code-level no-lookahead contract. It does not prove five-year
+data completeness or strategy performance.
+
 ## Next implementation slice
 
-Add the remaining documented baseline gap feature using pre-market observations,
-then close Phase 2 with a requirement-by-requirement gate audit. Credentialed
-calendar, backfill, and five-session unattended execution remain pending. Those
-operational gates cannot be replaced by fixtures.
+Begin Phase 3 with leakage-safe temporal splits, deterministic baseline-signal
+interfaces, and the documented cost model. Credentialed calendar, backfill, and
+five-session unattended execution remain pending. Those operational gates
+cannot be replaced by fixtures.

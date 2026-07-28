@@ -17,12 +17,34 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from quant_earning_edge.data.clients.finnhub import EarningsEvent
-    from quant_earning_edge.data.clients.polygon import CashDividend, EquityBar, StockSplit
+    from quant_earning_edge.data.clients.polygon import (
+        CashDividend,
+        EquityBar,
+        MinuteBar,
+        StockSplit,
+    )
     from quant_earning_edge.data.layout import LakehouseLayout
 
 DAILY_BARS_SCHEMA = pa.schema(
     [
         pa.field("session_date", pa.date32(), nullable=False),
+        pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("open", pa.float64(), nullable=False),
+        pa.field("high", pa.float64(), nullable=False),
+        pa.field("low", pa.float64(), nullable=False),
+        pa.field("close", pa.float64(), nullable=False),
+        pa.field("volume", pa.float64(), nullable=False),
+        pa.field("vwap", pa.float64()),
+        pa.field("transactions", pa.int64()),
+        pa.field("adjusted", pa.bool_(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+MINUTE_BARS_SCHEMA = pa.schema(
+    [
         pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
         pa.field("symbol", pa.string(), nullable=False),
         pa.field("open", pa.float64(), nullable=False),
@@ -176,6 +198,45 @@ class SilverWriter:
                 ingested_at=observed_at,
             )
             for execution_date, partition_events in sorted(grouped.items())
+        )
+
+    def write_minute_bars(
+        self,
+        bars: tuple[MinuteBar, ...],
+        *,
+        event_date: date,
+        ingested_at: datetime | None = None,
+    ) -> SilverArtifact:
+        """Write one immutable minute-bar file for an explicit market date."""
+        observed_at = self._observed_at(ingested_at)
+        records = [
+            {
+                "timestamp": bar.timestamp.astimezone(UTC),
+                "symbol": bar.symbol,
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume,
+                "vwap": bar.vwap,
+                "transactions": bar.transactions,
+                "adjusted": bar.adjusted,
+                "source": "polygon",
+                "ingested_at": observed_at,
+            }
+            for bar in sorted(bars, key=lambda item: (item.symbol, item.timestamp))
+        ]
+        if not records:
+            raise ValueError("minute-bar artifact must not be empty")
+        return self._write_table(
+            partition=self._layout.silver(
+                asset_class="us-equity",
+                dataset="minute-bars",
+                event_date=event_date,
+            ),
+            digest=_records_digest(records),
+            records=records,
+            schema=MINUTE_BARS_SCHEMA,
         )
 
     def write_dividends(

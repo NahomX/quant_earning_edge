@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from hypothesis import given, settings
@@ -14,6 +14,7 @@ from quant_earning_edge.features import (
     EarningsObservation,
     FeatureContext,
     FeatureSpec,
+    PremarketObservation,
     PriceBar,
 )
 
@@ -58,6 +59,18 @@ def test_feature_is_point_in_time(
     cutoff_index = 255
     asof_date = bars[cutoff_index].session_date
     target_date = asof_date + timedelta(days=1)
+    observed_at = datetime.combine(
+        target_date,
+        datetime.min.time(),
+        tzinfo=UTC,
+    ) + timedelta(hours=13, minutes=25)
+    known_premarket = (
+        PremarketObservation(
+            trade_date=target_date,
+            timestamp=observed_at - timedelta(minutes=5),
+            close=bars[cutoff_index].close * 1.01,
+        ),
+    )
     known_earnings = (
         EarningsObservation(
             event_date=target_date - timedelta(days=90),
@@ -77,13 +90,16 @@ def test_feature_is_point_in_time(
         asof_date=asof_date,
         bars=tuple(bars[: cutoff_index + 1]),
         target_date=target_date,
+        observed_at=observed_at,
         earnings=known_earnings,
+        premarket=known_premarket,
     )
     with_future = FeatureContext(
         symbol="AAPL",
         asof_date=asof_date,
         bars=tuple(bars),
         target_date=target_date,
+        observed_at=observed_at,
         earnings=(
             *known_earnings,
             EarningsObservation(
@@ -92,6 +108,14 @@ def test_feature_is_point_in_time(
                 timing="bmo",
                 eps_actual=9.0,
                 eps_estimate=1.0,
+            ),
+        ),
+        premarket=(
+            *known_premarket,
+            PremarketObservation(
+                trade_date=target_date,
+                timestamp=observed_at + timedelta(minutes=1),
+                close=bars[cutoff_index].close * 5,
             ),
         ),
     )

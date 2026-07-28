@@ -9,8 +9,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from quant_earning_edge.data import LakehouseLayout, SilverWriter
-from quant_earning_edge.data.clients import EarningsEvent, EquityBar
+from quant_earning_edge.data import MINUTE_BARS_SCHEMA, LakehouseLayout, SilverWriter
+from quant_earning_edge.data.clients import EarningsEvent, EquityBar, MinuteBar
 from quant_earning_edge.features import (
     FEATURE_REGISTRY,
     FEATURE_VALUE_SCHEMA,
@@ -21,6 +21,7 @@ from quant_earning_edge.features import (
     FeatureEngine,
     FeatureStore,
     InsufficientHistoryError,
+    PremarketFeatureLoader,
     PriceBar,
 )
 
@@ -49,7 +50,7 @@ def _context(*, include_future: bool = False) -> FeatureContext:
 def test_registry_has_real_metadata_and_fifteen_baseline_features() -> None:
     specs = FEATURE_REGISTRY.values()
 
-    assert len(specs) == 15
+    assert len(specs) == 16
     assert {item.name for item in specs} == {
         "days_since_last_earnings",
         "distance_to_vwap_20d",
@@ -59,6 +60,7 @@ def test_registry_has_real_metadata_and_fifteen_baseline_features() -> None:
         "kalman_volume_7d",
         "macd_signal_12_26_9",
         "prior_eps_surprise_pct",
+        "premarket_gap_pct",
         "realized_vol_20d",
         "realized_vol_60d",
         "relative_volume_30d",
@@ -310,3 +312,59 @@ def test_earnings_loader_uses_candidate_timing_and_only_prior_known_results(
     assert len(enriched.earnings) == 2
     assert enriched.earnings[-1].eps_actual is None
     assert FEATURE_REGISTRY.get("prior_eps_surprise_pct").evaluate(enriched) == pytest.approx(0.2)
+
+
+def test_premarket_loader_excludes_incomplete_cutoff_minute_and_computes_gap(
+    tmp_path: Path,
+) -> None:
+    target_date = date(2026, 7, 28)
+    cutoff = datetime(2026, 7, 28, 13, 25, tzinfo=UTC)
+    minute_bars = (
+        MinuteBar(
+            symbol="AAPL",
+            timestamp=cutoff - timedelta(minutes=5),
+            open=101,
+            high=103,
+            low=100,
+            close=102,
+            volume=10_000,
+            adjusted=True,
+        ),
+        MinuteBar(
+            symbol="AAPL",
+            timestamp=cutoff,
+            open=150,
+            high=151,
+            low=149,
+            close=150,
+            volume=10_000,
+            adjusted=True,
+        ),
+    )
+    artifact = SilverWriter(LakehouseLayout(tmp_path)).write_minute_bars(
+        minute_bars,
+        event_date=target_date,
+        ingested_at=cutoff,
+    )
+    assert artifact.schema == MINUTE_BARS_SCHEMA
+    context = FeatureContext(
+        symbol="AAPL",
+        asof_date=target_date - timedelta(days=1),
+        bars=(
+            PriceBar(
+                session_date=target_date - timedelta(days=1),
+                close=100,
+                volume=1_000_000,
+            ),
+        ),
+    )
+
+    enriched = PremarketFeatureLoader().enrich(
+        (context,),
+        minute_files=(artifact.path,),
+        target_date=target_date,
+        observed_at=cutoff,
+    )[0]
+
+    assert len(enriched.premarket) == 1
+    assert FEATURE_REGISTRY.get("premarket_gap_pct").evaluate(enriched) == pytest.approx(0.02)

@@ -19,6 +19,11 @@ The committed universe thresholds live in `configs/universe/default.yaml`.
 uv run qee ingest earnings --start 2026-07-01 --end 2026-07-31
 uv run qee ingest bars --symbol AAPL --start 2021-07-01 --end 2026-07-31
 uv run qee ingest corporate-actions --start 2021-07-01 --end 2026-07-31
+uv run qee ingest minute-bars `
+  --symbol AAPL `
+  --start-at 2026-07-28T04:00:00-04:00 `
+  --end-at 2026-07-28T09:25:00-04:00 `
+  --event-date 2026-07-28
 ```
 
 These commands write the raw response to bronze before writing validated,
@@ -38,10 +43,11 @@ schema and expose stable SQL names:
 uv run qee data register-views --database .\data\research.duckdb
 ```
 
-The default requires all four datasets and creates `silver_daily_bars`,
+The default requires all five datasets and creates `silver_daily_bars`,
 `silver_earnings_events`, `silver_stock_splits`, and
-`silver_cash_dividends`. Use repeated `--dataset` options to register a strict
-subset. Missing datasets and schema drift fail before a view is replaced.
+`silver_cash_dividends`, plus `silver_minute_bars`. Use repeated `--dataset`
+options to register a strict subset. Missing datasets and schema drift fail
+before a view is replaced.
 
 ## Compute point-in-time price features
 
@@ -77,6 +83,12 @@ Event features additionally require repeatable `--candidate-file` and
 prior-close feature boundary; `--target-date` is the next trading session. The
 current event contributes timing only; reported EPS is read exclusively from
 earlier events observed by the cutoff.
+
+For `premarket_gap_pct`, also repeat `--minute-file` with the target-date
+minute-bar artifact and provide `--target-date`. The loader uses only bars whose
+full one-minute window completed by `--observed-at`; an aggregate beginning at
+the cutoff is excluded as incomplete. The feature is the latest completed
+pre-market close divided by the frozen prior close, minus one.
 
 ## Materialize forward labels and training data
 

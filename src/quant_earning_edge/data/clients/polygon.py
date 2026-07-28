@@ -58,6 +58,36 @@ class EquityBar(BaseModel):
         return self.timestamp.astimezone(_MARKET_TIMEZONE).date()
 
 
+class MinuteBar(BaseModel):
+    """Validated split-adjusted one-minute stock aggregate."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1)
+    timestamp: datetime
+    open: float = Field(gt=0)
+    high: float = Field(gt=0)
+    low: float = Field(gt=0)
+    close: float = Field(gt=0)
+    volume: float = Field(ge=0)
+    vwap: float | None = Field(default=None, gt=0)
+    transactions: int | None = Field(default=None, ge=0)
+    adjusted: bool
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> MinuteBar:
+        """Require a timezone-aware timestamp and valid OHLC envelope."""
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        if self.low > self.high or not self.low <= self.open <= self.high:
+            raise ValueError("invalid minute-bar open/high/low")
+        if not self.low <= self.close <= self.high:
+            raise ValueError("invalid minute-bar close/high/low")
+        if not self.adjusted:
+            raise ValueError("minute bar must be split-adjusted")
+        return self
+
+
 class TickerDetails(BaseModel):
     """Point-in-time security metadata used by universe construction."""
 
@@ -376,6 +406,80 @@ class PolygonClient:
             market_cap=details.market_cap,
             list_date=details.list_date,
             delisted_date=details.delisted_date,
+        )
+
+    def minute_bars(
+        self,
+        *,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> tuple[MinuteBar, ...]:
+        """Fetch split-adjusted minute aggregates over an aware timestamp interval."""
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be empty")
+        if any(value.tzinfo is None or value.utcoffset() is None for value in (start_at, end_at)):
+            raise ValueError("minute-bar interval timestamps must be timezone-aware")
+        start_utc = start_at.astimezone(UTC)
+        end_utc = end_at.astimezone(UTC)
+        if end_utc <= start_utc:
+            raise ValueError("end_at must be after start_at")
+        start_ms = int(start_utc.timestamp() * 1000)
+        end_ms = int(end_utc.timestamp() * 1000)
+        url = f"/v2/aggs/ticker/{normalized_symbol}/range/1/minute/{start_ms}/{end_ms}"
+        params: dict[str, str] | None = {
+            "adjusted": "true",
+            "sort": "asc",
+            "limit": "50000",
+        }
+        bars: list[MinuteBar] = []
+        timestamps: set[datetime] = set()
+        for _page_number in range(1, self._max_pages + 1):
+            response = self._request(url=url, params=params)
+            raw = self._decode_json(response)
+            if self._bronze_writer is not None:
+                self._bronze_writer.write_json(
+                    raw,
+                    source="polygon",
+                    dataset="minute-aggregate-bars",
+                    event_date=start_utc.astimezone(_MARKET_TIMEZONE).date(),
+                )
+            page = self._validate_page(raw, expected_symbol=normalized_symbol)
+            for aggregate in page.results:
+                timestamp = datetime.fromtimestamp(aggregate.timestamp_ms / 1000, tz=UTC)
+                if timestamp in timestamps:
+                    raise ProviderResponseError(
+                        f"Polygon returned duplicate minute timestamp: {timestamp.isoformat()}"
+                    )
+                if not start_utc <= timestamp <= end_utc:
+                    raise ProviderResponseError("Polygon returned a minute bar out of range")
+                timestamps.add(timestamp)
+                try:
+                    bars.append(
+                        MinuteBar(
+                            symbol=normalized_symbol,
+                            timestamp=timestamp,
+                            open=aggregate.open,
+                            high=aggregate.high,
+                            low=aggregate.low,
+                            close=aggregate.close,
+                            volume=aggregate.volume,
+                            vwap=aggregate.vwap,
+                            transactions=aggregate.transactions,
+                            adjusted=page.adjusted,
+                        )
+                    )
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon minute aggregate failed validation: {error}"
+                    ) from error
+            if page.next_url is None:
+                return tuple(sorted(bars, key=lambda item: item.timestamp))
+            url = self._validated_next_url(page.next_url)
+            params = None
+        raise ProviderResponseError(
+            f"Polygon minute pagination exceeded max_pages={self._max_pages}"
         )
 
     def list_tickers(

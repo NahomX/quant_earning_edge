@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import pyarrow.parquet as pq
@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 from quant_earning_edge.features.registry import (
     EarningsObservation,
     FeatureContext,
+    PremarketObservation,
     PriceBar,
 )
 
@@ -89,6 +90,7 @@ class DailyBarsFeatureLoader:
                         )
                         for row in rows
                     ),
+                    observed_at=cutoff,
                 )
             )
         return tuple(contexts)
@@ -170,7 +172,9 @@ class EarningsFeatureLoader:
                     asof_date=context.asof_date,
                     bars=context.bars,
                     target_date=target_date,
+                    observed_at=context.observed_at,
                     earnings=observations,
+                    premarket=context.premarket,
                 )
             )
         return tuple(enriched)
@@ -228,6 +232,77 @@ class EarningsFeatureLoader:
             symbol: tuple(sorted(rows, key=lambda row: row["event_date"]))
             for symbol, rows in grouped.items()
         }
+
+
+class PremarketFeatureLoader:
+    """Attach only completed target-date minute bars known at the cutoff."""
+
+    _REQUIRED: ClassVar[set[str]] = {
+        "timestamp",
+        "symbol",
+        "close",
+        "ingested_at",
+    }
+
+    def enrich(
+        self,
+        contexts: Sequence[FeatureContext],
+        *,
+        minute_files: Sequence[Path],
+        target_date: date,
+        observed_at: datetime,
+    ) -> tuple[FeatureContext, ...]:
+        """Resolve revisions and exclude any incomplete cutoff minute."""
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        if not minute_files:
+            raise ValueError("minute-bar files are required")
+        cutoff = observed_at.astimezone(UTC)
+        latest: dict[tuple[str, datetime], dict[str, Any]] = {}
+        for path in sorted(minute_files):
+            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            if not self._REQUIRED.issubset(table.column_names):
+                raise ValueError(f"minute-bars file is missing required columns: {path}")
+            for row in table.select(sorted(self._REQUIRED)).to_pylist():
+                timestamp = row["timestamp"].astimezone(UTC)
+                if timestamp + timedelta(minutes=1) > cutoff or row["ingested_at"] > cutoff:
+                    continue
+                key = (str(row["symbol"]).strip().upper(), timestamp)
+                previous = latest.get(key)
+                if previous is None or previous["ingested_at"] < row["ingested_at"]:
+                    latest[key] = row
+                elif previous["ingested_at"] == row["ingested_at"] and previous != row:
+                    raise ValueError(f"conflicting minute-bar revisions for {key}")
+        enriched: list[FeatureContext] = []
+        for context in contexts:
+            if target_date <= context.asof_date:
+                raise ValueError("target_date must be after feature asof_date")
+            observations = tuple(
+                PremarketObservation(
+                    trade_date=target_date,
+                    timestamp=timestamp,
+                    close=float(row["close"]),
+                )
+                for (symbol, timestamp), row in sorted(
+                    latest.items(),
+                    key=lambda item: item[0][1],
+                )
+                if symbol == context.symbol
+            )
+            if not observations:
+                raise ValueError(f"no completed premarket minute bars for {context.symbol}")
+            enriched.append(
+                FeatureContext(
+                    symbol=context.symbol,
+                    asof_date=context.asof_date,
+                    bars=context.bars,
+                    target_date=target_date,
+                    observed_at=cutoff,
+                    earnings=context.earnings,
+                    premarket=observations,
+                )
+            )
+        return tuple(enriched)
 
 
 def _parse_timing(value: object) -> Literal["bmo", "amc", "dmh"]:

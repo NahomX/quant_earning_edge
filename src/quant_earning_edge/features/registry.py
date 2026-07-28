@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from datetime import date
+    from datetime import date, datetime
 
 UpdateCadence = Literal["daily", "intraday", "event-driven"]
 _FEATURE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -61,6 +61,21 @@ class EarningsObservation:
 
 
 @dataclass(frozen=True)
+class PremarketObservation:
+    """Completed pre-market minute close available at a decision cutoff."""
+
+    trade_date: date
+    timestamp: datetime
+    close: float
+
+    def __post_init__(self) -> None:
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("premarket timestamp must be timezone-aware")
+        if not math.isfinite(self.close) or self.close <= 0:
+            raise ValueError("premarket close must be finite and positive")
+
+
+@dataclass(frozen=True)
 class FeatureContext:
     """All observations plus the date boundary a feature is allowed to see."""
 
@@ -68,7 +83,9 @@ class FeatureContext:
     asof_date: date
     bars: tuple[PriceBar, ...]
     target_date: date | None = None
+    observed_at: datetime | None = None
     earnings: tuple[EarningsObservation, ...] = ()
+    premarket: tuple[PremarketObservation, ...] = ()
 
     def __post_init__(self) -> None:
         normalized = self.symbol.strip().upper()
@@ -77,6 +94,10 @@ class FeatureContext:
         object.__setattr__(self, "symbol", normalized)
         if self.target_date is not None and self.target_date <= self.asof_date:
             raise ValueError("target_date must be after asof_date")
+        if self.observed_at is not None and (
+            self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None
+        ):
+            raise ValueError("observed_at must be timezone-aware")
         dates = tuple(item.session_date for item in self.bars)
         if dates != tuple(sorted(set(dates))):
             raise ValueError("bars must have unique ascending session dates")
@@ -85,6 +106,9 @@ class FeatureContext:
         )
         if event_keys != tuple(sorted(set(event_keys))):
             raise ValueError("earnings observations must have unique ascending event keys")
+        premarket_keys = tuple(item.timestamp for item in self.premarket)
+        if premarket_keys != tuple(sorted(set(premarket_keys))):
+            raise ValueError("premarket observations must have unique ascending timestamps")
 
     def price_history(self, *, observations: int) -> tuple[PriceBar, ...]:
         """Return only the last N observations at or before ``asof_date``."""
@@ -101,6 +125,16 @@ class FeatureContext:
         """Return only events effective by the declared feature target."""
         boundary = self.target_date or self.asof_date
         return tuple(item for item in self.earnings if item.effective_trade_date <= boundary)
+
+    def premarket_history(self) -> tuple[PremarketObservation, ...]:
+        """Return target-date observations available before the explicit cutoff."""
+        if self.target_date is None or self.observed_at is None:
+            raise ValueError("premarket features require target_date and observed_at")
+        return tuple(
+            item
+            for item in self.premarket
+            if item.trade_date == self.target_date and item.timestamp < self.observed_at
+        )
 
 
 FeatureFunction = Callable[[FeatureContext], float]

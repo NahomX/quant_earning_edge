@@ -31,6 +31,7 @@ from quant_earning_edge.features import (
     EarningsFeatureLoader,
     FeatureEngine,
     FeatureStore,
+    PremarketFeatureLoader,
 )
 from quant_earning_edge.labels import (
     ForwardLabelMaker,
@@ -190,6 +191,15 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
             help="Gold event-candidate Parquet; required for event features.",
         ),
     ] = None,
+    minute_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--minute-file",
+            exists=True,
+            dir_okay=False,
+            help="Silver target-date minute bars; required for premarket gap.",
+        ),
+    ] = None,
     earnings_files: Annotated[
         list[Path] | None,
         typer.Option(
@@ -224,6 +234,18 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
         raise typer.BadParameter(
             "--candidate-file and --earnings-file must be supplied together",
             param_hint="event feature inputs",
+        )
+    if minute_files is not None:
+        if target_date is None:
+            raise typer.BadParameter(
+                "--target-date is required with minute-bar inputs",
+                param_hint="--target-date",
+            )
+        contexts = PremarketFeatureLoader().enrich(
+            contexts,
+            minute_files=minute_files,
+            target_date=_parse_date(target_date, option="--target-date"),
+            observed_at=cutoff,
         )
     if candidate_files is not None and earnings_files is not None:
         if target_date is None:
@@ -434,6 +456,45 @@ def ingest_bars(
             "symbol": result.symbol,
             "bar_count": result.bar_count,
             "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
+        }
+    )
+
+
+@ingest_app.command("minute-bars")
+def ingest_minute_bars(
+    symbol: Annotated[str, typer.Option(help="US-equity ticker.")],
+    start_at: Annotated[str, typer.Option(help="Offset-aware interval start.")],
+    end_at: Annotated[str, typer.Option(help="Offset-aware interval end.")],
+    event_date: Annotated[str, typer.Option(help="Market-date partition (YYYY-MM-DD).")],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Fetch adjusted Polygon minute aggregates into bronze and silver."""
+    environment = _environment(env_file)
+    api_key = _required_key(environment.require_polygon_api_key)
+    layout = LakehouseLayout(environment.data_lake_root)
+    partition_date = _parse_date(event_date, option="--event-date")
+    with httpx.Client(
+        base_url=environment.polygon_base_url,
+        timeout=environment.http_timeout_seconds,
+    ) as http_client:
+        bars = PolygonClient(
+            api_key=api_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        ).minute_bars(
+            symbol=symbol,
+            start_at=_parse_datetime(start_at, option="--start-at"),
+            end_at=_parse_datetime(end_at, option="--end-at"),
+        )
+    artifact = SilverWriter(layout).write_minute_bars(
+        bars,
+        event_date=partition_date,
+    )
+    _echo_json(
+        {
+            "path": str(artifact.path),
+            "sha256": artifact.sha256,
+            "row_count": artifact.row_count,
         }
     )
 

@@ -174,6 +174,7 @@ def _context_hash(context: FeatureContext) -> str:
             "symbol": context.symbol,
             "asof_date": context.asof_date,
             "target_date": context.target_date,
+            "observed_at": context.observed_at,
             "bars": known,
             "earnings": [
                 {
@@ -184,6 +185,14 @@ def _context_hash(context: FeatureContext) -> str:
                     "eps_estimate": item.eps_estimate,
                 }
                 for item in context.earnings_history()
+            ],
+            "premarket": [
+                {
+                    "trade_date": item.trade_date,
+                    "timestamp": item.timestamp,
+                    "close": item.close,
+                }
+                for item in (context.premarket_history() if context.premarket else ())
             ],
         }
     )

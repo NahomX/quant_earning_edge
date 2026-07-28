@@ -14,6 +14,7 @@ from quant_earning_edge.data.silver import (
     DAILY_BARS_SCHEMA,
     DIVIDENDS_SCHEMA,
     EARNINGS_SCHEMA,
+    MINUTE_BARS_SCHEMA,
     SPLITS_SCHEMA,
 )
 
@@ -30,6 +31,7 @@ class SilverDataset(StrEnum):
     EARNINGS_EVENTS = "earnings_events"
     STOCK_SPLITS = "stock_splits"
     CASH_DIVIDENDS = "cash_dividends"
+    MINUTE_BARS = "minute_bars"
 
 
 _SILVER_SPECS: dict[SilverDataset, tuple[str, pa.Schema]] = {
@@ -37,6 +39,7 @@ _SILVER_SPECS: dict[SilverDataset, tuple[str, pa.Schema]] = {
     SilverDataset.EARNINGS_EVENTS: ("earnings-events", EARNINGS_SCHEMA),
     SilverDataset.STOCK_SPLITS: ("stock-splits", SPLITS_SCHEMA),
     SilverDataset.CASH_DIVIDENDS: ("cash-dividends", DIVIDENDS_SCHEMA),
+    SilverDataset.MINUTE_BARS: ("minute-bars", MINUTE_BARS_SCHEMA),
 }
 
 

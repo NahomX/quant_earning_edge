@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from quant_earning_edge.backtest import NbboReplayEvidence
+    from quant_earning_edge.backtest import IntendedOrder, NbboReplayEvidence
 
 _MARKET_TIMEZONE = ZoneInfo("America/New_York")
 PositionSide = Literal["long", "short"]
@@ -234,6 +234,36 @@ class ReplaySessionReportSpec(_StrictSpec):
 
 class ReplaySessionAggregator:
     """Build daily metrics only when every evidence/order mapping is explicit."""
+
+    def evaluate_frozen_long_orders(
+        self,
+        *,
+        evidence: Sequence[NbboReplayEvidence],
+        intended_orders: Sequence[IntendedOrder],
+        session_date: date,
+        initial_cash: float,
+        commission_bps_per_side: float,
+    ) -> ReplaySessionReport:
+        """Verify frozen orders and derive their deterministic long lifecycles."""
+        intended_ids = tuple(item.order_id for item in intended_orders)
+        if intended_ids != tuple(sorted(set(intended_ids))):
+            raise ValueError("frozen intended order ids must be unique and sorted")
+        evidence_by_id = {item.result.order.order_id: item for item in evidence}
+        if len(evidence_by_id) != len(evidence) or set(evidence_by_id) != set(intended_ids):
+            raise ValueError("replay evidence does not exactly match frozen intended order ids")
+        intended_by_id = {item.order_id: item for item in intended_orders}
+        if any(
+            evidence_by_id[order_id].result.order != intended_by_id[order_id]
+            for order_id in intended_ids
+        ):
+            raise ValueError("replay evidence order fields differ from frozen intended orders")
+        return self.evaluate(
+            evidence=evidence,
+            round_trips=_frozen_long_round_trips(intended_orders),
+            session_date=session_date,
+            initial_cash=initial_cash,
+            commission_bps_per_side=commission_bps_per_side,
+        )
 
     def evaluate(
         self,
@@ -466,6 +496,40 @@ class ReplaySessionAggregator:
             expires_date = order.expires_at.astimezone(_MARKET_TIMEZONE).date()
             if submitted_date != session_date or expires_date != session_date:
                 raise ValueError("replay order window does not match session_date")
+
+
+def _frozen_long_round_trips(
+    intended_orders: Sequence[IntendedOrder],
+) -> tuple[ReplayRoundTrip, ...]:
+    grouped: dict[str, dict[str, IntendedOrder]] = {}
+    for order in intended_orders:
+        if order.order_id.endswith("-entry"):
+            trade_id = order.order_id.removesuffix("-entry")
+            leg = "entry"
+        elif order.order_id.endswith("-exit"):
+            trade_id = order.order_id.removesuffix("-exit")
+            leg = "exit"
+        else:
+            raise ValueError("frozen order id must end with '-entry' or '-exit'")
+        if not trade_id:
+            raise ValueError("frozen order id must contain a trade identity")
+        legs = grouped.setdefault(trade_id, {})
+        if leg in legs:
+            raise ValueError(f"frozen trade {trade_id} contains duplicate {leg} orders")
+        legs[leg] = order
+    round_trips: list[ReplayRoundTrip] = []
+    for trade_id, legs in sorted(grouped.items()):
+        if set(legs) != {"entry", "exit"}:
+            raise ValueError(f"frozen trade {trade_id} does not contain exactly two legs")
+        round_trips.append(
+            ReplayRoundTrip(
+                trade_id=trade_id,
+                entry_order_id=legs["entry"].order_id,
+                exit_order_id=legs["exit"].order_id,
+                side="long",
+            )
+        )
+    return tuple(round_trips)
 
 
 def _percentile(values: Sequence[float], probability: float) -> float | None:

@@ -671,8 +671,27 @@ capture market events, replay orders, reconcile the session, and evaluate Phase
 stage only after expiry. A stage cannot succeed without at least one immutable
 output artifact, so a missing step cannot be silently marked complete.
 
-To execute rather than only inspect the loop, provide a complete JSON run spec
-and run:
+Generate the complete eight-stage run spec from the four daily control inputs:
+
+```powershell
+uv run qee workflow generate `
+  --trade-date 2026-07-28 `
+  --planning-spec .\live-order-planning.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --breaker-spec .\circuit-breaker-input.json `
+  --phase6-spec .\phase6-proof.json `
+  --artifact-root .\workflow-artifacts `
+  --output .\workflow-inbox\2026-07-28.json `
+  --worker-id paper-worker-1
+```
+
+The Phase 6 input must include the deterministic daily report path
+`<artifact-root>/trade_date=<date>/replay-session.json`. The generator validates
+the planning/breaker dates and strategy schema, emits all eight stages in exact
+order, binds content-addressed quote/trade and replay outputs, and is
+write-once/idempotent. Secrets remain in the worker environment.
+
+To execute rather than only inspect the loop, run the generated spec:
 
 ```powershell
 uv run qee workflow run `
@@ -710,6 +729,12 @@ are passed directly to the current Python interpreter without a shell. API
 keys, tokens, passwords, and secrets are rejected as command arguments and must
 come from the runtime environment. Nonzero command exits become durable failed
 stages and are retried on the next loop invocation.
+
+The generated market-capture stage has a timezone-aware `not_before` boundary
+five minutes after the frozen exit expiry. While that boundary is in the
+future, a polling worker leaves the stage pending with zero attempts; it does
+not manufacture retry failures. Once ready, the same loop resumes
+automatically.
 
 Evaluate unattended readiness only against an authoritative calendar:
 
@@ -816,6 +841,21 @@ The strategy file must match the hash frozen with the orders. Silver files are
 grouped by their stored symbol rather than trusted filenames, and their symbol
 set must exactly match the selected portfolio.
 
+The generated workflow captures selected symbols without per-ticker operator
+commands:
+
+```powershell
+uv run qee ingest frozen-market-events `
+  --frozen-orders .\frozen-daily-orders.json `
+  --manifest-output .\frozen-market-events.json
+```
+
+It combines the entry and exit windows for each frozen symbol, refuses to read
+until five minutes after every order has expired, writes Polygon responses to
+bronze and exact quote/trade files to silver, and persists a manifest linked to
+the frozen-order hash. A no-trade artifact writes an empty manifest without
+provider credentials.
+
 Replay every spec in the resulting immutable manifest as one restart-safe
 batch:
 
@@ -832,6 +872,24 @@ identity, and SHA-256 digest before execution, and writes one immutable replay
 evidence file per sorted order plus a canonical evidence index. Repeating the
 same batch is idempotent; a changed spec or output collision fails closed. A
 no-trade manifest writes an empty evidence index.
+
+Finally, derive the daily Phase 6 lifecycle report without hand-authored
+entry/exit mappings:
+
+```powershell
+uv run qee evaluation replay-frozen-session `
+  --frozen-orders .\frozen-daily-orders.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --evidence-file .\replay-evidence\replay-evidence-entry.json `
+  --evidence-file .\replay-evidence\replay-evidence-exit.json `
+  --output .\replay-session.json
+```
+
+Each generated trade must contain exactly one `-entry` and one `-exit` order.
+The command verifies every replay order field against the frozen artifact,
+uses frozen portfolio equity and the hashed strategy commission, and fails
+closed on unmatched fills. Empty frozen orders produce explicit zero-return
+session evidence.
 
 Workflow command specs may consume content-addressed outputs through typed
 `artifact_bindings`. A binding names an earlier stage, a repeated long option,

@@ -377,10 +377,20 @@ class DailyWorkflowRunner:
                 f"runner trigger {self._trigger.value}"
             )
         while not state.complete:
+            pending_stage = next(
+                item.stage for item in state.stages if item.status is not StageStatus.SUCCEEDED
+            )
+            pending_handler = self._handlers.get(pending_stage)
+            claim_time = self._transition_time(state)
+            readiness = (
+                getattr(pending_handler, "is_ready", None) if pending_handler is not None else None
+            )
+            if callable(readiness) and not readiness(claim_time):
+                return state
             claimed = self._controller.claim_next(
                 state,
                 worker_id=self._worker_id,
-                now=self._clock(),
+                now=claim_time,
                 lease_duration=self._lease_duration,
             )
             if claimed is None:
@@ -396,7 +406,7 @@ class DailyWorkflowRunner:
                         worker_id=self._worker_id,
                         stage=stage,
                         error=error,
-                        now=self._clock(),
+                        now=self._transition_time(state),
                     )
                 )
                 return state
@@ -409,7 +419,7 @@ class DailyWorkflowRunner:
                         worker_id=self._worker_id,
                         stage=stage,
                         artifacts=artifacts,
-                        now=self._clock(),
+                        now=self._transition_time(state),
                     )
                 )
             except Exception as error:
@@ -419,11 +429,15 @@ class DailyWorkflowRunner:
                         worker_id=self._worker_id,
                         stage=stage,
                         error=error,
-                        now=self._clock(),
+                        now=self._transition_time(state),
                     )
                 )
                 return state
         return state
+
+    def _transition_time(self, state: DailyWorkflowState) -> datetime:
+        """Clamp wall-clock regressions to the append-only logical timeline."""
+        return max(self._clock(), state.updated_at)
 
 
 class DailyWorkflowStore:

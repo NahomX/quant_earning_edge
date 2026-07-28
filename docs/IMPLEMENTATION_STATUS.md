@@ -89,6 +89,10 @@ reproducible through `uv.lock`.
 | Frozen-order-to-replay linkage | Complete | strategy hash check, silver symbol grouping, direct causal materialization CLI |
 | Manifest-wide replay execution | Complete | canonical manifest reload, exact spec/hash verification, immutable evidence index, no-trade support |
 | Frozen-order broker reconciliation | Complete | exact replay/frozen field match, per-client-ID Alpaca fetch, automatic immutable report |
+| Frozen daily replay aggregation | Complete | deterministic entry/exit pairing, frozen equity, strategy commission, exact evidence match |
+| Frozen market-event batch capture | Complete | per-symbol full execution windows, post-expiry readiness gate, immutable capture manifest |
+| Complete daily workflow generation | Complete | one validated command emits all eight stages and dynamic artifact bindings |
+| Temporal workflow readiness | Complete | post-close stages remain pending without false attempts while the worker loop polls |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -120,11 +124,10 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Derive daily entry/exit lifecycle aggregation directly from frozen orders and
-the batch replay evidence index, then generate complete daily workflow run
-specifications so operators do not hand-author eight-stage JSON or
-content-addressed downstream paths. After credentialed historical/strategy
-gates pass, begin the real 90-session run.
+Automate rolling circuit-breaker observations plus Phase 6 aggregation/health
+inputs so the generated daily workflow needs only the causal planning input and
+strategy configuration. After credentialed historical/strategy gates pass,
+begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

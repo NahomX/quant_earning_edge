@@ -148,6 +148,28 @@ def test_handler_failure_is_durable_and_retried_on_next_run(tmp_path: Path) -> N
     assert recovered.stages[0].attempts == 2
 
 
+def test_runner_clamps_small_wall_clock_regressions(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 28, 1, 0, tzinfo=UTC)
+    calls = iter(
+        (
+            now,
+            now - timedelta(microseconds=1),
+            *(now - timedelta(microseconds=index + 2) for index in range(len(WorkflowStage) * 2)),
+        )
+    )
+    runner = DailyWorkflowRunner(
+        store=DailyWorkflowStore(tmp_path / "lake"),
+        handlers=_handlers(tmp_path),  # type: ignore[arg-type]
+        worker_id="worker",
+        clock=lambda: next(calls),
+    )
+
+    result = runner.run_until_idle(trade_date=date(2026, 7, 28))
+
+    assert result.complete
+    assert result.updated_at == now
+
+
 def test_tampered_artifact_cannot_complete_a_stage(tmp_path: Path) -> None:
     now = datetime(2026, 7, 28, 1, 0, tzinfo=UTC)
     controller = DailyWorkflowController()

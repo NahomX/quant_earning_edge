@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -16,9 +17,7 @@ from quant_earning_edge.evaluation import (
     ReplaySessionAggregator,
     ReplaySessionReport,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from quant_earning_edge.signals import FrozenDailyOrders, strategy_file_sha256
 
 
 def _evidence(
@@ -88,6 +87,25 @@ def _full_round_trip() -> tuple[NbboReplayEvidence, NbboReplayEvidence]:
         ),
         _evidence(
             order_id="exit",
+            side="sell",
+            submitted_at=datetime(2025, 1, 3, 20, 0, tzinfo=UTC),
+            bid=104.9,
+            ask=105.1,
+        ),
+    )
+
+
+def _frozen_round_trip() -> tuple[NbboReplayEvidence, NbboReplayEvidence]:
+    return (
+        _evidence(
+            order_id="earnings-trade-1-entry",
+            side="buy",
+            submitted_at=datetime(2025, 1, 3, 14, 30, tzinfo=UTC),
+            bid=99.9,
+            ask=100.1,
+        ),
+        _evidence(
+            order_id="earnings-trade-1-exit",
             side="sell",
             submitted_at=datetime(2025, 1, 3, 20, 0, tzinfo=UTC),
             bid=104.9,
@@ -183,6 +201,36 @@ def test_no_trade_day_is_valid_zero_return_uptime_evidence() -> None:
     assert report.net_return == 0
 
 
+def test_frozen_orders_derive_exact_long_round_trip() -> None:
+    evidence = _frozen_round_trip()
+
+    report = ReplaySessionAggregator().evaluate_frozen_long_orders(
+        evidence=evidence,
+        intended_orders=tuple(item.result.order for item in evidence),
+        session_date=date(2025, 1, 3),
+        initial_cash=100_000,
+        commission_bps_per_side=1,
+    )
+
+    assert report.reconciliation_break_count == 0
+    assert len(report.round_trips) == 1
+    assert report.round_trips[0].trade_id == "earnings-trade-1"
+    assert report.round_trips[0].side == "long"
+
+
+def test_frozen_session_rejects_non_lifecycle_order_id() -> None:
+    evidence = _full_round_trip()
+
+    with pytest.raises(ValueError, match="must end"):
+        ReplaySessionAggregator().evaluate_frozen_long_orders(
+            evidence=evidence,
+            intended_orders=tuple(item.result.order for item in evidence),
+            session_date=date(2025, 1, 3),
+            initial_cash=100_000,
+            commission_bps_per_side=1,
+        )
+
+
 def test_session_report_is_immutable_and_cli_reloads_evidence(tmp_path: Path) -> None:
     entry, exit_fill = _full_round_trip()
     entry_path = tmp_path / "entry.json"
@@ -250,3 +298,52 @@ def test_session_loader_rejects_tampered_reconciliation(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="invalid replay-session report"):
         ReplaySessionReport.load(output)
+
+
+def test_frozen_replay_session_cli_uses_frozen_equity_and_strategy_cost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _frozen_round_trip()
+    evidence_paths = []
+    for index, item in enumerate(evidence):
+        path = tmp_path / f"evidence-{index}.json"
+        item.write(path)
+        evidence_paths.append(path)
+    frozen_path = tmp_path / "frozen.json"
+    frozen_path.write_text("{}", encoding="utf-8")
+    strategy_path = Path(__file__).parents[2] / "configs/strategies/earnings_v1.yaml"
+    frozen = SimpleNamespace(
+        intended_orders=tuple(
+            SimpleNamespace(to_domain=lambda order=item.result.order: order) for item in evidence
+        ),
+        trade_date=date(2025, 1, 3),
+        portfolio=SimpleNamespace(equity=123_456.0),
+        strategy_config_sha256=strategy_file_sha256(strategy_path),
+    )
+    monkeypatch.setattr(FrozenDailyOrders, "load", staticmethod(lambda _: frozen))
+    output = tmp_path / "session-report.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "evaluation",
+            "replay-frozen-session",
+            "--frozen-orders",
+            str(frozen_path),
+            "--strategy-config",
+            str(strategy_path),
+            "--evidence-file",
+            str(evidence_paths[0]),
+            "--evidence-file",
+            str(evidence_paths[1]),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    report = ReplaySessionReport.load(output)
+    assert report.initial_cash == 123_456
+    assert report.round_trips[0].trade_id == "earnings-trade-1"
+    assert json.loads(result.stdout)["sha256"] == report.sha256

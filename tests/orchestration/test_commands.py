@@ -144,6 +144,37 @@ def test_nonzero_qee_exit_becomes_durable_retryable_stage_failure(tmp_path: Path
     assert len(tuple(tmp_path.rglob("command-*.json"))) == 1
 
 
+def test_not_before_stage_waits_without_claim_or_failure(tmp_path: Path) -> None:
+    now = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+    raw = _run_spec().model_dump(mode="json")
+    raw["stages"][0]["not_before"] = (now + timedelta(hours=1)).isoformat()
+    spec = WorkflowRunSpec.model_validate(raw)
+    calls: list[tuple[str, ...]] = []
+
+    def execute(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        del cwd, timeout_seconds
+        calls.append(argv)
+        return QeeCommandResult(return_code=0, stdout="{}")
+
+    state = DailyWorkflowRunner(
+        store=DailyWorkflowStore(tmp_path / "lake"),
+        handlers=spec.handlers(working_directory=tmp_path, executor=execute),
+        worker_id=spec.worker_id,
+        clock=lambda: now,
+        trigger=spec.trigger,
+    ).run_until_idle(trade_date=spec.trade_date)
+
+    assert state.revision == 0
+    assert state.stages[0].status.value == "pending"
+    assert state.stages[0].attempts == 0
+    assert calls == []
+
+
 def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Path) -> None:
     artifact = tmp_path / "sessions-content-addressed.json"
     artifact.write_text("{}", encoding="utf-8")
@@ -183,6 +214,44 @@ def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Pa
     outputs = handler(claimed, WorkflowStage.FREEZE_INPUTS)
     assert artifact.resolve() in outputs
     assert any(path.name == "command-001.json" for path in outputs)
+
+
+def test_command_stdout_accepts_empty_artifact_path_list(tmp_path: Path) -> None:
+    output = tmp_path / "no-trade-manifest.json"
+    output.write_text("{}", encoding="utf-8")
+    raw = _run_spec().model_dump(mode="json")
+    first = raw["stages"][0]
+    first["output_files"] = [str(output)]
+    first["commands"][0]["artifact_json_keys"] = ["paths"]
+    spec = WorkflowRunSpec.model_validate(raw)
+
+    def execute(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        del argv, cwd, timeout_seconds
+        return QeeCommandResult(return_code=0, stdout='{"paths":[]}')
+
+    handler = spec.handlers(working_directory=tmp_path, executor=execute)[
+        WorkflowStage.FREEZE_INPUTS
+    ]
+    state = DailyWorkflowState.initialize(
+        trade_date=spec.trade_date,
+        now=datetime.now(UTC),
+        trigger=spec.trigger,
+    )
+    claimed = DailyWorkflowController().claim_next(
+        state,
+        worker_id=spec.worker_id,
+        now=datetime.now(UTC),
+    )
+    assert claimed is not None
+
+    outputs = handler(claimed, WorkflowStage.FREEZE_INPUTS)
+
+    assert output.resolve() in outputs
 
 
 def _claimed_replay_state(tmp_path: Path) -> DailyWorkflowState:

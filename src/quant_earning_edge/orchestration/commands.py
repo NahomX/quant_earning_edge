@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import date  # noqa: TC003 - Pydantic resolves runtime annotations.
+from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Protocol
@@ -49,13 +49,19 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
             ("paper", "submit-order"),
         }
     ),
-    WorkflowStage.CAPTURE_MARKET_EVENTS: frozenset({("ingest", "market-events")}),
+    WorkflowStage.CAPTURE_MARKET_EVENTS: frozenset(
+        {
+            ("ingest", "frozen-market-events"),
+            ("ingest", "market-events"),
+        }
+    ),
     WorkflowStage.REPLAY_ORDERS: frozenset(
         {
             ("backtest", "materialize-frozen-replay-specs"),
             ("backtest", "materialize-replay-specs"),
             ("backtest", "replay-materialization"),
             ("backtest", "replay-nbbo"),
+            ("evaluation", "replay-frozen-session"),
             ("evaluation", "replay-session"),
         }
     ),
@@ -223,9 +229,14 @@ class WorkflowStageCommandSpec(_StrictSpec):
     stage: WorkflowStage
     commands: tuple[QeeCommandSpec, ...] = Field(min_length=1)
     output_files: tuple[Path, ...] = ()
+    not_before: datetime | None = None
 
     @model_validator(mode="after")
     def validate_stage_commands(self) -> WorkflowStageCommandSpec:
+        if self.not_before is not None and (
+            self.not_before.tzinfo is None or self.not_before.utcoffset() is None
+        ):
+            raise ValueError("workflow stage not_before must be timezone-aware")
         allowed = _ALLOWED_PREFIXES[self.stage]
         for command in self.commands:
             prefix = (command.arguments[0], command.arguments[1])
@@ -263,6 +274,29 @@ class WorkflowRunSpec(_StrictSpec):
             raise ValueError("workflow worker_id must not be blank")
         return self
 
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        """Write once while permitting an identical generator retry."""
+        encoded = self.canonical_bytes
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(encoded)
+        except FileExistsError:
+            if output.read_bytes() != encoded:
+                raise RuntimeError(f"workflow run-spec collision at {output}") from None
+
     def handlers(
         self,
         *,
@@ -296,6 +330,12 @@ class ConfiguredQeeStageHandler:
         self._working_directory = working_directory.resolve()
         self._timeout_seconds = timeout_seconds
         self._executor = executor
+
+    def is_ready(self, now: datetime) -> bool:
+        """Return false without claiming when a temporal stage boundary is pending."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("workflow readiness time must be timezone-aware")
+        return self._spec.not_before is None or now >= self._spec.not_before
 
     def __call__(
         self,
@@ -466,11 +506,7 @@ class ConfiguredQeeStageHandler:
             raw_paths: tuple[str, ...]
             if isinstance(value, str) and value:
                 raw_paths = (value,)
-            elif (
-                isinstance(value, list)
-                and value
-                and all(isinstance(item, str) and item for item in value)
-            ):
+            elif isinstance(value, list) and all(isinstance(item, str) and item for item in value):
                 raw_paths = tuple(str(item) for item in value)
             else:
                 raise RuntimeError(f"qee command JSON field {key!r} is not an artifact path")

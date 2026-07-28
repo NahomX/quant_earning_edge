@@ -33,6 +33,8 @@ from quant_earning_edge.data import (
     CorporateActionsIngestor,
     DuckDBStore,
     EarningsIngestor,
+    FrozenMarketEventsIngestor,
+    FrozenMarketEventsManifest,
     LakehouseLayout,
     MarketEventsIngestor,
     ReplayManifestRunner,
@@ -85,6 +87,7 @@ from quant_earning_edge.monitoring import (
 )
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
+    DailyWorkflowSpecGenerator,
     DailyWorkflowState,
     DailyWorkflowStore,
     StageStatus,
@@ -1093,6 +1096,61 @@ def aggregate_replay_session(
     )
 
 
+@evaluation_app.command("replay-frozen-session")
+def aggregate_frozen_replay_session(
+    frozen_orders: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical frozen daily orders."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Matching earnings strategy YAML."),
+    ],
+    evidence_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--evidence-file",
+            exists=True,
+            dir_okay=False,
+            help="Immutable replay evidence; repeat for every frozen order.",
+        ),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable daily Phase 6 replay report."),
+    ] = Path("replay-session.json"),
+) -> None:
+    """Derive frozen entry/exit lifecycles and aggregate daily replay evidence."""
+    try:
+        frozen = FrozenDailyOrders.load(frozen_orders)
+        strategy = load_strategy_config(strategy_config)
+        if strategy_file_sha256(strategy_config) != frozen.strategy_config_sha256:
+            raise ValueError("strategy config does not match frozen daily orders")
+        evidence = tuple(NbboReplayEvidence.load(path) for path in tuple(evidence_files or ()))
+        report = ReplaySessionAggregator().evaluate_frozen_long_orders(
+            evidence=evidence,
+            intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
+            session_date=frozen.trade_date,
+            initial_cash=frozen.portfolio.equity,
+            commission_bps_per_side=strategy.costs.commission_bps_per_side,
+        )
+        report.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="frozen replay-session inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "session_date": report.session_date,
+            "intended_order_count": report.intended_order_count,
+            "reconciliation_break_count": report.reconciliation_break_count,
+            "net_return": report.net_return,
+        }
+    )
+    if report.reconciliation_break_count:
+        raise typer.Exit(code=1)
+
+
 @evaluation_app.command("phase6-gate")
 def evaluate_phase6_gate(
     aggregation_spec: Annotated[
@@ -1502,6 +1560,98 @@ def run_daily_workflow(
         raise typer.Exit(code=1)
 
 
+@workflow_app.command("generate")
+def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
+    trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
+    planning_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Live-safe daily planning input."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated strategy YAML."),
+    ],
+    breaker_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Current circuit-breaker input."),
+    ],
+    phase6_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Current Phase 6 aggregation input."),
+    ],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Root for deterministic daily artifacts."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Canonical eight-stage workflow run spec."),
+    ],
+    worker_id: Annotated[str, typer.Option(help="Persistent worker identity.")],
+    trigger: Annotated[
+        WorkflowTrigger,
+        typer.Option(help="Workflow invocation provenance."),
+    ] = WorkflowTrigger.SCHEDULED,
+    lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=3600, help="Per-stage lease duration."),
+    ] = 900,
+    command_timeout_seconds: Annotated[
+        float,
+        typer.Option(min=1, max=7200, help="Per-command timeout."),
+    ] = 1800,
+) -> None:
+    """Generate the complete daily loop with typed cross-stage bindings."""
+    selected_date = _parse_date(trade_date, option="--trade-date")
+    try:
+        planning = DailyOrderPlanningSpec.model_validate_json(planning_spec.read_bytes())
+        if planning.trade_date != selected_date:
+            raise ValueError("planning spec trade date differs from workflow trade date")
+        load_strategy_config(strategy_config)
+        breakers = CircuitBreakerEvaluationSpec.model_validate_json(breaker_spec.read_bytes())
+        if breakers.observations[-1].session_date != selected_date:
+            raise ValueError("breaker spec latest date differs from workflow trade date")
+        phase6 = Phase6AggregationSpec.model_validate_json(phase6_spec.read_bytes())
+        expected_session_report = (
+            artifact_root.resolve()
+            / f"trade_date={selected_date.isoformat()}"
+            / "replay-session.json"
+        )
+        configured_reports = {
+            (path.resolve() if path.is_absolute() else (phase6_spec.parent / path).resolve())
+            for path in phase6.session_report_files
+        }
+        if expected_session_report not in configured_reports:
+            raise ValueError(
+                "Phase 6 spec must include this workflow's deterministic replay-session path"
+            )
+        spec = DailyWorkflowSpecGenerator().generate(
+            trade_date=selected_date,
+            trigger=trigger,
+            worker_id=worker_id,
+            planning_spec=planning_spec,
+            strategy_config=strategy_config,
+            breaker_spec=breaker_spec,
+            phase6_spec=phase6_spec,
+            artifact_root=artifact_root,
+            market_events_not_before=(planning.exit_expires_at + timedelta(minutes=5)),
+            lease_seconds=lease_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+        spec.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="workflow generation inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": spec.sha256,
+            "trade_date": spec.trade_date,
+            "trigger": spec.trigger,
+            "stage_count": len(spec.stages),
+        }
+    )
+
+
 @workflow_app.command("initialize")
 def initialize_daily_workflow(
     trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
@@ -1815,6 +1965,74 @@ def ingest_market_events(
             "quote_sha256": result.quote_artifact.sha256,
             "trade_path": str(result.trade_artifact.path),
             "trade_sha256": result.trade_artifact.sha256,
+        }
+    )
+
+
+@ingest_app.command("frozen-market-events")
+def ingest_frozen_market_events(
+    frozen_orders: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical frozen daily orders."),
+    ],
+    manifest_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable frozen capture manifest."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Capture all selected symbols over their complete frozen order windows."""
+    try:
+        frozen = FrozenDailyOrders.load(frozen_orders)
+        captured_at = datetime.now(UTC)
+        if frozen.intended_orders:
+            environment = _environment(env_file)
+            api_key = _required_key(environment.require_polygon_api_key)
+            layout = LakehouseLayout(environment.data_lake_root)
+            with httpx.Client(
+                base_url=environment.polygon_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as http_client:
+                manifest = FrozenMarketEventsIngestor(
+                    MarketEventsIngestor(
+                        client=PolygonClient(
+                            api_key=api_key,
+                            http_client=http_client,
+                            bronze_writer=BronzeWriter(layout),
+                        ),
+                        silver_writer=SilverWriter(layout),
+                    )
+                ).ingest(
+                    intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
+                    trade_date=frozen.trade_date,
+                    frozen_orders_sha256=frozen.sha256,
+                    manifest_output=manifest_output,
+                    captured_at=captured_at,
+                )
+        else:
+            manifest = FrozenMarketEventsManifest(
+                schema_version=1,
+                trade_date=frozen.trade_date,
+                captured_at=captured_at,
+                frozen_orders_sha256=frozen.sha256,
+                artifacts=(),
+            )
+            manifest.write(manifest_output)
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="frozen market-event inputs") from error
+    _echo_json(
+        {
+            "manifest_path": str(manifest_output.resolve()),
+            "manifest_sha256": manifest.sha256,
+            "symbol_count": len(manifest.artifacts),
+            "quote_paths": [item.quote_path for item in manifest.artifacts],
+            "trade_paths": [item.trade_path for item in manifest.artifacts],
         }
     )
 

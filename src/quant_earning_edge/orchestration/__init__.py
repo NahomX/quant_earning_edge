@@ -9,6 +9,7 @@ from quant_earning_edge.orchestration.commands import (
     WorkflowRunSpec,
     WorkflowStageCommandSpec,
 )
+from quant_earning_edge.orchestration.generator import DailyWorkflowSpecGenerator
 from quant_earning_edge.orchestration.health import (
     WorkflowHealthEvaluator,
     WorkflowHealthReport,
@@ -38,6 +39,7 @@ __all__ = [
     "ConfiguredQeeStageHandler",
     "DailyWorkflowController",
     "DailyWorkflowRunner",
+    "DailyWorkflowSpecGenerator",
     "DailyWorkflowState",
     "DailyWorkflowStore",
     "QeeCommandResult",

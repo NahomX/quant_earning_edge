@@ -63,6 +63,9 @@ reproducible through `uv.lock`.
 | Causally bounded NBBO/trade replay engine | Complete | partial/missed fills, impact, limit queues, auction skew |
 | Active NBBO pre-decision-read property gate | Complete | consumed timestamps and pre-boundary mutation invariance |
 | Immutable single-order replay evidence and CLI | Complete | semantic input hash, collision-safe JSON, CLI tests |
+| Polygon historical NBBO/trade client | Complete | bounded SIP-time pagination, bronze capture, contract tests |
+| Tick-level silver schemas and SQL views | Complete | conditions/corrections retained, content-addressed Parquet |
+| Conservative silver-to-replay normalization | Complete | one-sided/corrected/sub-share rejection audit |
 
 ## Phase 1 exit gate
 
@@ -93,8 +96,8 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Implement normalized Polygon quote/trade ingestion and replay-session
-aggregation so the same frozen orders can produce a daily Phase 6 record.
+Implement replay-session aggregation so a set of frozen orders and their
+content-addressed market-event files produce one immutable daily Phase 6 record.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

@@ -14,7 +14,9 @@ from quant_earning_edge.data.clients.polygon import (
     MinuteBar,
     PolygonClient,
     SplitAdjustmentType,
+    StockQuote,
     StockSplit,
+    StockTrade,
     TickerDetails,
     TickerReference,
 )
@@ -33,7 +35,9 @@ __all__ = [
     "ProviderRequestError",
     "ProviderResponseError",
     "SplitAdjustmentType",
+    "StockQuote",
     "StockSplit",
+    "StockTrade",
     "TickerDetails",
     "TickerReference",
 ]

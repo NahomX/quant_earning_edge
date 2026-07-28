@@ -88,6 +88,71 @@ class MinuteBar(BaseModel):
         return self
 
 
+class StockQuote(BaseModel):
+    """Normalized historical stock NBBO update using the SIP receipt timestamp."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1)
+    timestamp: datetime
+    sequence_number: int = Field(ge=0)
+    bid_price: float = Field(ge=0)
+    ask_price: float = Field(ge=0)
+    bid_size: float = Field(ge=0)
+    ask_size: float = Field(ge=0)
+    bid_exchange: int | None = Field(default=None, ge=0)
+    ask_exchange: int | None = Field(default=None, ge=0)
+    participant_timestamp: datetime | None = None
+    conditions: tuple[int, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_quote(self) -> StockQuote:
+        """Accept one-sided provider updates but reject crossed two-sided quotes."""
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("quote timestamp must be timezone-aware")
+        if self.participant_timestamp is not None and (
+            self.participant_timestamp.tzinfo is None
+            or self.participant_timestamp.utcoffset() is None
+        ):
+            raise ValueError("participant timestamp must be timezone-aware")
+        if self.bid_price > 0 and self.ask_price > 0 and self.ask_price < self.bid_price:
+            raise ValueError("two-sided NBBO must not be crossed")
+        return self
+
+    @property
+    def is_replayable(self) -> bool:
+        """Whether both sides carry positive price and displayed size."""
+        return self.bid_price > 0 and self.ask_price > 0 and self.bid_size > 0 and self.ask_size > 0
+
+
+class StockTrade(BaseModel):
+    """Normalized historical stock trade using the SIP receipt timestamp."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1)
+    timestamp: datetime
+    sequence_number: int = Field(ge=0)
+    price: float = Field(gt=0)
+    size: float = Field(gt=0)
+    exchange: int = Field(ge=0)
+    trade_id: str = Field(min_length=1)
+    participant_timestamp: datetime | None = None
+    conditions: tuple[int, ...] = ()
+    correction: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_timestamps(self) -> StockTrade:
+        if self.timestamp.tzinfo is None or self.timestamp.utcoffset() is None:
+            raise ValueError("trade timestamp must be timezone-aware")
+        if self.participant_timestamp is not None and (
+            self.participant_timestamp.tzinfo is None
+            or self.participant_timestamp.utcoffset() is None
+        ):
+            raise ValueError("participant timestamp must be timezone-aware")
+        return self
+
+
 class TickerDetails(BaseModel):
     """Point-in-time security metadata used by universe construction."""
 
@@ -273,6 +338,51 @@ class _CorporateActionsResponse(BaseModel):
 
     status: str
     results: list[dict[str, Any]] = Field(default_factory=list)
+    next_url: str | None = None
+
+
+class _QuotePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sip_timestamp: int = Field(ge=0)
+    participant_timestamp: int | None = Field(default=None, ge=0)
+    sequence_number: int = Field(ge=0)
+    bid_price: float = Field(default=0, ge=0)
+    ask_price: float = Field(default=0, ge=0)
+    bid_size: float = Field(default=0, ge=0)
+    ask_size: float = Field(default=0, ge=0)
+    bid_exchange: int | None = Field(default=None, ge=0)
+    ask_exchange: int | None = Field(default=None, ge=0)
+    conditions: tuple[int, ...] = ()
+
+
+class _TradePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sip_timestamp: int = Field(ge=0)
+    participant_timestamp: int | None = Field(default=None, ge=0)
+    sequence_number: int = Field(ge=0)
+    price: float = Field(gt=0)
+    size: float = Field(gt=0)
+    exchange: int = Field(ge=0)
+    trade_id: str = Field(alias="id", min_length=1)
+    conditions: tuple[int, ...] = ()
+    correction: int | None = Field(default=None, ge=0)
+
+
+class _QuotesResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: str
+    results: tuple[_QuotePayload, ...] = ()
+    next_url: str | None = None
+
+
+class _TradesResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: str
+    results: tuple[_TradePayload, ...] = ()
     next_url: str | None = None
 
 
@@ -480,6 +590,159 @@ class PolygonClient:
             params = None
         raise ProviderResponseError(
             f"Polygon minute pagination exceeded max_pages={self._max_pages}"
+        )
+
+    def stock_quotes(
+        self,
+        *,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> tuple[StockQuote, ...]:
+        """Fetch historical NBBO updates over an inclusive SIP-time interval."""
+        normalized_symbol, start_utc, end_utc = self._market_event_interval(
+            symbol=symbol,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        url = f"/v3/quotes/{normalized_symbol}"
+        params: dict[str, str] | None = self._market_event_params(start_utc, end_utc)
+        quotes: list[StockQuote] = []
+        identities: set[tuple[datetime, int]] = set()
+        for _page_number in range(1, self._max_pages + 1):
+            response = self._request(url=url, params=params)
+            raw = self._decode_json(response)
+            self._capture_market_events(
+                raw,
+                dataset="stock-nbbo-quotes",
+                event_date=start_utc.astimezone(_MARKET_TIMEZONE).date(),
+            )
+            try:
+                page = _QuotesResponse.model_validate(raw)
+            except ValidationError as error:
+                raise ProviderResponseError(
+                    f"Polygon stock-quotes response failed validation: {error}"
+                ) from error
+            if page.status != "OK":
+                raise ProviderResponseError(f"Polygon stock-quotes status was {page.status!r}")
+            for item in page.results:
+                timestamp = self._nanoseconds_to_datetime(item.sip_timestamp)
+                identity = (timestamp, item.sequence_number)
+                self._validate_market_event_identity(
+                    identity,
+                    identities=identities,
+                    start_at=start_utc,
+                    end_at=end_utc,
+                    dataset="stock quote",
+                )
+                try:
+                    quotes.append(
+                        StockQuote(
+                            symbol=normalized_symbol,
+                            timestamp=timestamp,
+                            sequence_number=item.sequence_number,
+                            bid_price=item.bid_price,
+                            ask_price=item.ask_price,
+                            bid_size=item.bid_size,
+                            ask_size=item.ask_size,
+                            bid_exchange=item.bid_exchange,
+                            ask_exchange=item.ask_exchange,
+                            participant_timestamp=(
+                                self._nanoseconds_to_datetime(item.participant_timestamp)
+                                if item.participant_timestamp is not None
+                                else None
+                            ),
+                            conditions=item.conditions,
+                        )
+                    )
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon stock quote failed validation: {error}"
+                    ) from error
+            if page.next_url is None:
+                return tuple(
+                    sorted(quotes, key=lambda item: (item.timestamp, item.sequence_number))
+                )
+            url = self._validated_next_url(page.next_url)
+            params = None
+        raise ProviderResponseError(
+            f"Polygon stock-quotes pagination exceeded max_pages={self._max_pages}"
+        )
+
+    def stock_trades(
+        self,
+        *,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> tuple[StockTrade, ...]:
+        """Fetch historical trades over an inclusive SIP-time interval."""
+        normalized_symbol, start_utc, end_utc = self._market_event_interval(
+            symbol=symbol,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        url = f"/v3/trades/{normalized_symbol}"
+        params: dict[str, str] | None = self._market_event_params(start_utc, end_utc)
+        trades: list[StockTrade] = []
+        identities: set[tuple[datetime, int]] = set()
+        for _page_number in range(1, self._max_pages + 1):
+            response = self._request(url=url, params=params)
+            raw = self._decode_json(response)
+            self._capture_market_events(
+                raw,
+                dataset="stock-trades",
+                event_date=start_utc.astimezone(_MARKET_TIMEZONE).date(),
+            )
+            try:
+                page = _TradesResponse.model_validate(raw)
+            except ValidationError as error:
+                raise ProviderResponseError(
+                    f"Polygon stock-trades response failed validation: {error}"
+                ) from error
+            if page.status != "OK":
+                raise ProviderResponseError(f"Polygon stock-trades status was {page.status!r}")
+            for item in page.results:
+                timestamp = self._nanoseconds_to_datetime(item.sip_timestamp)
+                identity = (timestamp, item.sequence_number)
+                self._validate_market_event_identity(
+                    identity,
+                    identities=identities,
+                    start_at=start_utc,
+                    end_at=end_utc,
+                    dataset="stock trade",
+                )
+                try:
+                    trades.append(
+                        StockTrade(
+                            symbol=normalized_symbol,
+                            timestamp=timestamp,
+                            sequence_number=item.sequence_number,
+                            price=item.price,
+                            size=item.size,
+                            exchange=item.exchange,
+                            trade_id=item.trade_id,
+                            participant_timestamp=(
+                                self._nanoseconds_to_datetime(item.participant_timestamp)
+                                if item.participant_timestamp is not None
+                                else None
+                            ),
+                            conditions=item.conditions,
+                            correction=item.correction,
+                        )
+                    )
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon stock trade failed validation: {error}"
+                    ) from error
+            if page.next_url is None:
+                return tuple(
+                    sorted(trades, key=lambda item: (item.timestamp, item.sequence_number))
+                )
+            url = self._validated_next_url(page.next_url)
+            params = None
+        raise ProviderResponseError(
+            f"Polygon stock-trades pagination exceeded max_pages={self._max_pages}"
         )
 
     def list_tickers(
@@ -734,6 +997,69 @@ class PolygonClient:
         raise ProviderRequestError(
             f"Polygon request failed after {self._max_attempts} attempts{detail}"
         )
+
+    def _capture_market_events(self, raw: Any, *, dataset: str, event_date: date) -> None:
+        if self._bronze_writer is not None:
+            self._bronze_writer.write_json(
+                raw,
+                source="polygon",
+                dataset=dataset,
+                event_date=event_date,
+            )
+
+    @staticmethod
+    def _market_event_interval(
+        *,
+        symbol: str,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> tuple[str, datetime, datetime]:
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be empty")
+        if any(value.tzinfo is None or value.utcoffset() is None for value in (start_at, end_at)):
+            raise ValueError("market-event interval timestamps must be timezone-aware")
+        start_utc = start_at.astimezone(UTC)
+        end_utc = end_at.astimezone(UTC)
+        if end_utc <= start_utc:
+            raise ValueError("end_at must be after start_at")
+        return normalized_symbol, start_utc, end_utc
+
+    @classmethod
+    def _market_event_params(cls, start_at: datetime, end_at: datetime) -> dict[str, str]:
+        return {
+            "timestamp.gte": str(cls._datetime_to_nanoseconds(start_at)),
+            "timestamp.lte": str(cls._datetime_to_nanoseconds(end_at)),
+            "sort": "timestamp",
+            "order": "asc",
+            "limit": "50000",
+        }
+
+    @staticmethod
+    def _validate_market_event_identity(
+        identity: tuple[datetime, int],
+        *,
+        identities: set[tuple[datetime, int]],
+        start_at: datetime,
+        end_at: datetime,
+        dataset: str,
+    ) -> None:
+        timestamp, _sequence = identity
+        if not start_at <= timestamp <= end_at:
+            raise ProviderResponseError(f"Polygon returned a {dataset} out of range")
+        if identity in identities:
+            raise ProviderResponseError(f"Polygon returned duplicate {dataset} identity")
+        identities.add(identity)
+
+    @staticmethod
+    def _datetime_to_nanoseconds(value: datetime) -> int:
+        utc = value.astimezone(UTC)
+        return int(utc.timestamp()) * 1_000_000_000 + utc.microsecond * 1_000
+
+    @staticmethod
+    def _nanoseconds_to_datetime(value: int) -> datetime:
+        seconds, nanoseconds = divmod(value, 1_000_000_000)
+        return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanoseconds // 1_000)
 
     def _validated_next_url(self, next_url: str) -> str:
         parsed = urlparse(next_url)

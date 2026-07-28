@@ -15,7 +15,9 @@ from quant_earning_edge.data.silver import (
     DIVIDENDS_SCHEMA,
     EARNINGS_SCHEMA,
     MINUTE_BARS_SCHEMA,
+    NBBO_QUOTES_SCHEMA,
     SPLITS_SCHEMA,
+    STOCK_TRADES_SCHEMA,
 )
 
 if TYPE_CHECKING:
@@ -32,6 +34,8 @@ class SilverDataset(StrEnum):
     STOCK_SPLITS = "stock_splits"
     CASH_DIVIDENDS = "cash_dividends"
     MINUTE_BARS = "minute_bars"
+    NBBO_QUOTES = "nbbo_quotes"
+    STOCK_TRADES = "stock_trades"
 
 
 _SILVER_SPECS: dict[SilverDataset, tuple[str, pa.Schema]] = {
@@ -40,6 +44,8 @@ _SILVER_SPECS: dict[SilverDataset, tuple[str, pa.Schema]] = {
     SilverDataset.STOCK_SPLITS: ("stock-splits", SPLITS_SCHEMA),
     SilverDataset.CASH_DIVIDENDS: ("cash-dividends", DIVIDENDS_SCHEMA),
     SilverDataset.MINUTE_BARS: ("minute-bars", MINUTE_BARS_SCHEMA),
+    SilverDataset.NBBO_QUOTES: ("nbbo-quotes", NBBO_QUOTES_SCHEMA),
+    SilverDataset.STOCK_TRADES: ("stock-trades", STOCK_TRADES_SCHEMA),
 }
 
 

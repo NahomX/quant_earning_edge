@@ -294,6 +294,30 @@ allowed, while different evidence at the same path is rejected.
 This command validates normalized replay mechanics only. Fixture output and
 synthetic quotes do not count toward the 90-trading-day Phase 6 proof.
 
+## Ingest historical Polygon NBBO and trades
+
+With Polygon Advanced credentials configured, fetch an intended order's exact
+SIP-time execution window:
+
+```powershell
+uv run qee ingest market-events `
+  --symbol AAPL `
+  --event-date 2026-07-28 `
+  --start-at 2026-07-28T13:30:00Z `
+  --end-at 2026-07-28T20:00:00Z
+```
+
+Both quote and trade endpoints paginate in ascending SIP timestamp order. Every
+raw page is captured in bronze. Silver Parquet retains quote/trade sequence
+numbers, exchange fields, participant timestamps, conditions, fractional
+sizes, and correction indicators.
+
+Replay normalization accepts only two-sided, non-crossed NBBO with positive
+whole-share sizes. It conservatively excludes corrected trades and sub-share
+prints, floors fractional shares, and reports every exclusion. Opening-auction
+classification must use explicitly supplied provider condition codes; the
+normalizer does not guess their meaning.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

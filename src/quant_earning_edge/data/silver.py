@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -21,7 +22,9 @@ if TYPE_CHECKING:
         CashDividend,
         EquityBar,
         MinuteBar,
+        StockQuote,
         StockSplit,
+        StockTrade,
     )
     from quant_earning_edge.data.layout import LakehouseLayout
 
@@ -108,6 +111,44 @@ DIVIDENDS_SCHEMA = pa.schema(
         pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
     ]
 )
+
+NBBO_QUOTES_SCHEMA = pa.schema(
+    [
+        pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("sequence_number", pa.int64(), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("bid_price", pa.float64(), nullable=False),
+        pa.field("ask_price", pa.float64(), nullable=False),
+        pa.field("bid_size", pa.float64(), nullable=False),
+        pa.field("ask_size", pa.float64(), nullable=False),
+        pa.field("bid_exchange", pa.int32()),
+        pa.field("ask_exchange", pa.int32()),
+        pa.field("participant_timestamp", pa.timestamp("us", tz="UTC")),
+        pa.field("conditions", pa.list_(pa.int32()), nullable=False),
+        pa.field("is_replayable", pa.bool_(), nullable=False),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+STOCK_TRADES_SCHEMA = pa.schema(
+    [
+        pa.field("timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("sequence_number", pa.int64(), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("price", pa.float64(), nullable=False),
+        pa.field("size", pa.float64(), nullable=False),
+        pa.field("exchange", pa.int32(), nullable=False),
+        pa.field("trade_id", pa.string(), nullable=False),
+        pa.field("participant_timestamp", pa.timestamp("us", tz="UTC")),
+        pa.field("conditions", pa.list_(pa.int32()), nullable=False),
+        pa.field("correction", pa.int32()),
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]
+)
+
+_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -257,6 +298,106 @@ class SilverWriter:
                 ingested_at=observed_at,
             )
             for ex_dividend_date, partition_events in sorted(grouped.items())
+        )
+
+    def write_stock_quotes(
+        self,
+        quotes: tuple[StockQuote, ...],
+        *,
+        event_date: date,
+        ingested_at: datetime | None = None,
+    ) -> SilverArtifact:
+        """Persist all normalized quote updates, including unusable one-sided states."""
+        observed_at = self._observed_at(ingested_at)
+        records = [
+            {
+                "timestamp": quote.timestamp.astimezone(UTC),
+                "sequence_number": quote.sequence_number,
+                "symbol": quote.symbol,
+                "bid_price": quote.bid_price,
+                "ask_price": quote.ask_price,
+                "bid_size": quote.bid_size,
+                "ask_size": quote.ask_size,
+                "bid_exchange": quote.bid_exchange,
+                "ask_exchange": quote.ask_exchange,
+                "participant_timestamp": (
+                    quote.participant_timestamp.astimezone(UTC)
+                    if quote.participant_timestamp is not None
+                    else None
+                ),
+                "conditions": list(quote.conditions),
+                "is_replayable": quote.is_replayable,
+                "source": "polygon",
+                "ingested_at": observed_at,
+            }
+            for quote in sorted(
+                quotes,
+                key=lambda item: (item.symbol, item.timestamp, item.sequence_number),
+            )
+        ]
+        self._validate_market_event_records(
+            records,
+            event_date=event_date,
+            dataset="stock quote",
+        )
+        return self._write_table(
+            partition=self._layout.silver(
+                asset_class="us-equity",
+                dataset="nbbo-quotes",
+                event_date=event_date,
+            ),
+            digest=_records_digest(records),
+            records=records,
+            schema=NBBO_QUOTES_SCHEMA,
+        )
+
+    def write_stock_trades(
+        self,
+        trades: tuple[StockTrade, ...],
+        *,
+        event_date: date,
+        ingested_at: datetime | None = None,
+    ) -> SilverArtifact:
+        """Persist normalized trades without discarding conditions or corrections."""
+        observed_at = self._observed_at(ingested_at)
+        records = [
+            {
+                "timestamp": trade.timestamp.astimezone(UTC),
+                "sequence_number": trade.sequence_number,
+                "symbol": trade.symbol,
+                "price": trade.price,
+                "size": trade.size,
+                "exchange": trade.exchange,
+                "trade_id": trade.trade_id,
+                "participant_timestamp": (
+                    trade.participant_timestamp.astimezone(UTC)
+                    if trade.participant_timestamp is not None
+                    else None
+                ),
+                "conditions": list(trade.conditions),
+                "correction": trade.correction,
+                "source": "polygon",
+                "ingested_at": observed_at,
+            }
+            for trade in sorted(
+                trades,
+                key=lambda item: (item.symbol, item.timestamp, item.sequence_number),
+            )
+        ]
+        self._validate_market_event_records(
+            records,
+            event_date=event_date,
+            dataset="stock trade",
+        )
+        return self._write_table(
+            partition=self._layout.silver(
+                asset_class="us-equity",
+                dataset="stock-trades",
+                event_date=event_date,
+            ),
+            digest=_records_digest(records),
+            records=records,
+            schema=STOCK_TRADES_SCHEMA,
         )
 
     def _write_daily_bars_partition(
@@ -411,6 +552,29 @@ class SilverWriter:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("ingested_at must be timezone-aware")
         return observed_at.astimezone(UTC)
+
+    @staticmethod
+    def _validate_market_event_records(
+        records: list[dict[str, Any]],
+        *,
+        event_date: date,
+        dataset: str,
+    ) -> None:
+        if not records:
+            raise ValueError(f"{dataset} artifact must not be empty")
+        identities: set[tuple[str, datetime, int]] = set()
+        for record in records:
+            timestamp = record["timestamp"]
+            if timestamp.astimezone(_MARKET_TIMEZONE).date() != event_date:
+                raise ValueError(f"{dataset} timestamp does not match event_date")
+            identity = (
+                str(record["symbol"]),
+                timestamp,
+                int(record["sequence_number"]),
+            )
+            if identity in identities:
+                raise ValueError(f"duplicate {dataset} identity")
+            identities.add(identity)
 
     @staticmethod
     def _write_table(

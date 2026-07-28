@@ -45,6 +45,20 @@ class CorporateActionsIngestionResult:
     silver_artifacts: tuple[SilverArtifact, ...]
 
 
+@dataclass(frozen=True)
+class MarketEventsIngestionResult:
+    """Auditable result of one Polygon quote/trade interval ingestion."""
+
+    symbol: str
+    event_date: date
+    start_at: datetime
+    end_at: datetime
+    quote_count: int
+    trade_count: int
+    quote_artifact: SilverArtifact
+    trade_artifact: SilverArtifact
+
+
 class EarningsIngestor:
     """Fetch validated events and persist them to the silver tier."""
 
@@ -139,4 +153,53 @@ class CorporateActionsIngestor:
             split_count=len(splits),
             dividend_count=len(dividends),
             silver_artifacts=(*split_artifacts, *dividend_artifacts),
+        )
+
+
+class MarketEventsIngestor:
+    """Fetch normalized Polygon NBBO/trades and persist lossless silver records."""
+
+    def __init__(self, *, client: PolygonClient, silver_writer: SilverWriter) -> None:
+        self._client = client
+        self._silver_writer = silver_writer
+
+    def ingest(
+        self,
+        *,
+        symbol: str,
+        event_date: date,
+        start_at: datetime,
+        end_at: datetime,
+        ingested_at: datetime | None = None,
+    ) -> MarketEventsIngestionResult:
+        """Ingest one symbol's inclusive SIP-time execution window."""
+        quotes = self._client.stock_quotes(
+            symbol=symbol,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        trades = self._client.stock_trades(
+            symbol=symbol,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        quote_artifact = self._silver_writer.write_stock_quotes(
+            quotes,
+            event_date=event_date,
+            ingested_at=ingested_at,
+        )
+        trade_artifact = self._silver_writer.write_stock_trades(
+            trades,
+            event_date=event_date,
+            ingested_at=ingested_at,
+        )
+        return MarketEventsIngestionResult(
+            symbol=symbol.strip().upper(),
+            event_date=event_date,
+            start_at=start_at,
+            end_at=end_at,
+            quote_count=len(quotes),
+            trade_count=len(trades),
+            quote_artifact=quote_artifact,
+            trade_artifact=trade_artifact,
         )

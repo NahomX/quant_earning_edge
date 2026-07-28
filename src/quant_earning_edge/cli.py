@@ -32,6 +32,7 @@ from quant_earning_edge.data import (
     DuckDBStore,
     EarningsIngestor,
     LakehouseLayout,
+    MarketEventsIngestor,
     SessionFileStore,
     SilverDataset,
     SilverWriter,
@@ -883,6 +884,49 @@ def ingest_minute_bars(
             "path": str(artifact.path),
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
+        }
+    )
+
+
+@ingest_app.command("market-events")
+def ingest_market_events(
+    symbol: Annotated[str, typer.Option(help="US-equity ticker.")],
+    start_at: Annotated[str, typer.Option(help="Offset-aware inclusive SIP-time start.")],
+    end_at: Annotated[str, typer.Option(help="Offset-aware inclusive SIP-time end.")],
+    event_date: Annotated[str, typer.Option(help="Market-date partition (YYYY-MM-DD).")],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Fetch Polygon historical NBBO and trades into bronze and silver."""
+    environment = _environment(env_file)
+    api_key = _required_key(environment.require_polygon_api_key)
+    layout = LakehouseLayout(environment.data_lake_root)
+    with httpx.Client(
+        base_url=environment.polygon_base_url,
+        timeout=environment.http_timeout_seconds,
+    ) as http_client:
+        result = MarketEventsIngestor(
+            client=PolygonClient(
+                api_key=api_key,
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ),
+            silver_writer=SilverWriter(layout),
+        ).ingest(
+            symbol=symbol,
+            event_date=_parse_date(event_date, option="--event-date"),
+            start_at=_parse_datetime(start_at, option="--start-at"),
+            end_at=_parse_datetime(end_at, option="--end-at"),
+        )
+    _echo_json(
+        {
+            "symbol": result.symbol,
+            "event_date": result.event_date,
+            "quote_count": result.quote_count,
+            "trade_count": result.trade_count,
+            "quote_path": str(result.quote_artifact.path),
+            "quote_sha256": result.quote_artifact.sha256,
+            "trade_path": str(result.trade_artifact.path),
+            "trade_sha256": result.trade_artifact.sha256,
         }
     )
 

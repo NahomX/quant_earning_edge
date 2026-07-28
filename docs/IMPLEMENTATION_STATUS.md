@@ -52,6 +52,7 @@ reproducible through `uv.lock`.
 | Reproducible backtest CLI | Complete | validated JSON input, semantic input hash, report hash |
 | Fold-level walk-forward gate evidence | Complete | ordered OOS folds and explicit 75% positive-Sharpe gate |
 | Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
+| Fractional-Kelly portfolio constructor | Complete | causal 60-trade history, integer shares, all hard caps |
 
 ## Phase 1 exit gate
 

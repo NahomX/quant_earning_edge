@@ -180,6 +180,19 @@ This daily chassis requires `entry_date < exit_date`. Earnings open-to-close
 execution is intentionally not represented by inventing two daily bars; the
 intraday execution path is a later, separate contract.
 
+## Portfolio-construction contract
+
+The Phase 4 constructor ranks candidates deterministically by absolute model
+score and symbol, then applies quarter-Kelly sizing from at most the latest 60
+realized trade outcomes. It requires at least 20 outcomes containing both wins
+and losses; otherwise it returns a zero-risk plan rather than inventing a
+payoff estimate. Only outcomes closed strictly before the explicit decision
+date participate.
+
+Integer-share rounding is always downward. The resulting plan enforces at most
+5% per position, 20% per sector, and 50% gross exposure. The effective weights
+can therefore be slightly below caps but never above them.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

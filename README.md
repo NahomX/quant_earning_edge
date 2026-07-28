@@ -63,6 +63,8 @@ ops/            Prefect flows, deploy scripts
 
 ## Status
 
-Phase 1 data-layer implementation is in progress. See
+Phase 2's code-level no-lookahead gate is complete and Phase 3 backtest
+foundations are in progress. Phase 1's credentialed historical and unattended
+operational proof remains pending. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

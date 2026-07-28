@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from typer.testing import CliRunner
 
 from quant_earning_edge import __version__
@@ -143,3 +146,45 @@ def test_calendar_command_requires_both_credentials(tmp_path: Path) -> None:
     assert "APCA_API_KEY_ID" in result.stderr
     assert "APCA_API_SECRET_KEY" in result.stderr
     assert "required" in result.stderr
+
+
+def test_backtest_plan_splits_writes_auditable_manifest(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    output = tmp_path / "walk-forward.json"
+    first = date(2025, 1, 2)
+    sessions = tuple(first + timedelta(days=index) for index in range(20))
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.table(
+            {
+                "symbol": ["AAA"] * len(sessions),
+                "asof_date": pa.array(sessions, type=pa.date32()),
+                "horizon_end_date": pa.array(
+                    [item + timedelta(days=5) for item in sessions],
+                    type=pa.date32(),
+                ),
+            }
+        ),
+        dataset,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "backtest",
+            "plan-splits",
+            "--dataset-file",
+            str(dataset),
+            "--output",
+            str(output),
+            "--minimum-train-sessions",
+            "10",
+            "--test-sessions",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["fold_count"] == 1
+    assert payload["sample_count"] == 20
+    assert output.exists()

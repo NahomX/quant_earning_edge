@@ -5,7 +5,7 @@ implementation state, not intended or assumed progress.
 
 ## Current phase
 
-**Phase 1 operational proof pending; Phase 2 code gate complete**
+**Phase 1 operational proof pending; Phase 2 code gate complete; Phase 3 in progress**
 
 Phase 0 repository hygiene is complete. The local Python 3.12 environment is
 reproducible through `uv.lock`.
@@ -42,6 +42,10 @@ reproducible through `uv.lock`.
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
 | Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, explicit-offset tests |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
+| Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
+| Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
+| Deterministic 60-session momentum baseline | Complete | causal ranking/future-data invariance tests |
+| Decomposed execution cost model | Complete | commission, spread, impact, borrow, and stop tests |
 
 ## Phase 1 exit gate
 
@@ -72,7 +76,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Begin Phase 3 with leakage-safe temporal splits, deterministic baseline-signal
-interfaces, and the documented cost model. Credentialed calendar, backfill, and
-five-session unattended execution remain pending. Those operational gates
-cannot be replaced by fixtures.
+Continue Phase 3 with the deterministic portfolio/backtest engine, standardized
+gross/net evaluation metrics, bootstrap confidence intervals, and cost
+attribution. Then run the published 60-session SPY-component momentum
+reproduction against real point-in-time constituent and price data.
+
+Credentialed calendar, backfill, five-session unattended execution, and the
+published momentum comparison remain operationally pending. Those gates cannot
+be replaced by fixtures or synthetic performance.

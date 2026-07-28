@@ -11,6 +11,7 @@ import httpx
 import typer
 
 from quant_earning_edge import __version__
+from quant_earning_edge.backtest import WalkForwardConfig, WalkForwardPlanner
 from quant_earning_edge.data import (
     BarBackfillJob,
     BarBackfillStore,
@@ -69,6 +70,7 @@ calendar_app = typer.Typer(no_args_is_help=True, help="Fetch authoritative marke
 data_app = typer.Typer(no_args_is_help=True, help="Manage local lake query surfaces.")
 features_app = typer.Typer(no_args_is_help=True, help="Compute point-in-time features.")
 labels_app = typer.Typer(no_args_is_help=True, help="Materialize forward labels and datasets.")
+backtest_app = typer.Typer(no_args_is_help=True, help="Plan and run reproducible backtests.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
@@ -76,6 +78,7 @@ app.add_typer(calendar_app, name="calendar")
 app.add_typer(data_app, name="data")
 app.add_typer(features_app, name="features")
 app.add_typer(labels_app, name="labels")
+app.add_typer(backtest_app, name="backtest")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -386,6 +389,58 @@ def assemble_training_dataset(
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
             "feature_names": artifact.feature_names,
+        }
+    )
+
+
+@backtest_app.command("plan-splits")
+def plan_backtest_splits(  # noqa: PLR0917 - CLI options define the split contract.
+    dataset_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--dataset-file",
+            exists=True,
+            dir_okay=False,
+            help="Assembled training Parquet; repeat for multiple partitions.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable JSON split-manifest path."),
+    ],
+    minimum_train_sessions: Annotated[
+        int,
+        typer.Option(min=1, help="Minimum expanding-window training sessions."),
+    ],
+    test_sessions: Annotated[
+        int,
+        typer.Option(min=1, help="Consecutive sessions in each test fold."),
+    ],
+    embargo_sessions: Annotated[
+        int,
+        typer.Option(min=1, help="Sessions embargoed before every test fold."),
+    ] = 5,
+    step_sessions: Annotated[
+        int | None,
+        typer.Option(min=1, help="Fold-start step; defaults to test-session count."),
+    ] = None,
+) -> None:
+    """Build a content-addressed purged expanding walk-forward plan."""
+    config = WalkForwardConfig(
+        minimum_train_sessions=minimum_train_sessions,
+        test_sessions=test_sessions,
+        embargo_sessions=embargo_sessions,
+        step_sessions=step_sessions,
+    )
+    planner = WalkForwardPlanner()
+    plan = planner.build(dataset_files, config=config)
+    planner.write(plan, output)
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": plan.sha256,
+            "sample_count": plan.sample_count,
+            "fold_count": len(plan.folds),
         }
     )
 

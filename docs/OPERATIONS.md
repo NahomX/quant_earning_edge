@@ -123,6 +123,27 @@ mixed input lineage, schema drift, non-next-session targets, and features
 computed at or after the target open. Features and labels remain separate
 artifacts; only this immutable training table combines them.
 
+## Plan purged walk-forward folds
+
+Build the split plan from one or more assembled training partitions:
+
+```powershell
+uv run qee backtest plan-splits `
+  --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
+  --dataset-file .\data\gold\feature_group=training-dataset\month=2026-02\part-<hash>.parquet `
+  --output .\data\manifests\backtest\walk-forward.json `
+  --minimum-train-sessions 504 `
+  --test-sessions 63 `
+  --embargo-sessions 5
+```
+
+The inputs are concatenated in sorted path order and every fold stores indices
+into that stable order. The manifest hashes each input file and records the
+exact configuration, embargo dates, and train/test indices. A training row is
+included only when its full label horizon ends strictly before the first test
+session. Re-running against the same content is idempotent; an existing
+different manifest at the requested path is rejected.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

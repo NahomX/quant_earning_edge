@@ -188,3 +188,58 @@ def test_backtest_plan_splits_writes_auditable_manifest(tmp_path: Path) -> None:
     assert payload["fold_count"] == 1
     assert payload["sample_count"] == 20
     assert output.exists()
+
+
+def test_backtest_run_ledger_writes_standard_report(tmp_path: Path) -> None:
+    spec = tmp_path / "backtest.json"
+    output = tmp_path / "report.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "initial_cash": 10000,
+                "sessions": ["2025-01-02", "2025-01-03", "2025-01-04"],
+                "marks": [
+                    {"symbol": "AAA", "session_date": "2025-01-02", "close": 100},
+                    {"symbol": "AAA", "session_date": "2025-01-03", "close": 105},
+                    {"symbol": "AAA", "session_date": "2025-01-04", "close": 110},
+                ],
+                "trades": [
+                    {
+                        "trade_id": "aaa-long",
+                        "symbol": "AAA",
+                        "side": "long",
+                        "entry_date": "2025-01-02",
+                        "exit_date": "2025-01-04",
+                        "shares": 10,
+                        "entry_price": 100,
+                        "exit_price": 110,
+                        "entry_average_daily_volume_shares": 1000000,
+                        "exit_average_daily_volume_shares": 1000000,
+                        "holding_sessions": 2,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "backtest",
+            "run-ledger",
+            "--spec-file",
+            str(spec),
+            "--output",
+            str(output),
+            "--bootstrap-resamples",
+            "100",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["trade_count"] == 1
+    assert report["bootstrap"] is None
+    assert report["final_net_equity"] < report["final_gross_equity"]

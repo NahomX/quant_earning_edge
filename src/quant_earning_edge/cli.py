@@ -9,9 +9,15 @@ from typing import TYPE_CHECKING, Annotated
 
 import httpx
 import typer
+from pydantic import ValidationError
 
 from quant_earning_edge import __version__
-from quant_earning_edge.backtest import WalkForwardConfig, WalkForwardPlanner
+from quant_earning_edge.backtest import (
+    BacktestSpec,
+    VectorbtBacktestEngine,
+    WalkForwardConfig,
+    WalkForwardPlanner,
+)
 from quant_earning_edge.data import (
     BarBackfillJob,
     BarBackfillStore,
@@ -27,6 +33,7 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
+from quant_earning_edge.evaluation import PerformanceEvaluator
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -441,6 +448,54 @@ def plan_backtest_splits(  # noqa: PLR0917 - CLI options define the split contra
             "sha256": plan.sha256,
             "sample_count": plan.sample_count,
             "fold_count": len(plan.folds),
+        }
+    )
+
+
+@backtest_app.command("run-ledger")
+def run_backtest_ledger(
+    spec_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated daily backtest JSON spec."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable standardized evaluation JSON."),
+    ],
+    bootstrap_resamples: Annotated[
+        int,
+        typer.Option(min=1, help="Trade-vector bootstrap resamples."),
+    ] = 10_000,
+    seed: Annotated[
+        int,
+        typer.Option(help="Deterministic bootstrap random seed."),
+    ] = 20260427,
+) -> None:
+    """Run vectorbt, reconcile costs, and persist standardized evidence."""
+    try:
+        spec = BacktestSpec.model_validate_json(spec_file.read_bytes())
+        initial_cash, sessions, marks, trades = spec.domain_inputs()
+        result = VectorbtBacktestEngine().run(
+            trades=trades,
+            marks=marks,
+            sessions=sessions,
+            initial_cash=initial_cash,
+        )
+    except (ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="--spec-file") from error
+    evaluator = PerformanceEvaluator(
+        bootstrap_resamples=bootstrap_resamples,
+        seed=seed,
+    )
+    report = evaluator.evaluate(result)
+    evaluator.write(report, output)
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "input_sha256": report.input_sha256,
+            "trade_count": report.trade_count,
+            "session_count": report.session_count,
         }
     )
 

@@ -144,6 +144,37 @@ included only when its full label horizon ends strictly before the first test
 session. Re-running against the same content is idempotent; an existing
 different manifest at the requested path is rejected.
 
+## Run and evaluate a daily backtest ledger
+
+Create a JSON specification with `initial_cash`, an increasing `sessions`
+array, daily `marks`, and fully specified `trades`. Every trade requires a
+unique ID, long/short side, entry/exit session and price, integer shares,
+entry/exit ADV, and holding-session count. The engine requires a mark for every
+session during which each position is held.
+
+Run the reconciled vectorbt ledger and standardized evaluation:
+
+```powershell
+uv run qee backtest run-ledger `
+  --spec-file .\backtest-spec.json `
+  --output .\data\manifests\backtest\performance-report.json `
+  --bootstrap-resamples 10000 `
+  --seed 20260427
+```
+
+The engine values gross and net portfolios separately, applies the documented
+commission, half-spread, square-root impact, borrow, and long sell-stop
+slippage assumptions, and aborts unless both final and daily accounting
+reconcile. The output includes the semantic input hash, vectorbt version,
+gross/net Sharpe, annualized return, max drawdown, hit rate, payoff, exposure,
+turnover, sequential per-component Sharpe loss, and deterministic 95%
+trade-resampled confidence intervals. A one-trade diagnostic run has no
+bootstrap interval because it cannot estimate dispersion.
+
+This daily chassis requires `entry_date < exit_date`. Earnings open-to-close
+execution is intentionally not represented by inventing two daily bars; the
+intraday execution path is a later, separate contract.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

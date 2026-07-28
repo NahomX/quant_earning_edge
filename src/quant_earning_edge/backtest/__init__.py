@@ -14,6 +14,7 @@ from quant_earning_edge.backtest.engine import (
     TradeIntent,
     TradeLedger,
     VectorbtBacktestEngine,
+    VectorbtIntradayEngine,
 )
 from quant_earning_edge.backtest.plan import WalkForwardPlan, WalkForwardPlanner
 from quant_earning_edge.backtest.spec import BacktestSpec, DailyMarkSpec, TradeIntentSpec
@@ -41,6 +42,7 @@ __all__ = [
     "TradeIntentSpec",
     "TradeLedger",
     "VectorbtBacktestEngine",
+    "VectorbtIntradayEngine",
     "WalkForwardConfig",
     "WalkForwardFold",
     "WalkForwardPlan",

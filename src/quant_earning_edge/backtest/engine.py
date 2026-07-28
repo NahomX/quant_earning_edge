@@ -19,7 +19,7 @@ from quant_earning_edge.backtest.costs import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import date
+    from datetime import date, datetime
 
 PositionSide = Literal["long", "short"]
 
@@ -58,8 +58,10 @@ class TradeIntent:
     holding_sessions: int
     triggered_stop_price: float | None = None
     atr5: float | None = None
+    entry_at: datetime | None = None
+    exit_at: datetime | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: PLR0912 - validates daily and intraday forms.
         trade_id = self.trade_id.strip()
         symbol = self.symbol.strip().upper()
         if not trade_id:
@@ -68,8 +70,24 @@ class TradeIntent:
             raise ValueError("symbol must not be empty")
         object.__setattr__(self, "trade_id", trade_id)
         object.__setattr__(self, "symbol", symbol)
-        if self.entry_date >= self.exit_date:
-            raise ValueError("daily trade entry_date must precede exit_date")
+        if (self.entry_at is None) != (self.exit_at is None):
+            raise ValueError("entry_at and exit_at must be supplied together")
+        if self.entry_at is None:
+            if self.entry_date >= self.exit_date:
+                raise ValueError("daily trade entry_date must precede exit_date")
+        else:
+            if (
+                self.entry_at.tzinfo is None
+                or self.entry_at.utcoffset() is None
+                or self.exit_at is None
+                or self.exit_at.tzinfo is None
+                or self.exit_at.utcoffset() is None
+            ):
+                raise ValueError("execution timestamps must be timezone-aware")
+            if self.entry_at >= self.exit_at:
+                raise ValueError("entry_at must precede exit_at")
+            if self.entry_at.date() != self.entry_date or self.exit_at.date() != self.exit_date:
+                raise ValueError("execution timestamp dates must match trade dates")
         if self.shares < 1:
             raise ValueError("shares must be positive")
         numeric = (
@@ -80,8 +98,9 @@ class TradeIntent:
         )
         if any(value <= 0 or not math.isfinite(value) for value in numeric):
             raise ValueError("prices and average daily volumes must be finite and positive")
-        if self.holding_sessions < 1:
-            raise ValueError("holding_sessions must be positive for a daily round trip")
+        expected_minimum_holding = 0 if self.entry_date == self.exit_date else 1
+        if self.holding_sessions < expected_minimum_holding:
+            raise ValueError("holding_sessions is inconsistent with trade dates")
         if self.side == "short" and self.triggered_stop_price is not None:
             raise ValueError("short buy-stop slippage is not defined by the architecture")
 
@@ -193,6 +212,8 @@ class VectorbtBacktestEngine:
             for item in trades
         ):
             raise ValueError("every trade entry and exit must be in sessions")
+        if any(item.entry_at is not None or item.exit_at is not None for item in trades):
+            raise ValueError("timestamped trades require VectorbtIntradayEngine")
 
         marks_by_key = self._marks_by_key(marks)
         ledgers = tuple(self._trade_ledger(item) for item in trades)
@@ -283,28 +304,7 @@ class VectorbtBacktestEngine:
         )
 
     def _trade_ledger(self, intent: TradeIntent) -> TradeLedger:
-        is_short = intent.side == "short"
-        entry = self._cost_model.estimate(
-            ExecutionCostInput(
-                side="sell" if is_short else "buy",
-                shares=intent.shares,
-                price=intent.entry_price,
-                average_daily_volume_shares=intent.entry_average_daily_volume_shares,
-                is_short_position=is_short,
-                holding_days=intent.holding_sessions if is_short else 0,
-            )
-        )
-        exit_cost = self._cost_model.estimate(
-            ExecutionCostInput(
-                side="buy" if is_short else "sell",
-                shares=intent.shares,
-                price=intent.exit_price,
-                average_daily_volume_shares=intent.exit_average_daily_volume_shares,
-                triggered_stop_price=intent.triggered_stop_price,
-                atr5=intent.atr5,
-            )
-        )
-        return TradeLedger(intent=intent, entry_cost=entry, exit_cost=exit_cost)
+        return _trade_ledger(intent, cost_model=self._cost_model)
 
     @staticmethod
     def _marks_by_key(marks: Sequence[DailyMark]) -> dict[tuple[str, date], float]:
@@ -409,6 +409,187 @@ class VectorbtBacktestEngine:
                 raise RuntimeError(
                     f"daily cost attribution does not reconcile on {item.session_date}"
                 )
+
+
+class VectorbtIntradayEngine:
+    """Run timestamped same-session round trips and aggregate daily evidence."""
+
+    def __init__(self, cost_model: CostModel | None = None) -> None:
+        self._cost_model = cost_model or CostModel()
+
+    def run(  # noqa: PLR0912 - atomic timestamp validation and vectorbt execution.
+        self,
+        *,
+        trades: Sequence[TradeIntent],
+        sessions: Sequence[date],
+        initial_cash: float,
+    ) -> BacktestResult:
+        """Execute distinct intraday entry/exit orders with exact reconciliation."""
+        if initial_cash <= 0 or not math.isfinite(initial_cash):
+            raise ValueError("initial_cash must be finite and positive")
+        session_dates = tuple(sessions)
+        if not session_dates or tuple(sorted(set(session_dates))) != session_dates:
+            raise ValueError("sessions must be non-empty, unique, and increasing")
+        if not trades:
+            raise ValueError("at least one trade is required")
+        if len({item.trade_id for item in trades}) != len(trades):
+            raise ValueError("trade_id values must be unique")
+        session_set = set(session_dates)
+        for item in trades:
+            if item.entry_at is None or item.exit_at is None:
+                raise ValueError("intraday trades require entry_at and exit_at")
+            if item.entry_date != item.exit_date:
+                raise ValueError("intraday engine accepts same-session round trips only")
+            if item.entry_date not in session_set:
+                raise ValueError("every intraday trade date must be in sessions")
+
+        ledgers = tuple(_trade_ledger(item, cost_model=self._cost_model) for item in trades)
+        timeline = tuple(
+            sorted(
+                {
+                    timestamp
+                    for item in trades
+                    for timestamp in (item.entry_at, item.exit_at)
+                    if timestamp is not None
+                }
+            )
+        )
+        index = pd.DatetimeIndex(timeline)
+        columns = [item.trade_id for item in trades]
+        close = pd.DataFrame(index=index, columns=columns, dtype=float)
+        size = pd.DataFrame(np.nan, index=index, columns=columns, dtype=float)
+        execution = pd.DataFrame(np.nan, index=index, columns=columns, dtype=float)
+        fixed_costs = pd.DataFrame(0.0, index=index, columns=columns, dtype=float)
+        for ledger in ledgers:
+            intent = ledger.intent
+            entry_at = intent.entry_at
+            exit_at = intent.exit_at
+            if entry_at is None or exit_at is None:
+                raise RuntimeError("validated intraday timestamp disappeared")
+            for timestamp in timeline:
+                close.at[pd.Timestamp(timestamp), intent.trade_id] = (
+                    intent.entry_price if timestamp < exit_at else intent.exit_price
+                )
+            direction = 1.0 if intent.side == "long" else -1.0
+            size.at[pd.Timestamp(entry_at), intent.trade_id] = direction * intent.shares
+            size.at[pd.Timestamp(exit_at), intent.trade_id] = -direction * intent.shares
+            execution.at[pd.Timestamp(entry_at), intent.trade_id] = intent.entry_price
+            execution.at[pd.Timestamp(exit_at), intent.trade_id] = intent.exit_price
+            fixed_costs.at[pd.Timestamp(entry_at), intent.trade_id] = ledger.entry_cost.total
+            fixed_costs.at[pd.Timestamp(exit_at), intent.trade_id] = ledger.exit_cost.total
+        vbt = _import_vectorbt()
+        common = {
+            "close": close,
+            "size": size,
+            "size_type": "amount",
+            "direction": "both",
+            "price": execution,
+            "init_cash": initial_cash,
+            "cash_sharing": True,
+            "group_by": True,
+            "call_seq": "auto",
+            "allow_partial": False,
+            "raise_reject": True,
+        }
+        gross_final = float(vbt.Portfolio.from_orders(**common).value().iloc[-1])
+        net_final = float(
+            vbt.Portfolio.from_orders(**common, fixed_fees=fixed_costs).value().iloc[-1]
+        )
+        daily = _intraday_daily_ledger(
+            trades=ledgers,
+            sessions=session_dates,
+            initial_cash=initial_cash,
+        )
+        expected_gross = initial_cash + sum(item.gross_pnl for item in ledgers)
+        expected_net = initial_cash + sum(item.net_pnl for item in ledgers)
+        if not math.isclose(gross_final, expected_gross, abs_tol=1e-8):
+            raise RuntimeError("intraday vectorbt gross equity does not reconcile")
+        if not math.isclose(net_final, expected_net, abs_tol=1e-8):
+            raise RuntimeError("intraday vectorbt net equity does not reconcile")
+        return BacktestResult(
+            engine=f"vectorbt-intraday-{vbt.__version__}",
+            input_sha256=_input_digest(
+                trades=trades,
+                marks=(),
+                sessions=session_dates,
+                initial_cash=initial_cash,
+            ),
+            initial_cash=initial_cash,
+            trades=ledgers,
+            daily=daily,
+        )
+
+
+def _trade_ledger(intent: TradeIntent, *, cost_model: CostModel) -> TradeLedger:
+    is_short = intent.side == "short"
+    entry = cost_model.estimate(
+        ExecutionCostInput(
+            side="sell" if is_short else "buy",
+            shares=intent.shares,
+            price=intent.entry_price,
+            average_daily_volume_shares=intent.entry_average_daily_volume_shares,
+            is_short_position=is_short,
+            holding_days=intent.holding_sessions if is_short else 0,
+        )
+    )
+    exit_cost = cost_model.estimate(
+        ExecutionCostInput(
+            side="buy" if is_short else "sell",
+            shares=intent.shares,
+            price=intent.exit_price,
+            average_daily_volume_shares=intent.exit_average_daily_volume_shares,
+            triggered_stop_price=intent.triggered_stop_price,
+            atr5=intent.atr5,
+        )
+    )
+    return TradeLedger(intent=intent, entry_cost=entry, exit_cost=exit_cost)
+
+
+def _intraday_daily_ledger(
+    *,
+    trades: Sequence[TradeLedger],
+    sessions: Sequence[date],
+    initial_cash: float,
+) -> tuple[DailyLedger, ...]:
+    output: list[DailyLedger] = []
+    gross_equity = initial_cash
+    net_equity = initial_cash
+    for session in sessions:
+        session_trades = tuple(item for item in trades if item.intent.entry_date == session)
+        gross_pnl = sum(item.gross_pnl for item in session_trades)
+        commission = sum(
+            item.entry_cost.commission + item.exit_cost.commission for item in session_trades
+        )
+        half_spread = sum(
+            item.entry_cost.half_spread + item.exit_cost.half_spread for item in session_trades
+        )
+        market_impact = sum(
+            item.entry_cost.market_impact + item.exit_cost.market_impact for item in session_trades
+        )
+        borrow = sum(item.entry_cost.borrow + item.exit_cost.borrow for item in session_trades)
+        stop_slippage = sum(
+            item.entry_cost.stop_slippage + item.exit_cost.stop_slippage for item in session_trades
+        )
+        total_cost = commission + half_spread + market_impact + borrow + stop_slippage
+        net_pnl = gross_pnl - total_cost
+        gross_equity += gross_pnl
+        net_equity += net_pnl
+        output.append(
+            DailyLedger(
+                session_date=session,
+                gross_pnl=gross_pnl,
+                commission=commission,
+                half_spread=half_spread,
+                market_impact=market_impact,
+                borrow=borrow,
+                stop_slippage=stop_slippage,
+                net_pnl=net_pnl,
+                gross_equity=gross_equity,
+                net_equity=net_equity,
+                gross_exposure=sum(item.entry_notional for item in session_trades),
+            )
+        )
+    return tuple(output)
 
 
 def _import_vectorbt() -> Any:

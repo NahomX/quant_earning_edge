@@ -57,6 +57,7 @@ reproducible through `uv.lock`.
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
+| Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 
 ## Phase 1 exit gate
 

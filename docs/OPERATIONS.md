@@ -176,9 +176,12 @@ The optional HTML output is self-contained and deterministic: it reads the
 same reconciled result as the JSON report, embeds no remote assets or current
 timestamps, and rejects a pre-existing different file.
 
-This daily chassis requires `entry_date < exit_date`. Earnings open-to-close
-execution is intentionally not represented by inventing two daily bars; the
-intraday execution path is a later, separate contract.
+Multi-session specs omit `entry_at`/`exit_at` and require daily marks. Earnings
+open-to-close specs provide offset-aware entry and exit timestamps on the same
+declared session, set `holding_sessions` to zero, and supply no daily marks.
+The CLI automatically selects the timestamped vectorbt engine, executes
+separate entry/exit orders, and aggregates the reconciled result into the same
+daily evaluation contract.
 
 ## Portfolio-construction contract
 

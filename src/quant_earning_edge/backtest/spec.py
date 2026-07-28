@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date  # noqa: TC003 - Pydantic resolves field types at runtime.
+from datetime import date, datetime  # noqa: TC003 - Pydantic resolves types at runtime.
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,9 +38,11 @@ class TradeIntentSpec(BaseModel):
     exit_price: float = Field(gt=0)
     entry_average_daily_volume_shares: float = Field(gt=0)
     exit_average_daily_volume_shares: float = Field(gt=0)
-    holding_sessions: int = Field(gt=0)
+    holding_sessions: int = Field(ge=0)
     triggered_stop_price: float | None = Field(default=None, gt=0)
     atr5: float | None = Field(default=None, gt=0)
+    entry_at: datetime | None = None
+    exit_at: datetime | None = None
 
     def to_domain(self) -> TradeIntent:
         return TradeIntent(**self.model_dump())

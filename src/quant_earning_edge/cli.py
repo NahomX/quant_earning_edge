@@ -15,6 +15,7 @@ from quant_earning_edge import __version__
 from quant_earning_edge.backtest import (
     BacktestSpec,
     VectorbtBacktestEngine,
+    VectorbtIntradayEngine,
     WalkForwardConfig,
     WalkForwardPlanner,
 )
@@ -482,12 +483,21 @@ def run_backtest_ledger(
     try:
         spec = BacktestSpec.model_validate_json(spec_file.read_bytes())
         initial_cash, sessions, marks, trades = spec.domain_inputs()
-        result = VectorbtBacktestEngine().run(
-            trades=trades,
-            marks=marks,
-            sessions=sessions,
-            initial_cash=initial_cash,
-        )
+        if any(item.entry_at is not None for item in trades):
+            if marks:
+                raise ValueError("intraday ledger specs must not supply daily marks")
+            result = VectorbtIntradayEngine().run(
+                trades=trades,
+                sessions=sessions,
+                initial_cash=initial_cash,
+            )
+        else:
+            result = VectorbtBacktestEngine().run(
+                trades=trades,
+                marks=marks,
+                sessions=sessions,
+                initial_cash=initial_cash,
+            )
     except (ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="--spec-file") from error
     evaluator = PerformanceEvaluator(

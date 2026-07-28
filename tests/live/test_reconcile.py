@@ -6,19 +6,17 @@ import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
 from typer.testing import CliRunner
 
+import quant_earning_edge.cli as cli_module
 from quant_earning_edge.backtest import NbboReplayEvidence, NbboReplaySpec, replay_order
 from quant_earning_edge.cli import app
 from quant_earning_edge.live import AlpacaPaperClient, BrokerOrder, PaperOrderReconciler
 from quant_earning_edge.signals import FrozenDailyOrders
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _evidence() -> NbboReplayEvidence:
@@ -278,5 +276,79 @@ def test_frozen_reconciliation_cli_fetches_alpaca_order(
 
     assert result.exit_code == 0
     assert fetched == ["entry-1"]
+
+    revision_directory = tmp_path / "revisions"
+    revision = CliRunner().invoke(
+        app,
+        [
+            "paper",
+            "reconcile-frozen-revision",
+            "--frozen-orders",
+            str(frozen_path),
+            "--evidence-file",
+            str(evidence_file),
+            "--output-directory",
+            str(revision_directory),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert revision.exit_code == 0
+    revision_path = Path(json.loads(revision.stdout)["output"])
+    assert revision_path.parent == revision_directory.resolve()
+    assert revision_path.name.startswith("paper-reconciliation-")
+    assert FrozenDailyOrders.load(frozen_path) is frozen
     assert json.loads(result.stdout)["reconciliation_break_count"] == 0
     assert json.loads(output.read_bytes())["orders"][0]["client_order_id"] == "entry-1"
+
+
+def test_content_addressed_reconciliation_can_resolve_on_later_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = _evidence()
+    broken = PaperOrderReconciler().evaluate(
+        evidence=(evidence,),
+        broker_orders=(
+            _broker_order(
+                status="partially_filled",
+                filled_qty="50",
+                filled_avg_price="100.11",
+                filled_at=None,
+            ),
+        ),
+        session_date=date(2025, 1, 3),
+        evaluated_at=datetime(2025, 1, 3, 21, 5, tzinfo=UTC),
+    )
+    clean = PaperOrderReconciler().evaluate(
+        evidence=(evidence,),
+        broker_orders=(_broker_order(),),
+        session_date=date(2025, 1, 3),
+        evaluated_at=datetime(2025, 1, 3, 21, 10, tzinfo=UTC),
+    )
+    reports = iter((broken, clean))
+    monkeypatch.setattr(
+        cli_module,
+        "_frozen_paper_reconciliation",
+        lambda **_: next(reports),
+    )
+    frozen_path = tmp_path / "frozen.json"
+    frozen_path.write_text("{}", encoding="utf-8")
+    output_directory = tmp_path / "revisions"
+    arguments = [
+        "paper",
+        "reconcile-frozen-revision",
+        "--frozen-orders",
+        str(frozen_path),
+        "--output-directory",
+        str(output_directory),
+    ]
+
+    first = CliRunner().invoke(app, arguments)
+    second = CliRunner().invoke(app, arguments)
+
+    assert first.exit_code == 1
+    assert second.exit_code == 0
+    revisions = tuple(output_directory.glob("paper-reconciliation-*.json"))
+    assert len(revisions) == 2

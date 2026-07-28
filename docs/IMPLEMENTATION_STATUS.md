@@ -98,6 +98,8 @@ reproducible through `uv.lock`.
 | Provider-native freshness evidence | Complete | Polygon snapshot and Alpaca clock timestamps, raw bronze payload hashes, canonical immutable evidence |
 | Reconciliation-break age derivation | Complete | authoritative-session close count, latest-revision resolution, immutable report provenance |
 | Pre-open workflow readiness | Complete | order-control stages stay pending until ten minutes before the planned entry |
+| Self-refreshing pre-open breaker bundle | Complete | discovers prior daily evidence, probes providers at execution, emits content-addressed controls |
+| Retry-safe paper reconciliation revisions | Complete | content-addressed broker observations allow later clean revisions to resolve earlier breaks |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -129,13 +131,12 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Move freshness capture and evidence-backed breaker preparation into the
-pre-open workflow stage, so a queued daily specification refreshes its own
-controls at the readiness boundary instead of accepting an externally prepared
-breaker file. Then consolidate generation of the daily control bundle around
-causal planning inputs, the authoritative calendar, prior immutable evidence,
-and deployed provider credentials. After credentialed historical/strategy gates
-pass, begin the real 90-session run.
+Consolidate causal daily planning, rolling Phase 6 preparation, and
+self-refreshing breaker workflow generation into one restart-safe daily
+preparation boundary. Then add a deployment/readiness audit that verifies the
+worker, calendar span, provider entitlements, paper-only host, writable roots,
+and required prior-session bootstrap evidence without exposing secrets. After
+credentialed historical/strategy gates pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

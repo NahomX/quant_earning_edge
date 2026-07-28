@@ -32,7 +32,7 @@ class CompletedReplayControlSource:
 class CircuitBreakerControlBuilder:
     """Map completed replay sessions onto an explicit new control date."""
 
-    def build(
+    def prepare(
         self,
         *,
         control_date: date,
@@ -41,7 +41,6 @@ class CircuitBreakerControlBuilder:
         alpaca_data_observed_at: datetime | None,
         sources: Sequence[CompletedReplayControlSource],
         reconciliation_break_age_sessions: int | None,
-        output: Path,
     ) -> CircuitBreakerEvaluationSpec:
         if not sources:
             raise ValueError("at least one completed replay source is required")
@@ -87,15 +86,50 @@ class CircuitBreakerControlBuilder:
                 CircuitBreakerObservationSpec.model_validate(item.__dict__) for item in observations
             )
         )
-        _write_once(
-            output,
-            json.dumps(
-                spec.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode(),
-        )
         return spec
+
+    def build(
+        self,
+        *,
+        control_date: date,
+        evaluated_at: datetime,
+        polygon_data_observed_at: datetime | None,
+        alpaca_data_observed_at: datetime | None,
+        sources: Sequence[CompletedReplayControlSource],
+        reconciliation_break_age_sessions: int | None,
+        output: Path,
+    ) -> CircuitBreakerEvaluationSpec:
+        """Prepare and persist one canonical control specification."""
+        spec = self.prepare(
+            control_date=control_date,
+            evaluated_at=evaluated_at,
+            polygon_data_observed_at=polygon_data_observed_at,
+            alpaca_data_observed_at=alpaca_data_observed_at,
+            sources=sources,
+            reconciliation_break_age_sessions=reconciliation_break_age_sessions,
+        )
+        write_circuit_breaker_controls(spec, output)
+        return spec
+
+
+def encode_circuit_breaker_controls(spec: CircuitBreakerEvaluationSpec) -> bytes:
+    """Encode the strict breaker input canonically for content addressing."""
+    return json.dumps(
+        spec.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
+def write_circuit_breaker_controls(
+    spec: CircuitBreakerEvaluationSpec,
+    output: Path,
+) -> None:
+    """Persist canonical breaker controls with immutable collision checks."""
+    _write_once(
+        output,
+        encode_circuit_breaker_controls(spec),
+    )
 
 
 def _write_once(path: Path, encoded: bytes) -> None:

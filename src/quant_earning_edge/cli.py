@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import UTC, date, datetime, timedelta
@@ -88,9 +89,12 @@ from quant_earning_edge.monitoring import (
     CircuitBreakerEvaluationSpec,
     CircuitBreakerEvaluator,
     CompletedReplayControlSource,
+    DailyControlEvidenceDiscovery,
     ProviderFreshnessEvidence,
     ProviderFreshnessProbe,
     ReconciliationAgeEvaluator,
+    encode_circuit_breaker_controls,
+    write_circuit_breaker_controls,
 )
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
@@ -1346,29 +1350,11 @@ def probe_provider_freshness(
     env_file: EnvFileOption = None,
 ) -> None:
     """Capture provider-native timestamps from Polygon and Alpaca paper."""
-    environment = _environment(env_file)
     try:
-        polygon_key = environment.require_polygon_api_key()
-        alpaca_key, alpaca_secret = environment.require_alpaca_credentials()
-        layout = LakehouseLayout(environment.data_lake_root)
-        with (
-            httpx.Client(
-                base_url=environment.polygon_base_url,
-                timeout=environment.http_timeout_seconds,
-            ) as polygon_http,
-            httpx.Client(
-                base_url=environment.alpaca_trading_base_url,
-                timeout=environment.http_timeout_seconds,
-            ) as alpaca_http,
-        ):
-            evidence = ProviderFreshnessProbe(
-                polygon_api_key=polygon_key,
-                alpaca_api_key_id=alpaca_key,
-                alpaca_secret_key=alpaca_secret,
-                polygon_http=polygon_http,
-                alpaca_http=alpaca_http,
-                bronze_writer=BronzeWriter(layout),
-            ).probe(symbol=symbol)
+        evidence = _capture_provider_freshness(
+            environment=_environment(env_file),
+            symbol=symbol,
+        )
         evidence.write(output)
     except (
         OSError,
@@ -1387,6 +1373,34 @@ def probe_provider_freshness(
             "alpaca_data_observed_at": evidence.alpaca_data_observed_at,
         }
     )
+
+
+def _capture_provider_freshness(
+    *,
+    environment: RuntimeEnvironment,
+    symbol: str,
+) -> ProviderFreshnessEvidence:
+    polygon_key = environment.require_polygon_api_key()
+    alpaca_key, alpaca_secret = environment.require_alpaca_credentials()
+    layout = LakehouseLayout(environment.data_lake_root)
+    with (
+        httpx.Client(
+            base_url=environment.polygon_base_url,
+            timeout=environment.http_timeout_seconds,
+        ) as polygon_http,
+        httpx.Client(
+            base_url=environment.alpaca_trading_base_url,
+            timeout=environment.http_timeout_seconds,
+        ) as alpaca_http,
+    ):
+        return ProviderFreshnessProbe(
+            polygon_api_key=polygon_key,
+            alpaca_api_key_id=alpaca_key,
+            alpaca_secret_key=alpaca_secret,
+            polygon_http=polygon_http,
+            alpaca_http=alpaca_http,
+            bronze_writer=BronzeWriter(layout),
+        ).probe(symbol=symbol)
 
 
 @monitoring_app.command("reconciliation-age")
@@ -1616,6 +1630,85 @@ def prepare_breaker_evidence(  # noqa: PLR0917 - complete evidence boundary.
     )
 
 
+@monitoring_app.command("prepare-breaker-bundle")
+def prepare_breaker_bundle(  # noqa: PLR0917 - complete autonomous control boundary.
+    control_date: Annotated[str, typer.Option(help="Session being authorized.")],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative sessions."),
+    ],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, help="Prior daily workflow artifacts."),
+    ],
+    output_directory: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Content-addressed pre-open control bundle."),
+    ],
+    symbol: Annotated[
+        str,
+        typer.Option(help="Liquid US-equity Polygon snapshot probe."),
+    ] = "SPY",
+    env_file: EnvFileOption = None,
+) -> None:
+    """Discover prior evidence and prepare retry-safe current breaker controls."""
+    try:
+        selected_date = _parse_date(control_date, option="--control-date")
+        calendar = SessionFileStore.load(session_file)
+        discovered = DailyControlEvidenceDiscovery().discover(
+            calendar=calendar,
+            artifact_root=artifact_root,
+            control_date=selected_date,
+        )
+        freshness = _capture_provider_freshness(
+            environment=_environment(env_file),
+            symbol=symbol,
+        )
+        age = ReconciliationAgeEvaluator().evaluate(
+            calendar=calendar,
+            reports=discovered.reconciliation_reports,
+            control_date=selected_date,
+            evaluated_at=freshness.evaluated_at,
+        )
+        spec = CircuitBreakerControlBuilder().prepare(
+            control_date=selected_date,
+            evaluated_at=freshness.evaluated_at,
+            polygon_data_observed_at=freshness.polygon_data_observed_at,
+            alpaca_data_observed_at=freshness.alpaca_data_observed_at,
+            sources=discovered.replay_sources,
+            reconciliation_break_age_sessions=age.reconciliation_break_age_sessions,
+        )
+        breaker_bytes = encode_circuit_breaker_controls(spec)
+        breaker_sha256 = hashlib.sha256(breaker_bytes).hexdigest()
+        resolved_output = output_directory.resolve()
+        freshness_path = resolved_output / f"provider-freshness-{freshness.sha256}.json"
+        age_path = resolved_output / f"reconciliation-age-{age.sha256}.json"
+        breaker_path = resolved_output / f"breaker-controls-{breaker_sha256}.json"
+        freshness.write(freshness_path)
+        age.write(age_path)
+        write_circuit_breaker_controls(spec, breaker_path)
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="daily breaker bundle inputs") from error
+    _echo_json(
+        {
+            "freshness_path": str(freshness_path),
+            "reconciliation_age_path": str(age_path),
+            "breaker_spec_path": str(breaker_path),
+            "freshness_sha256": freshness.sha256,
+            "reconciliation_age_sha256": age.sha256,
+            "breaker_spec_sha256": breaker_sha256,
+            "replay_source_count": len(discovered.replay_sources),
+            "reconciliation_revision_count": len(discovered.reconciliation_reports),
+        }
+    )
+
+
 @paper_app.command("submit-order")
 def submit_paper_order(
     spec_file: Annotated[
@@ -1815,39 +1908,11 @@ def reconcile_frozen_paper_orders(
 ) -> None:
     """Fetch frozen orders from Alpaca paper and reconcile them to replay."""
     try:
-        frozen = FrozenDailyOrders.load(frozen_orders)
-        evidence = tuple(NbboReplayEvidence.load(path) for path in tuple(evidence_files or ()))
-        reconciler = PaperOrderReconciler()
-        evaluated_at = datetime.now(UTC)
-        if frozen.intended_orders:
-            environment = _environment(env_file)
-            api_key_id, secret_key = environment.require_alpaca_credentials()
-            layout = LakehouseLayout(environment.data_lake_root)
-            with httpx.Client(
-                base_url=environment.alpaca_trading_base_url,
-                timeout=environment.http_timeout_seconds,
-            ) as http_client:
-                report = reconciler.fetch_and_evaluate(
-                    evidence=evidence,
-                    intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
-                    order_lookup=AlpacaPaperClient(
-                        api_key_id=api_key_id,
-                        secret_key=secret_key,
-                        http_client=http_client,
-                        bronze_writer=BronzeWriter(layout),
-                    ),
-                    session_date=frozen.trade_date,
-                    evaluated_at=evaluated_at,
-                )
-        else:
-            if evidence:
-                raise ValueError("no-trade frozen orders must not have replay evidence")
-            report = reconciler.evaluate(
-                evidence=(),
-                broker_orders=(),
-                session_date=frozen.trade_date,
-                evaluated_at=evaluated_at,
-            )
+        report = _frozen_paper_reconciliation(
+            frozen_orders=frozen_orders,
+            evidence_files=tuple(evidence_files or ()),
+            env_file=env_file,
+        )
         report.write(output)
     except (
         OSError,
@@ -1872,6 +1937,101 @@ def reconcile_frozen_paper_orders(
     )
     if report.reconciliation_break_count:
         raise typer.Exit(code=1)
+
+
+@paper_app.command("reconcile-frozen-revision")
+def reconcile_frozen_paper_order_revision(
+    frozen_orders: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical frozen daily orders."),
+    ],
+    evidence_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--evidence-file",
+            exists=True,
+            dir_okay=False,
+            help="Immutable per-order replay evidence; repeat for every frozen order.",
+        ),
+    ] = None,
+    output_directory: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Directory for content-addressed revisions."),
+    ] = Path(),
+    env_file: EnvFileOption = None,
+) -> None:
+    """Write a content-addressed reconciliation revision safe for later retries."""
+    try:
+        report = _frozen_paper_reconciliation(
+            frozen_orders=frozen_orders,
+            evidence_files=tuple(evidence_files or ()),
+            env_file=env_file,
+        )
+        output = output_directory / f"paper-reconciliation-{report.sha256}.json"
+        report.write(output)
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(
+            str(error), param_hint="frozen paper reconciliation revision inputs"
+        ) from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "session_date": report.session_date,
+            "order_count": len(report.orders),
+            "reconciliation_break_count": report.reconciliation_break_count,
+            "all_orders_terminal": report.all_orders_terminal,
+            "paper_pnl_is_gate_input": report.paper_pnl_is_gate_input,
+        }
+    )
+    if report.reconciliation_break_count:
+        raise typer.Exit(code=1)
+
+
+def _frozen_paper_reconciliation(
+    *,
+    frozen_orders: Path,
+    evidence_files: tuple[Path, ...],
+    env_file: Path | None,
+) -> PaperReconciliationReport:
+    frozen = FrozenDailyOrders.load(frozen_orders)
+    evidence = tuple(NbboReplayEvidence.load(path) for path in evidence_files)
+    reconciler = PaperOrderReconciler()
+    evaluated_at = datetime.now(UTC)
+    if not frozen.intended_orders:
+        if evidence:
+            raise ValueError("no-trade frozen orders must not have replay evidence")
+        return reconciler.evaluate(
+            evidence=(),
+            broker_orders=(),
+            session_date=frozen.trade_date,
+            evaluated_at=evaluated_at,
+        )
+    environment = _environment(env_file)
+    api_key_id, secret_key = environment.require_alpaca_credentials()
+    layout = LakehouseLayout(environment.data_lake_root)
+    with httpx.Client(
+        base_url=environment.alpaca_trading_base_url,
+        timeout=environment.http_timeout_seconds,
+    ) as http_client:
+        return reconciler.fetch_and_evaluate(
+            evidence=evidence,
+            intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
+            order_lookup=AlpacaPaperClient(
+                api_key_id=api_key_id,
+                secret_key=secret_key,
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ),
+            session_date=frozen.trade_date,
+            evaluated_at=evaluated_at,
+        )
 
 
 @workflow_app.command("run")
@@ -1932,10 +2092,6 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
         Path,
         typer.Option(exists=True, dir_okay=False, help="Validated strategy YAML."),
     ],
-    breaker_spec: Annotated[
-        Path,
-        typer.Option(exists=True, dir_okay=False, help="Current circuit-breaker input."),
-    ],
     phase6_spec: Annotated[
         Path,
         typer.Option(exists=True, dir_okay=False, help="Current Phase 6 aggregation input."),
@@ -1949,6 +2105,26 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
         typer.Option(dir_okay=False, help="Canonical eight-stage workflow run spec."),
     ],
     worker_id: Annotated[str, typer.Option(help="Persistent worker identity.")],
+    breaker_spec: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Fixed breaker input; omit to prepare controls inside the workflow.",
+        ),
+    ] = None,
+    breaker_session_file: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Authoritative sessions for self-refreshing breaker controls.",
+        ),
+    ] = None,
+    freshness_symbol: Annotated[
+        str,
+        typer.Option(help="Liquid Polygon symbol used by self-refreshing controls."),
+    ] = "SPY",
     trigger: Annotated[
         WorkflowTrigger,
         typer.Option(help="Workflow invocation provenance."),
@@ -1969,9 +2145,26 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
         if planning.trade_date != selected_date:
             raise ValueError("planning spec trade date differs from workflow trade date")
         load_strategy_config(strategy_config)
-        breakers = CircuitBreakerEvaluationSpec.model_validate_json(breaker_spec.read_bytes())
-        if breakers.observations[-1].session_date != selected_date:
-            raise ValueError("breaker spec latest date differs from workflow trade date")
+        if breaker_spec is not None:
+            if breaker_session_file is not None:
+                raise ValueError(
+                    "fixed breaker spec and self-refreshing breaker session file are exclusive"
+                )
+            breakers = CircuitBreakerEvaluationSpec.model_validate_json(breaker_spec.read_bytes())
+            if breakers.observations[-1].session_date != selected_date:
+                raise ValueError("breaker spec latest date differs from workflow trade date")
+        else:
+            if breaker_session_file is None:
+                raise ValueError(
+                    "provide --breaker-spec or --breaker-session-file for control preparation"
+                )
+            if not artifact_root.is_dir():
+                raise ValueError(
+                    "self-refreshing breaker controls require an existing artifact root"
+                )
+            breaker_calendar = SessionFileStore.load(breaker_session_file)
+            if selected_date not in {item.session_date for item in breaker_calendar.sessions}:
+                raise ValueError("workflow trade date is not in the breaker session file")
         phase6 = Phase6AggregationSpec.model_validate_json(phase6_spec.read_bytes())
         expected_session_report = (
             artifact_root.resolve()
@@ -1997,6 +2190,8 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
             artifact_root=artifact_root,
             order_controls_not_before=(planning.entry_submitted_at - timedelta(minutes=10)),
             market_events_not_before=(planning.exit_expires_at + timedelta(minutes=5)),
+            breaker_session_file=breaker_session_file,
+            freshness_symbol=freshness_symbol,
             lease_seconds=lease_seconds,
             command_timeout_seconds=command_timeout_seconds,
         )
@@ -2010,6 +2205,7 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
             "trade_date": spec.trade_date,
             "trigger": spec.trigger,
             "stage_count": len(spec.stages),
+            "breaker_mode": ("fixed" if breaker_spec is not None else "self_refreshing"),
         }
     )
 

@@ -30,19 +30,30 @@ class DailyWorkflowSpecGenerator:
         worker_id: str,
         planning_spec: Path,
         strategy_config: Path,
-        breaker_spec: Path,
+        breaker_spec: Path | None,
         phase6_spec: Path,
         artifact_root: Path,
         order_controls_not_before: datetime,
         market_events_not_before: datetime,
+        breaker_session_file: Path | None = None,
+        freshness_symbol: str = "SPY",
         lease_seconds: int = 900,
         command_timeout_seconds: float = 1800,
     ) -> WorkflowRunSpec:
         planning = planning_spec.resolve()
         strategy = strategy_config.resolve()
-        breakers = breaker_spec.resolve()
         phase6 = phase6_spec.resolve()
         root = artifact_root.resolve() / f"trade_date={trade_date.isoformat()}"
+        if (breaker_spec is None) == (breaker_session_file is None):
+            raise ValueError(
+                "workflow requires exactly one of a fixed breaker spec "
+                "or an authoritative breaker session file"
+            )
+        breakers = breaker_spec.resolve() if breaker_spec is not None else None
+        breaker_sessions = (
+            breaker_session_file.resolve() if breaker_session_file is not None else None
+        )
+        control_evidence = root / "control-evidence"
         frozen = root / "frozen-daily-orders.json"
         paper_batch = root / "paper-order-batch.json"
         breaker_decision = root / "circuit-breaker-decision.json"
@@ -53,27 +64,83 @@ class DailyWorkflowSpecGenerator:
         evidence_directory = root / "replay-evidence"
         evidence_index = evidence_directory / "index.json"
         session_report = root / "replay-session.json"
-        paper_reconciliation = root / "paper-reconciliation.json"
         phase6_report = root / "phase6-progress.json"
+
+        if breaker_sessions is None:
+            assert breakers is not None
+            freeze_commands = (
+                QeeCommandSpec(
+                    arguments=(
+                        "calendar",
+                        "sessions",
+                        "--start",
+                        trade_date.isoformat(),
+                        "--end",
+                        trade_date.isoformat(),
+                    ),
+                    artifact_json_keys=("path",),
+                ),
+            )
+            freeze_outputs = (planning, strategy, breakers, phase6)
+            evaluate_breaker_command = QeeCommandSpec(
+                arguments=(
+                    "monitoring",
+                    "circuit-breakers",
+                    "--spec-file",
+                    str(breakers),
+                    "--output",
+                    str(breaker_decision),
+                ),
+            )
+        else:
+            freeze_commands = (
+                QeeCommandSpec(
+                    arguments=(
+                        "monitoring",
+                        "prepare-breaker-bundle",
+                        "--control-date",
+                        trade_date.isoformat(),
+                        "--session-file",
+                        str(breaker_sessions),
+                        "--artifact-root",
+                        str(artifact_root.resolve()),
+                        "--output-directory",
+                        str(control_evidence),
+                        "--symbol",
+                        freshness_symbol,
+                    ),
+                    artifact_json_keys=(
+                        "freshness_path",
+                        "reconciliation_age_path",
+                        "breaker_spec_path",
+                    ),
+                ),
+            )
+            freeze_outputs = (planning, strategy, phase6, breaker_sessions)
+            evaluate_breaker_command = QeeCommandSpec(
+                arguments=(
+                    "monitoring",
+                    "circuit-breakers",
+                    "--output",
+                    str(breaker_decision),
+                ),
+                artifact_bindings=(
+                    ArtifactArgumentBinding(
+                        source_stage=WorkflowStage.FREEZE_INPUTS,
+                        option="--spec-file",
+                        file_glob="breaker-controls-*.json",
+                        path_contains=("control-evidence",),
+                        maximum_matches=1,
+                    ),
+                ),
+            )
 
         stages = (
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.FREEZE_INPUTS,
                 not_before=order_controls_not_before,
-                commands=(
-                    QeeCommandSpec(
-                        arguments=(
-                            "calendar",
-                            "sessions",
-                            "--start",
-                            trade_date.isoformat(),
-                            "--end",
-                            trade_date.isoformat(),
-                        ),
-                        artifact_json_keys=("path",),
-                    ),
-                ),
-                output_files=(planning, strategy, breakers, phase6),
+                commands=freeze_commands,
+                output_files=freeze_outputs,
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.GENERATE_ORDER_PLAN,
@@ -97,18 +164,7 @@ class DailyWorkflowSpecGenerator:
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.EVALUATE_BREAKERS,
-                commands=(
-                    QeeCommandSpec(
-                        arguments=(
-                            "monitoring",
-                            "circuit-breakers",
-                            "--spec-file",
-                            str(breakers),
-                            "--output",
-                            str(breaker_decision),
-                        ),
-                    ),
-                ),
+                commands=(evaluate_breaker_command,),
                 output_files=(breaker_decision,),
             ),
             WorkflowStageCommandSpec(
@@ -221,12 +277,13 @@ class DailyWorkflowSpecGenerator:
                     QeeCommandSpec(
                         arguments=(
                             "paper",
-                            "reconcile-frozen",
+                            "reconcile-frozen-revision",
                             "--frozen-orders",
                             str(frozen),
-                            "--output",
-                            str(paper_reconciliation),
+                            "--output-directory",
+                            str(root),
                         ),
+                        artifact_json_keys=("output",),
                         artifact_bindings=(
                             ArtifactArgumentBinding(
                                 source_stage=WorkflowStage.REPLAY_ORDERS,
@@ -237,7 +294,7 @@ class DailyWorkflowSpecGenerator:
                         ),
                     ),
                 ),
-                output_files=(paper_reconciliation,),
+                output_files=(),
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.EVALUATE_PHASE6_PROGRESS,

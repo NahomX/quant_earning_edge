@@ -10,6 +10,12 @@ from quant_earning_edge.monitoring.breakers import (
 from quant_earning_edge.monitoring.control_inputs import (
     CircuitBreakerControlBuilder,
     CompletedReplayControlSource,
+    encode_circuit_breaker_controls,
+    write_circuit_breaker_controls,
+)
+from quant_earning_edge.monitoring.daily_evidence import (
+    DailyControlEvidenceDiscovery,
+    DiscoveredDailyControlEvidence,
 )
 from quant_earning_edge.monitoring.freshness import (
     ProviderFreshnessEvidence,
@@ -28,8 +34,12 @@ __all__ = [
     "CircuitBreakerObservation",
     "CircuitBreakerObservationSpec",
     "CompletedReplayControlSource",
+    "DailyControlEvidenceDiscovery",
+    "DiscoveredDailyControlEvidence",
     "ProviderFreshnessEvidence",
     "ProviderFreshnessProbe",
     "ReconciliationAgeEvaluator",
     "ReconciliationAgeEvidence",
+    "encode_circuit_breaker_controls",
+    "write_circuit_breaker_controls",
 ]

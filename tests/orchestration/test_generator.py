@@ -136,8 +136,75 @@ def test_generate_cli_writes_complete_bound_workflow(tmp_path: Path) -> None:
     assert replay.commands[2].artifact_bindings[0].source_stage is WorkflowStage.REPLAY_ORDERS
     assert spec.stages[6].commands[0].arguments[:2] == (
         "paper",
-        "reconcile-frozen",
+        "reconcile-frozen-revision",
     )
+    assert spec.stages[6].commands[0].artifact_json_keys == ("output",)
+
+
+def test_generate_cli_can_refresh_breakers_inside_preopen_stage(tmp_path: Path) -> None:
+    planning, _, phase6, artifact_root = _inputs(tmp_path)
+    artifact_root.mkdir()
+    session_file = tmp_path / "sessions.json"
+    session_file.write_text(
+        json.dumps(
+            {
+                "provider": "alpaca",
+                "sessions": [
+                    {
+                        "session_date": "2026-07-27",
+                        "open_at": "2026-07-27T13:30:00Z",
+                        "close_at": "2026-07-27T20:00:00Z",
+                    },
+                    {
+                        "session_date": "2026-07-28",
+                        "open_at": "2026-07-28T13:30:00Z",
+                        "close_at": "2026-07-28T20:00:00Z",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "daily-controlled.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflow",
+            "generate",
+            "--trade-date",
+            "2026-07-28",
+            "--planning-spec",
+            str(planning),
+            "--strategy-config",
+            str(_strategy_path()),
+            "--breaker-session-file",
+            str(session_file),
+            "--phase6-spec",
+            str(phase6),
+            "--artifact-root",
+            str(artifact_root),
+            "--output",
+            str(output),
+            "--worker-id",
+            "paper-worker-1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["breaker_mode"] == "self_refreshing"
+    spec = WorkflowRunSpec.model_validate_json(output.read_bytes())
+    freeze = spec.stages[0].commands[0]
+    assert freeze.arguments[:2] == ("monitoring", "prepare-breaker-bundle")
+    assert freeze.artifact_json_keys == (
+        "freshness_path",
+        "reconciliation_age_path",
+        "breaker_spec_path",
+    )
+    evaluate = spec.stages[2].commands[0]
+    assert "--spec-file" not in evaluate.arguments
+    assert evaluate.artifact_bindings[0].source_stage is WorkflowStage.FREEZE_INPUTS
+    assert evaluate.artifact_bindings[0].file_glob == "breaker-controls-*.json"
 
 
 def test_generator_requires_current_session_in_phase6_spec(tmp_path: Path) -> None:

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from typer.testing import CliRunner
 
+import quant_earning_edge.cli as cli_module
 from quant_earning_edge.cli import app
 from quant_earning_edge.data import LakehouseLayout, SessionFileStore
 from quant_earning_edge.data.clients import MarketSession
@@ -23,6 +25,9 @@ from quant_earning_edge.signals import (
     load_strategy_config,
     strategy_file_sha256,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _strategy_path() -> Path:
@@ -175,3 +180,73 @@ def test_prepare_breaker_evidence_consumes_freshness_and_calendar(
     assert spec.observations[-1].replay_source_date == date(2026, 7, 28)
     assert spec.observations[-1].session_date == date(2026, 7, 29)
     assert json.loads(age_output.read_bytes())["reconciliation_break_age_sessions"] is None
+
+
+def test_prepare_breaker_bundle_discovers_sources_and_writes_content_addresses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_frozen, source_replay = _source(tmp_path, date(2026, 7, 28))
+    artifact_root = tmp_path / "artifacts"
+    daily = artifact_root / "trade_date=2026-07-28"
+    daily.mkdir(parents=True)
+    (daily / "frozen-daily-orders.json").write_bytes(source_frozen.read_bytes())
+    (daily / "replay-session.json").write_bytes(source_replay.read_bytes())
+    evaluated = datetime(2026, 7, 29, 13, 20, tzinfo=UTC)
+    freshness = ProviderFreshnessEvidence(
+        schema_version=1,
+        evaluated_at=evaluated,
+        polygon_symbol="SPY",
+        polygon_data_observed_at=evaluated - timedelta(minutes=1),
+        polygon_payload_sha256="a" * 64,
+        polygon_request_id="polygon",
+        alpaca_data_observed_at=evaluated - timedelta(minutes=2),
+        alpaca_payload_sha256="b" * 64,
+        alpaca_request_id="alpaca",
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_capture_provider_freshness",
+        lambda **_: freshness,
+    )
+    calendar = SessionFileStore(LakehouseLayout(tmp_path / "calendar")).write(
+        (
+            MarketSession(
+                session_date=date(2026, 7, 28),
+                open_at=datetime(2026, 7, 28, 13, 30, tzinfo=UTC),
+                close_at=datetime(2026, 7, 28, 20, 0, tzinfo=UTC),
+            ),
+            MarketSession(
+                session_date=date(2026, 7, 29),
+                open_at=datetime(2026, 7, 29, 13, 30, tzinfo=UTC),
+                close_at=datetime(2026, 7, 29, 20, 0, tzinfo=UTC),
+            ),
+        )
+    )
+    output_directory = daily.parent / "trade_date=2026-07-29" / "control-evidence"
+    arguments = [
+        "monitoring",
+        "prepare-breaker-bundle",
+        "--control-date",
+        "2026-07-29",
+        "--session-file",
+        str(calendar.path),
+        "--artifact-root",
+        str(artifact_root),
+        "--output-directory",
+        str(output_directory),
+    ]
+
+    result = CliRunner().invoke(app, arguments)
+    repeated = CliRunner().invoke(app, arguments)
+
+    assert result.exit_code == 0
+    assert repeated.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == json.loads(repeated.stdout)
+    assert Path(payload["freshness_path"]).name.startswith("provider-freshness-")
+    assert Path(payload["reconciliation_age_path"]).name.startswith("reconciliation-age-")
+    breaker_path = Path(payload["breaker_spec_path"])
+    assert breaker_path.name.startswith("breaker-controls-")
+    spec = CircuitBreakerEvaluationSpec.model_validate_json(breaker_path.read_bytes())
+    assert spec.observations[-1].session_date == date(2026, 7, 29)

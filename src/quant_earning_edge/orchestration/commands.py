@@ -34,6 +34,7 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
             ("universe", "build"),
             ("universe", "events"),
             ("features", "compute"),
+            ("monitoring", "prepare-breaker-bundle"),
         }
     ),
     WorkflowStage.GENERATE_ORDER_PLAN: frozenset(
@@ -69,6 +70,7 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
         {
             ("paper", "reconcile"),
             ("paper", "reconcile-frozen"),
+            ("paper", "reconcile-frozen-revision"),
         }
     ),
     WorkflowStage.EVALUATE_PHASE6_PROGRESS: frozenset({("evaluation", "phase6-gate")}),

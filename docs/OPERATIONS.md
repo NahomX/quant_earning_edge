@@ -628,6 +628,23 @@ uv run qee monitoring prepare-breaker-evidence `
   --output .\controls\2026-07-29-breakers.json
 ```
 
+The unattended worker uses the combined retry-safe form. It discovers complete
+prior frozen/replay pairs and every content-addressed reconciliation revision,
+then probes both providers at execution time:
+
+```powershell
+uv run qee monitoring prepare-breaker-bundle `
+  --control-date 2026-07-29 `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --artifact-root .\workflow-artifacts `
+  --output-directory .\workflow-artifacts\trade_date=2026-07-29\control-evidence
+```
+
+This emits content-addressed freshness, reconciliation-age, and breaker input
+paths. Retries may safely create newer bundles; no mutable “latest” pointer is
+used. Preparation fails closed for a partial frozen/replay pair, a
+non-authoritative artifact date, or missing completed bootstrap evidence.
+
 The command writes immutable evidence and exits `1` when any documented halt is
 active: replay loss above 2% of notional, three consecutive applicable fill
 rates below 70%, either provider more than 30 minutes stale, or a reconciliation
@@ -709,6 +726,22 @@ only those verified client IDs from the canonical paper host, writes the same
 non-gating reconciliation report, and exits `1` for operational breaks. An
 explicit frozen no-trade day needs no evidence files or broker credentials.
 
+The generated unattended workflow writes content-addressed revisions so a
+nonterminal order can be observed again later without overwriting its first
+state:
+
+```powershell
+uv run qee paper reconcile-frozen-revision `
+  --frozen-orders .\frozen-daily-orders.json `
+  --evidence-file .\replay-evidence-entry.json `
+  --evidence-file .\replay-evidence-exit.json `
+  --output-directory .\workflow-artifacts\trade_date=2026-07-28
+```
+
+An unresolved revision is persisted and exits `1`; a later worker retry writes
+a new revision. Pre-open control discovery selects the most recent evaluation
+for each session while preserving the earlier evidence.
+
 ## Inspect the restart-safe daily workflow
 
 Initialize one append-only state chain for an authoritative trade date:
@@ -772,6 +805,26 @@ uv run qee workflow generate `
   --output .\workflow-inbox\2026-07-28.json `
   --worker-id paper-worker-1
 ```
+
+For the operational self-refreshing mode, omit `--breaker-spec` and provide the
+authoritative calendar:
+
+```powershell
+uv run qee workflow generate `
+  --trade-date 2026-07-29 `
+  --planning-spec .\live-order-planning.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --breaker-session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --phase6-spec .\controls\2026-07-29-phase6.json `
+  --artifact-root .\workflow-artifacts `
+  --output .\workflow-inbox\2026-07-29.json `
+  --worker-id paper-worker-1
+```
+
+At the first-stage readiness boundary this mode prepares the breaker bundle,
+then passes the single breaker input produced by that successful attempt into
+the evaluation stage through a typed artifact binding. Provider secrets remain
+environment-only.
 
 The Phase 6 input must include the deterministic daily report path
 `<artifact-root>/trade_date=<date>/replay-session.json`. The generator validates

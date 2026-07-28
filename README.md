@@ -63,10 +63,10 @@ ops/            Prefect flows, deploy scripts
 
 ## Status
 
-Phase 2's code-level no-lookahead gate is complete. Phase 3's vectorbt ledger,
-cost reconciliation, walk-forward planning, and standardized evaluation are
-implemented; the real-data momentum reproduction gate remains pending. Phase
-1's credentialed historical and unattended operational proof also remains
-pending. See
+Phase 2's code-level no-lookahead gate and the Phase 3/4 research machinery are
+implemented. Phase 6's deterministic NBBO/trade replay core and active
+pre-decision-read property gate are also implemented; the real 90-session proof
+has not started. The credentialed historical backfill, real-data strategy
+evaluation, and unattended operational gates remain pending. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

@@ -14,10 +14,13 @@ from pydantic import ValidationError
 from quant_earning_edge import __version__
 from quant_earning_edge.backtest import (
     BacktestSpec,
+    NbboReplayEvidence,
+    NbboReplaySpec,
     VectorbtBacktestEngine,
     VectorbtIntradayEngine,
     WalkForwardConfig,
     WalkForwardPlanner,
+    replay_order,
 )
 from quant_earning_edge.data import (
     BarBackfillJob,
@@ -539,6 +542,49 @@ def run_backtest_ledger(
             "tearsheet_output": (
                 str(tearsheet_output.resolve()) if tearsheet_output is not None else None
             ),
+        }
+    )
+
+
+@backtest_app.command("replay-nbbo")
+def replay_nbbo(
+    spec_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Validated order, decision snapshot, and normalized market events.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable causal replay evidence JSON."),
+    ],
+) -> None:
+    """Replay one intended order and persist content-addressed execution evidence."""
+    try:
+        spec = NbboReplaySpec.model_validate_json(spec_file.read_bytes())
+        order, snapshot, quotes, trades, config = spec.domain_inputs()
+        result = replay_order(
+            order,
+            decision_snapshot=snapshot,
+            quotes=quotes,
+            trades=trades,
+            config=config,
+        )
+        evidence = NbboReplayEvidence.build(spec=spec, result=result)
+        evidence.write(output)
+    except (ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="--spec-file") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": evidence.sha256,
+            "input_sha256": evidence.input_sha256,
+            "order_id": order.order_id,
+            "filled_qty": result.filled_qty,
+            "unfilled_qty": result.unfilled_qty,
+            "fill_rate": result.fill_rate,
         }
     )
 

@@ -5,7 +5,7 @@ implementation state, not intended or assumed progress.
 
 ## Current phase
 
-**Phase 1 operational proof pending; Phase 2 code gate complete; Phase 3 in progress**
+**Phase 6 execution infrastructure in progress; real-data and operational proofs pending**
 
 Phase 0 repository hygiene is complete. The local Python 3.12 environment is
 reproducible through `uv.lock`.
@@ -60,6 +60,9 @@ reproducible through `uv.lock`.
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
 | Phase 4 multi-fold gate aggregation | Complete | capital continuity and both documented threshold sets |
+| Causally bounded NBBO/trade replay engine | Complete | partial/missed fills, impact, limit queues, auction skew |
+| Active NBBO pre-decision-read property gate | Complete | consumed timestamps and pre-boundary mutation invariance |
+| Immutable single-order replay evidence and CLI | Complete | semantic input hash, collision-safe JSON, CLI tests |
 
 ## Phase 1 exit gate
 
@@ -90,13 +93,15 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Complete Phase 3 by running the published 60-session SPY-component momentum
-reproduction against real point-in-time constituent and price data.
+Implement normalized Polygon quote/trade ingestion and replay-session
+aggregation so the same frozen orders can produce a daily Phase 6 record.
 
-The Phase 4 code path now reaches the full strategy gate report. Populate it
-with five years of real PIT event plans to obtain the required performance
-evidence. Real strategy results remain pending data access.
+The deterministic replay core now models displayed aggressive liquidity,
+probability-weighted mid/passive limit fills, partial and missed fills,
+square-root impact, and opening-auction skew. It does not claim exchange queue
+reconstruction, and fixture evidence cannot count toward the 90-session proof.
 
-Credentialed calendar, backfill, five-session unattended execution, and the
-published momentum comparison remain operationally pending. Those gates cannot
-be replaced by fixtures or synthetic performance.
+Credentialed calendar/backfill, five-session unattended execution, the
+published momentum comparison, five-year Phase 4 evaluation, and 90 observed
+replay sessions remain operationally pending. Those gates cannot be replaced
+by fixtures or synthetic performance.

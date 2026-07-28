@@ -270,6 +270,30 @@ The report keeps two separate decisions:
 Synthetic or fixture runs validate this machinery but cannot satisfy either
 operational performance gate.
 
+## Replay one order against normalized NBBO and trades
+
+Create a strict JSON input containing `order`, `decision_snapshot`, `quotes`,
+and optional `trades` and `config` fields. Every timestamp must include a UTC
+offset. The order must freeze `decision_time`, `submitted_at`, `expires_at`,
+quantity, ADV, side, aggressiveness, and any explicit limit price.
+
+```powershell
+uv run qee backtest replay-nbbo `
+  --spec-file .\nbbo-replay-input.json `
+  --output .\data\manifests\replay\proof-order.json
+```
+
+Aggressive orders consume recorded opposite-side NBBO size. Mid and passive
+limits consume the configured conservative probability-weighted fraction of
+eligible trade prints; opening-auction prints receive a separate haircut. The
+report records fill fragments, partial or missed quantity, predicted and
+realized slippage, opening-auction skew, the semantic input hash, and every
+quote/trade timestamp actually consumed. It is immutable: an identical retry is
+allowed, while different evidence at the same path is rejected.
+
+This command validates normalized replay mechanics only. Fixture output and
+synthetic quotes do not count toward the 90-trading-day Phase 6 proof.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

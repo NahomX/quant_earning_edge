@@ -973,6 +973,28 @@ every failed check until all prerequisites pass. Include at least one
 authoritative pre-proof bootstrap session in the calendar so the first proof
 day has prior control evidence.
 
+After readiness succeeds, exercise the full workflow without placing an order
+or contaminating proof state:
+
+```powershell
+uv run qee workflow smoke-no-trade `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --smoke-date 2026-07-29 `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --initial-cash 100000 `
+  --smoke-root .\smoke\2026-07-29 `
+  --output .\controls\2026-07-29-smoke.json `
+  --env-file .\.env
+```
+
+This creates deterministic empty planning inputs plus one prior no-trade
+bootstrap session inside the isolated smoke root, removes wall-clock gates only
+for this manual run, and executes all eight real commands with live
+provider-freshness controls. It verifies that frozen orders and replay both
+contain zero intended orders. Its state, artifacts, worker cycles, and
+post-completion Phase 6 report use an isolated data lake; the success evidence
+sets `trigger=manual` and `counts_toward_phase6=false`.
+
 Use `--once` for a deployment smoke test. Every scan writes a
 content-addressed heartbeat under `manifests/job=workflow-worker/cycles`,
 including empty inboxes and invalid specifications. A bad spec is reported

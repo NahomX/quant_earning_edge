@@ -151,6 +151,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from quant_earning_edge.data.calendar import SessionFile
+    from quant_earning_edge.data.clients import MarketSession
 
 app = typer.Typer(no_args_is_help=True, help="quant_earning_edge command-line interface.")
 ingest_app = typer.Typer(no_args_is_help=True, help="Ingest provider data.")
@@ -2424,6 +2425,212 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
     )
 
 
+@workflow_app.command("smoke-no-trade")
+def smoke_no_trade_workflow(  # noqa: PLR0915,PLR0917 - complete smoke boundary.
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative smoke sessions."),
+    ],
+    smoke_date: Annotated[str, typer.Option(help="Manual smoke session (YYYY-MM-DD).")],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated strategy YAML."),
+    ],
+    initial_cash: Annotated[
+        float,
+        typer.Option(min=0.01, help="Isolated no-trade portfolio capital."),
+    ],
+    smoke_root: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Isolated smoke artifacts and state."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable successful smoke evidence."),
+    ],
+    worker_id: Annotated[str, typer.Option(help="Smoke worker identity.")] = "smoke-worker",
+    symbol: Annotated[
+        str,
+        typer.Option(help="Liquid Polygon provider-freshness symbol."),
+    ] = "SPY",
+    env_file: EnvFileOption = None,
+) -> None:
+    """Exercise the full manual workflow with explicit zero orders and no proof credit."""
+    selected_date = _parse_date(smoke_date, option="--smoke-date")
+    environment = _environment(env_file)
+    try:
+        environment.require_polygon_api_key()
+        environment.require_alpaca_credentials()
+        calendar = SessionFileStore.load(session_file)
+        by_date = {item.session_date: item for item in calendar.sessions}
+        selected_session = by_date.get(selected_date)
+        if selected_session is None:
+            raise ValueError("smoke date is not an authoritative session")
+        prior_sessions = tuple(
+            item for item in calendar.sessions if item.session_date < selected_date
+        )
+        if not prior_sessions:
+            raise ValueError("no-trade smoke requires one prior bootstrap session")
+        prior_session = prior_sessions[-1]
+        strategy = load_strategy_config(strategy_config)
+        strategy_sha256 = strategy_file_sha256(strategy_config)
+        resolved_smoke = smoke_root.resolve()
+        artifact_root = resolved_smoke / "artifacts"
+        inbox = resolved_smoke / "inbox"
+        smoke_data_lake = resolved_smoke / "data-lake"
+        for directory in (artifact_root, inbox, smoke_data_lake):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        planner = LiveOrderPlanner(strategy, strategy_sha256=strategy_sha256)
+        prior_frozen = planner.plan(
+            _no_trade_planning_spec(prior_session, initial_cash=initial_cash)
+        )
+        prior_root = artifact_root / f"trade_date={prior_session.session_date.isoformat()}"
+        prior_frozen.write(prior_root / "frozen-daily-orders.json")
+        prior_replay = ReplaySessionAggregator().evaluate(
+            evidence=(),
+            round_trips=(),
+            session_date=prior_session.session_date,
+            initial_cash=initial_cash,
+        )
+        prior_replay.write(prior_root / "replay-session.json")
+        prior_reconciliation = PaperOrderReconciler().evaluate(
+            evidence=(),
+            broker_orders=(),
+            session_date=prior_session.session_date,
+            evaluated_at=prior_session.close_at + timedelta(minutes=5),
+        )
+        prior_reconciliation.write(
+            prior_root / f"paper-reconciliation-{prior_reconciliation.sha256}.json"
+        )
+
+        planning = _no_trade_planning_spec(selected_session, initial_cash=initial_cash)
+        planning_path = resolved_smoke / "current-no-trade-planning.json"
+        _write_once_bytes(planning_path, planning.canonical_bytes)
+        current_root = artifact_root / f"trade_date={selected_date.isoformat()}"
+        control_root = current_root / "control-preparation"
+        health_path = control_root / "workflow-health.json"
+        phase6_path = control_root / "phase6-controls.json"
+        Phase6ControlBuilder().build(
+            calendar=calendar,
+            session_file=session_file,
+            workflow_store=DailyWorkflowStore(smoke_data_lake),
+            proof_start=selected_date,
+            proof_end=selected_date,
+            current_trade_date=selected_date,
+            initial_cash=initial_cash,
+            artifact_root=artifact_root,
+            health_output=health_path,
+            aggregation_output=phase6_path,
+            bootstrap_resamples=100,
+        )
+        spec = DailyWorkflowSpecGenerator().generate(
+            trade_date=selected_date,
+            trigger=WorkflowTrigger.MANUAL,
+            worker_id=worker_id,
+            planning_spec=planning_path,
+            strategy_config=strategy_config,
+            breaker_spec=None,
+            phase6_spec=phase6_path,
+            artifact_root=artifact_root,
+            order_controls_not_before=planning.entry_submitted_at - timedelta(minutes=10),
+            order_submission_not_after=planning.entry_expires_at,
+            market_events_not_before=planning.exit_expires_at + timedelta(minutes=5),
+            breaker_session_file=session_file,
+            freshness_symbol=symbol,
+        )
+        spec = spec.model_copy(
+            update={
+                "stages": tuple(
+                    stage.model_copy(
+                        update={
+                            "not_before": None,
+                            "not_after": None,
+                        }
+                    )
+                    for stage in spec.stages
+                )
+            }
+        )
+        spec_path = inbox / f"smoke-{selected_date.isoformat()}.json"
+        spec.write(spec_path)
+        child_environment = dict(load_subprocess_environment(env_file=env_file))
+        child_environment["DATA_LAKE_ROOT"] = str(smoke_data_lake)
+        cycle, cycle_path = WorkflowInboxWorker(
+            data_lake_root=smoke_data_lake,
+            worker_id=worker_id,
+            clock=lambda: datetime.now(UTC),
+            executor=partial(
+                execute_qee_command,
+                environment=child_environment,
+            ),
+        ).run_once(inbox)
+        matching_results = tuple(item for item in cycle.results if item.spec_sha256 == spec.sha256)
+        if len(matching_results) != 1:
+            raise ValueError("smoke worker did not return exactly one matching result")
+        result = matching_results[0]
+        if not result.complete:
+            _echo_json(
+                {
+                    "complete": False,
+                    "cycle_path": str(cycle_path),
+                    "error_type": result.error_type,
+                    "error_message": result.error_message,
+                }
+            )
+            raise typer.Exit(code=1)
+        frozen = FrozenDailyOrders.load(current_root / "frozen-daily-orders.json")
+        replay = ReplaySessionReport.load(current_root / "replay-session.json")
+        if frozen.intended_orders or replay.intended_order_count:
+            raise ValueError("no-trade smoke unexpectedly produced an intended order")
+        payload = {
+            "schema_version": 1,
+            "smoke_date": selected_date.isoformat(),
+            "trigger": "manual",
+            "counts_toward_phase6": False,
+            "intended_order_count": 0,
+            "workflow_spec_sha256": spec.sha256,
+            "workflow_state_sha256": result.workflow_state_sha256,
+            "worker_cycle_sha256": cycle.sha256,
+            "artifact_root": str(artifact_root),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        _write_once_bytes(output, encoded)
+    except typer.Exit:
+        raise
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="no-trade smoke inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            **payload,
+        }
+    )
+
+
+def _no_trade_planning_spec(
+    session: MarketSession,
+    *,
+    initial_cash: float,
+) -> DailyOrderPlanningSpec:
+    return DailyOrderPlanningSpec(
+        trade_date=session.session_date,
+        decision_at=session.open_at - timedelta(minutes=30),
+        equity=initial_cash,
+        entry_submitted_at=session.open_at,
+        entry_expires_at=session.open_at + timedelta(minutes=5),
+        exit_submitted_at=session.close_at - timedelta(minutes=10),
+        exit_expires_at=session.close_at + timedelta(minutes=1),
+    )
+
+
 @workflow_app.command("initialize")
 def initialize_daily_workflow(
     trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
@@ -3346,6 +3553,16 @@ def _credential_available(getter: Callable[[], object]) -> bool:
 def _safe_audit_error(error: Exception) -> str:
     message = str(error).strip()
     return f"{type(error).__name__}: {message or 'operation failed'}"[:500]
+
+
+def _write_once_bytes(path: Path, encoded: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("xb") as destination:
+            destination.write(encoded)
+    except FileExistsError:
+        if path.read_bytes() != encoded:
+            raise RuntimeError(f"immutable output collision at {path}") from None
 
 
 def _parse_date(value: str, *, option: str) -> date:

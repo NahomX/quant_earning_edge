@@ -221,6 +221,28 @@ Each fold also records mean absolute SHAP contribution per feature, calculated
 only from that fold's OOS rows. The expected feature-plus-bias contribution
 shape is validated before evidence is written.
 
+## Plan and evaluate one OOS event session
+
+Prepare a strict JSON object containing `equity`, the session's OOS
+`predictions`, matching `observations`, and prior `outcomes`. Observations
+separate the sizing price and timestamp known at decision time from later
+entry/exit execution evidence.
+
+```powershell
+uv run qee model plan-event-backtest `
+  --planning-spec .\event-planning-input.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --plan-output .\data\manifests\backtest\event-trades-2026-07-28.json `
+  --evaluation-output .\data\manifests\backtest\event-evaluation-2026-07-28.json
+```
+
+Only probabilities at or above 0.5 become long candidates. Ranking and sizing
+use probability, frozen sector, decision-time price, frozen ADV, equity, and
+outcomes closed before the trade date. Realized labels and exit prices cannot
+change selection or share counts. The command persists the immutable plan,
+runs its timestamped vectorbt orders, and writes the standardized reconciled
+evaluation. This is an OOS backtest path; it does not claim live fills.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

@@ -48,12 +48,21 @@ from quant_earning_edge.labels import (
     LabelStore,
     TrainingDatasetAssembler,
 )
+from quant_earning_edge.portfolio import (
+    FractionalKellyPortfolioConstructor,
+    PortfolioConfig,
+)
 from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     RuntimeEnvironment,
     load_runtime_environment,
 )
-from quant_earning_edge.signals import LightgbmWalkForwardTrainer, load_strategy_config
+from quant_earning_edge.signals import (
+    EventTradePlanner,
+    EventTradePlanningSpec,
+    LightgbmWalkForwardTrainer,
+    load_strategy_config,
+)
 from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
@@ -572,6 +581,79 @@ def train_walkforward_model(
             "plan_sha256": run.plan_sha256,
             "fold_count": len(run.folds),
             "prediction_count": sum(len(item.predictions) for item in run.folds),
+        }
+    )
+
+
+@model_app.command("plan-event-backtest")
+def plan_event_backtest(
+    planning_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="One-session OOS predictions, PIT sizing inputs, and execution evidence.",
+        ),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
+    ],
+    plan_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable event-trade plan JSON."),
+    ],
+    evaluation_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable standardized evaluation JSON."),
+    ],
+) -> None:
+    """Create causal event trades and evaluate their timestamped executions."""
+    try:
+        config = load_strategy_config(strategy_config)
+        spec = EventTradePlanningSpec.model_validate_json(planning_spec.read_bytes())
+        equity, predictions, observations, outcomes = spec.domain_inputs()
+        caps = config.portfolio.caps
+        sizing = config.portfolio.sizing
+        planner = EventTradePlanner(
+            FractionalKellyPortfolioConstructor(
+                PortfolioConfig(
+                    top_k=config.portfolio.top_k,
+                    kelly_fraction=sizing.kelly_fraction,
+                    history_window=sizing.rolling_window_days,
+                    minimum_history=min(20, sizing.rolling_window_days),
+                    max_position_weight=caps.max_position_pct,
+                    max_sector_weight=caps.max_sector_pct,
+                    max_gross_weight=caps.max_gross_exposure_pct,
+                )
+            )
+        )
+        plan = planner.plan(
+            predictions=predictions,
+            observations=observations,
+            outcomes=outcomes,
+            equity=equity,
+        )
+        if not plan.intents:
+            raise ValueError("event plan produced no trades")
+        planner.write(plan, plan_output)
+        result = VectorbtIntradayEngine().run(
+            trades=plan.intents,
+            sessions=(plan.trade_date,),
+            initial_cash=equity,
+        )
+        evaluator = PerformanceEvaluator()
+        report = evaluator.evaluate(result)
+        evaluator.write(report, evaluation_output)
+    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="event backtest inputs") from error
+    _echo_json(
+        {
+            "plan_output": str(plan_output.resolve()),
+            "plan_sha256": plan.sha256,
+            "evaluation_output": str(evaluation_output.resolve()),
+            "evaluation_sha256": report.sha256,
+            "trade_count": len(plan.intents),
         }
     )
 

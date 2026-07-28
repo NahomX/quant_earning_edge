@@ -21,6 +21,7 @@ from quant_earning_edge.orchestration.workflow import (
     StageHandler,
     WorkflowStage,
     WorkflowTrigger,
+    WorkflowWindowExpired,
 )
 
 if TYPE_CHECKING:
@@ -237,6 +238,7 @@ class WorkflowStageCommandSpec(_StrictSpec):
     commands: tuple[QeeCommandSpec, ...] = Field(min_length=1)
     output_files: tuple[Path, ...] = ()
     not_before: datetime | None = None
+    not_after: datetime | None = None
 
     @model_validator(mode="after")
     def validate_stage_commands(self) -> WorkflowStageCommandSpec:
@@ -244,6 +246,16 @@ class WorkflowStageCommandSpec(_StrictSpec):
             self.not_before.tzinfo is None or self.not_before.utcoffset() is None
         ):
             raise ValueError("workflow stage not_before must be timezone-aware")
+        if self.not_after is not None and (
+            self.not_after.tzinfo is None or self.not_after.utcoffset() is None
+        ):
+            raise ValueError("workflow stage not_after must be timezone-aware")
+        if (
+            self.not_before is not None
+            and self.not_after is not None
+            and self.not_after <= self.not_before
+        ):
+            raise ValueError("workflow stage not_after must follow not_before")
         allowed = _ALLOWED_PREFIXES[self.stage]
         for command in self.commands:
             prefix = (command.arguments[0], command.arguments[1])
@@ -343,6 +355,16 @@ class ConfiguredQeeStageHandler:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("workflow readiness time must be timezone-aware")
         return self._spec.not_before is None or now >= self._spec.not_before
+
+    def expiration_error(self, now: datetime) -> WorkflowWindowExpired | None:
+        """Return a terminal daily-window error before a late stage is claimed."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("workflow expiration time must be timezone-aware")
+        if self._spec.not_after is None or now <= self._spec.not_after:
+            return None
+        return WorkflowWindowExpired(
+            f"{self._spec.stage.value} expired at {self._spec.not_after.isoformat()}"
+        )
 
     def __call__(
         self,

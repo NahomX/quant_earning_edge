@@ -34,6 +34,7 @@ class DailyWorkflowSpecGenerator:
         phase6_spec: Path,
         artifact_root: Path,
         order_controls_not_before: datetime,
+        order_submission_not_after: datetime,
         market_events_not_before: datetime,
         breaker_session_file: Path | None = None,
         freshness_symbol: str = "SPY",
@@ -139,11 +140,13 @@ class DailyWorkflowSpecGenerator:
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.FREEZE_INPUTS,
                 not_before=order_controls_not_before,
+                not_after=order_submission_not_after,
                 commands=freeze_commands,
                 output_files=freeze_outputs,
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.GENERATE_ORDER_PLAN,
+                not_after=order_submission_not_after,
                 commands=(
                     QeeCommandSpec(
                         arguments=(
@@ -164,11 +167,13 @@ class DailyWorkflowSpecGenerator:
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.EVALUATE_BREAKERS,
+                not_after=order_submission_not_after,
                 commands=(evaluate_breaker_command,),
                 output_files=(breaker_decision,),
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.SUBMIT_PAPER_ORDERS,
+                not_after=order_submission_not_after,
                 commands=(
                     QeeCommandSpec(
                         arguments=(

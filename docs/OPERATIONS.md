@@ -901,6 +901,15 @@ the frozen exit expiry. While either boundary is in the future, a polling
 worker leaves the stage pending with zero attempts; it does not manufacture
 retry failures. Once ready, the same loop resumes automatically.
 
+The first four stages also carry a `not_after` boundary equal to the planned
+entry expiry. If the worker cannot finish pre-open preparation, order planning,
+breaker evaluation, and paper submission by that instant, it records one
+`WorkflowWindowExpired` failure and never retries that daily order window.
+Invalid inbox specifications and expired windows create stable
+content-addressed records under
+`manifests/job=workflow-worker/attention`; repeated polling does not duplicate
+them. Provider or infrastructure failures before expiry remain retryable.
+
 Evaluate unattended readiness only against an authoritative calendar:
 
 ```powershell

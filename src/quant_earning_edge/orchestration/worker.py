@@ -17,7 +17,11 @@ from quant_earning_edge.orchestration.commands import (
     WorkflowRunSpec,
     execute_qee_command,
 )
-from quant_earning_edge.orchestration.workflow import DailyWorkflowRunner, DailyWorkflowStore
+from quant_earning_edge.orchestration.workflow import (
+    DailyWorkflowRunner,
+    DailyWorkflowStore,
+    WorkflowWindowExpired,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -113,6 +117,32 @@ class WorkerCycleReport:
         return report
 
 
+@dataclass(frozen=True)
+class OperatorAttentionEvidence:
+    """Idempotent evidence for an invalid spec or terminally expired window."""
+
+    schema_version: int
+    worker_id: str
+    spec_path: str
+    spec_sha256: str
+    trade_date: str | None
+    workflow_state_sha256: str | None
+    error_type: str
+    error_message: str
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            asdict(self),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+
 class WorkflowWorkerStore:
     """Content-addressed worker-cycle heartbeat storage."""
 
@@ -135,6 +165,19 @@ class WorkflowWorkerStore:
         """Load the newest canonical worker heartbeat, if one exists."""
         paths = tuple(sorted(self._root.glob("cycle-*.json")))
         return WorkerCycleReport.load(paths[-1]) if paths else None
+
+    def write_attention(self, evidence: OperatorAttentionEvidence) -> Path:
+        """Persist one stable attention identity without cycle-by-cycle duplication."""
+        root = self._root.parent / "attention"
+        path = root / f"attention-{evidence.sha256}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("xb") as destination:
+                destination.write(evidence.canonical_bytes)
+        except FileExistsError:
+            if path.read_bytes() != evidence.canonical_bytes:
+                raise RuntimeError(f"operator attention collision at {path}") from None
+        return path
 
 
 class WorkflowInboxWorker:
@@ -173,6 +216,20 @@ class WorkflowInboxWorker:
             inbox_path=str(resolved_inbox),
             results=results,
         )
+        for result in results:
+            if result.trade_date is None or result.error_type == WorkflowWindowExpired.__name__:
+                self._cycle_store.write_attention(
+                    OperatorAttentionEvidence(
+                        schema_version=1,
+                        worker_id=self._worker_id,
+                        spec_path=result.spec_path,
+                        spec_sha256=result.spec_sha256,
+                        trade_date=result.trade_date,
+                        workflow_state_sha256=result.workflow_state_sha256,
+                        error_type=result.error_type or "InvalidWorkflowSpec",
+                        error_message=result.error_message or "operator attention required",
+                    )
+                )
         return report, self._cycle_store.write(report)
 
     def _run_spec(self, path: Path) -> WorkerSpecResult:

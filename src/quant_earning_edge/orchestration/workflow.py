@@ -48,6 +48,10 @@ class WorkflowTrigger(StrEnum):
     SCHEDULED = "scheduled"
 
 
+class WorkflowWindowExpired(RuntimeError):
+    """A time-sensitive stage can no longer execute causally or usefully."""
+
+
 @dataclass(frozen=True)
 class ArtifactReference:
     """Content identity for one stage output."""
@@ -360,7 +364,11 @@ class DailyWorkflowRunner:
         self._lease_duration = lease_duration
         self._controller = DailyWorkflowController()
 
-    def run_until_idle(self, *, trade_date: date) -> DailyWorkflowState:
+    def run_until_idle(  # noqa: PLR0911 - explicit durable terminal states.
+        self,
+        *,
+        trade_date: date,
+    ) -> DailyWorkflowState:
         """Loop over required stages and persist every transition before continuing."""
         state = self._store.load_latest(trade_date)
         if state is None:
@@ -377,11 +385,44 @@ class DailyWorkflowRunner:
                 f"runner trigger {self._trigger.value}"
             )
         while not state.complete:
-            pending_stage = next(
-                item.stage for item in state.stages if item.status is not StageStatus.SUCCEEDED
+            pending_record = next(
+                item for item in state.stages if item.status is not StageStatus.SUCCEEDED
             )
+            if (
+                pending_record.status is StageStatus.FAILED
+                and pending_record.error_type == WorkflowWindowExpired.__name__
+            ):
+                return state
+            pending_stage = pending_record.stage
             pending_handler = self._handlers.get(pending_stage)
             claim_time = self._transition_time(state)
+            expiration = (
+                getattr(pending_handler, "expiration_error", None)
+                if pending_handler is not None
+                else None
+            )
+            if callable(expiration):
+                expiration_error = expiration(claim_time)
+                if expiration_error is not None:
+                    claimed = self._controller.claim_next(
+                        state,
+                        worker_id=self._worker_id,
+                        now=claim_time,
+                        lease_duration=self._lease_duration,
+                    )
+                    if claimed is None:
+                        return state
+                    state = self._store.write(claimed)
+                    state = self._store.write(
+                        self._controller.fail(
+                            state,
+                            worker_id=self._worker_id,
+                            stage=pending_stage,
+                            error=expiration_error,
+                            now=self._transition_time(state),
+                        )
+                    )
+                    return state
             readiness = (
                 getattr(pending_handler, "is_ready", None) if pending_handler is not None else None
             )

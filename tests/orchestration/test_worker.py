@@ -104,6 +104,7 @@ def test_invalid_spec_is_reported_without_stopping_other_scans(tmp_path: Path) -
 
     assert not report.all_complete
     assert report.results[0].error_type == "ValidationError"
+    assert len(tuple((tmp_path / "lake").rglob("attention-*.json"))) == 1
 
 
 def test_worker_cli_once_writes_empty_inbox_heartbeat(tmp_path: Path) -> None:
@@ -215,3 +216,33 @@ def test_worker_finalizes_phase6_once_after_workflow_completion(tmp_path: Path) 
     assert first.all_complete
     assert second.all_complete
     assert finalizer_calls == 1
+
+
+def test_worker_emits_one_attention_record_for_expired_order_window(
+    tmp_path: Path,
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    spec_path = _write_spec(inbox)
+    raw = json.loads(spec_path.read_bytes())
+    raw["stages"][0]["not_after"] = "2026-07-28T13:35:00Z"
+    spec_path.write_text(json.dumps(raw), encoding="utf-8")
+    now = datetime(2026, 7, 28, 14, 0, tzinfo=UTC)
+    data_lake = tmp_path / "lake"
+    worker = WorkflowInboxWorker(
+        data_lake_root=data_lake,
+        worker_id="worker",
+        clock=lambda: now,
+    )
+
+    first, _ = worker.run_once(inbox)
+    second, _ = worker.run_once(inbox)
+
+    assert not first.all_complete
+    assert not second.all_complete
+    assert first.results[0].error_type == "WorkflowWindowExpired"
+    attention = tuple(data_lake.rglob("attention-*.json"))
+    assert len(attention) == 1
+    state = DailyWorkflowStore(data_lake).load_latest(date(2026, 7, 28))
+    assert state is not None
+    assert state.stages[0].attempts == 1

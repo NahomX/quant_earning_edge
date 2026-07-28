@@ -118,6 +118,10 @@ def test_generate_cli_writes_complete_bound_workflow(tmp_path: Path) -> None:
         20,
         tzinfo=UTC,
     )
+    assert all(
+        stage.not_after == datetime(2026, 7, 28, 13, 35, tzinfo=UTC) for stage in spec.stages[:4]
+    )
+    assert all(stage.not_after is None for stage in spec.stages[4:])
     capture = spec.stages[4].commands[0]
     assert capture.arguments[:2] == ("ingest", "frozen-market-events")
     assert spec.stages[4].not_before == datetime(

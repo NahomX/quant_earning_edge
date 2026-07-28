@@ -104,6 +104,8 @@ reproducible through `uv.lock`.
 | Secret-free operational readiness audit | Complete | credentials, canonical hosts, live clocks, NBBO entitlement, roots, heartbeat, calendar, bootstrap evidence |
 | Automatic post-completion Phase 6 finalization | Complete | worker refreshes health and verdict after terminal state, with hash-linked retry-safe evidence |
 | External env-file propagation to stage subprocesses | Complete | child-only merged environment; process precedence; no secret arguments or mutation |
+| Expiring pre-open execution boundary | Complete | first four stages stop permanently at entry expiry instead of submitting or retrying late |
+| Durable operator-attention evidence | Complete | invalid specs and expired windows emit idempotent content-addressed attention records |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -135,11 +137,12 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add durable operator-attention evidence for failures that cannot self-heal
-before an order window closes, and make the persistent worker distinguish
-retryable provider failures from expired daily execution windows. After the
-readiness audit and credentialed historical/strategy gates pass, begin the real
-90-session run.
+Add bounded retry policy and classified failure evidence for transient provider
+errors, so retry cadence and exhaustion are explicit rather than implicit in
+worker polling. Then add a credentialed smoke-run command that exercises the
+complete no-trade operational path before the first real proof session. After
+the readiness audit and credentialed historical/strategy gates pass, begin the
+real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

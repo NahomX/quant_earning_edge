@@ -175,6 +175,42 @@ def test_not_before_stage_waits_without_claim_or_failure(tmp_path: Path) -> None
     assert calls == []
 
 
+def test_not_after_stage_fails_once_and_stops_retrying_expired_window(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 28, 14, 0, tzinfo=UTC)
+    raw = _run_spec().model_dump(mode="json")
+    raw["stages"][0]["not_after"] = (now - timedelta(minutes=1)).isoformat()
+    spec = WorkflowRunSpec.model_validate(raw)
+    calls: list[tuple[str, ...]] = []
+
+    def execute(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        del cwd, timeout_seconds
+        calls.append(argv)
+        return QeeCommandResult(return_code=0, stdout="{}")
+
+    runner = DailyWorkflowRunner(
+        store=DailyWorkflowStore(tmp_path / "lake"),
+        handlers=spec.handlers(working_directory=tmp_path, executor=execute),
+        worker_id=spec.worker_id,
+        clock=lambda: now,
+        trigger=spec.trigger,
+    )
+    first = runner.run_until_idle(trade_date=spec.trade_date)
+    second = runner.run_until_idle(trade_date=spec.trade_date)
+
+    assert first.sha256 == second.sha256
+    assert first.stages[0].status.value == "failed"
+    assert first.stages[0].error_type == "WorkflowWindowExpired"
+    assert first.stages[0].attempts == 1
+    assert calls == []
+
+
 def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Path) -> None:
     artifact = tmp_path / "sessions-content-addressed.json"
     artifact.write_text("{}", encoding="utf-8")

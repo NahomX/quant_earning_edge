@@ -102,6 +102,8 @@ reproducible through `uv.lock`.
 | Retry-safe paper reconciliation revisions | Complete | content-addressed broker observations allow later clean revisions to resolve earlier breaks |
 | Unified daily workflow preparation | Complete | one command prepares rolling Phase 6 controls and queues the self-refreshing eight-stage spec |
 | Secret-free operational readiness audit | Complete | credentials, canonical hosts, live clocks, NBBO entitlement, roots, heartbeat, calendar, bootstrap evidence |
+| Automatic post-completion Phase 6 finalization | Complete | worker refreshes health and verdict after terminal state, with hash-linked retry-safe evidence |
+| External env-file propagation to stage subprocesses | Complete | child-only merged environment; process precedence; no secret arguments or mutation |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -133,11 +135,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Make terminal Phase 6 reevaluation follow completed workflows automatically so
-the final session can produce a post-completion verdict. Then add durable
-operator-attention evidence for failures that cannot self-heal before an order
-window closes. After the readiness audit and credentialed historical/strategy
-gates pass, begin the real 90-session run.
+Add durable operator-attention evidence for failures that cannot self-heal
+before an order window closes, and make the persistent worker distinguish
+retryable provider failures from expired daily execution windows. After the
+readiness audit and credentialed historical/strategy gates pass, begin the real
+90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

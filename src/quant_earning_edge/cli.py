@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -55,6 +56,7 @@ from quant_earning_edge.evaluation import (
     Phase4AggregationSpec,
     Phase4GateEvaluator,
     Phase6AggregationSpec,
+    Phase6CompletionFinalizer,
     Phase6ControlBuilder,
     Phase6GateEvaluator,
     ReplaySessionAggregationSpec,
@@ -109,6 +111,7 @@ from quant_earning_edge.orchestration import (
     WorkflowRunSpec,
     WorkflowTrigger,
     WorkflowWorkerStore,
+    execute_qee_command,
 )
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
@@ -118,6 +121,7 @@ from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     RuntimeEnvironment,
     load_runtime_environment,
+    load_subprocess_environment,
 )
 from quant_earning_edge.signals import (
     DailyOrderPlanningSpec,
@@ -1229,6 +1233,60 @@ def evaluate_phase6_gate(
             "scheduled_complete_session_count": report.scheduled_complete_session_count,
             "operational_uptime": report.operational_uptime,
             "passes_phase6_gate": report.passes_phase6_gate,
+        }
+    )
+
+
+@evaluation_app.command("finalize-phase6")
+def finalize_phase6_after_workflow(
+    aggregation_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Pre-run Phase 6 aggregation input from the workflow spec.",
+        ),
+    ],
+    current_trade_date: Annotated[
+        str,
+        typer.Option(help="Completed workflow session (YYYY-MM-DD)."),
+    ],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, help="Daily workflow artifacts."),
+    ],
+    output_directory: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Content-addressed finalization evidence."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Refresh health and Phase 6 verdict after workflow completion."""
+    environment = _environment(env_file)
+    try:
+        artifacts = Phase6CompletionFinalizer().finalize(
+            original_aggregation_spec=aggregation_spec,
+            current_trade_date=_parse_date(
+                current_trade_date,
+                option="--current-trade-date",
+            ),
+            artifact_root=artifact_root,
+            output_directory=output_directory,
+            workflow_store=DailyWorkflowStore(environment.data_lake_root),
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="Phase 6 finalization") from error
+    _echo_json(
+        {
+            "health_path": str(artifacts.health_path),
+            "aggregation_path": str(artifacts.aggregation_path),
+            "gate_report_path": str(artifacts.gate_report_path),
+            "manifest_path": str(artifacts.manifest_path),
+            "gate_report_sha256": artifacts.report.sha256,
+            "verdict": artifacts.report.verdict,
+            "passes_phase6_gate": artifacts.report.passes_phase6_gate,
+            "observed_session_count": artifacts.report.observed_session_count,
+            "scheduled_complete_session_count": (artifacts.report.scheduled_complete_session_count),
         }
     )
 
@@ -2651,6 +2709,10 @@ def run_workflow_worker(
             data_lake_root=environment.data_lake_root,
             worker_id=worker_id,
             clock=lambda: datetime.now(UTC),
+            executor=partial(
+                execute_qee_command,
+                environment=load_subprocess_environment(env_file=env_file),
+            ),
         )
         while True:
             report, report_path = worker.run_once(inbox)

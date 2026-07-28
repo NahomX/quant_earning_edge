@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,6 +22,9 @@ from quant_earning_edge.orchestration.workflow import (
     WorkflowStage,
     WorkflowTrigger,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
     WorkflowStage.FREEZE_INPUTS: frozenset(
@@ -157,6 +160,7 @@ def execute_qee_command(
     *,
     cwd: Path,
     timeout_seconds: float,
+    environment: Mapping[str, str] | None = None,
 ) -> QeeCommandResult:
     """Execute one validated qee argv without invoking a shell."""
     started = time.perf_counter()
@@ -168,6 +172,7 @@ def execute_qee_command(
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
+        env=dict(environment) if environment is not None else None,
     )
     return QeeCommandResult(
         return_code=completed.returncode,

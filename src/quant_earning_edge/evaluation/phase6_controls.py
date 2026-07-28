@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from quant_earning_edge.data.calendar import SessionFile
+    from quant_earning_edge.orchestration.health import WorkflowHealthReport
     from quant_earning_edge.orchestration.workflow import DailyWorkflowStore
 
 
@@ -30,19 +31,18 @@ class Phase6ControlArtifacts:
 class Phase6ControlBuilder:
     """Bind calendar, workflow health, and available deterministic daily reports."""
 
-    def build(
+    def prepare(
         self,
         *,
         calendar: SessionFile,
         session_file: Path,
-        workflow_store: DailyWorkflowStore,
+        workflow_health: WorkflowHealthReport,
         proof_start: date,
         proof_end: date,
         current_trade_date: date,
         initial_cash: float,
         artifact_root: Path,
         health_output: Path,
-        aggregation_output: Path,
         bootstrap_resamples: int = 10_000,
         seed: int = 20260427,
     ) -> Phase6ControlArtifacts:
@@ -53,13 +53,6 @@ class Phase6ControlBuilder:
         )
         if current_trade_date not in session_dates:
             raise ValueError("current trade date is outside the authoritative proof window")
-        health = WorkflowHealthEvaluator().evaluate(
-            calendar=calendar,
-            store=workflow_store,
-            start_date=proof_start,
-            end_date=proof_end,
-        )
-        health.write(health_output)
         report_files: list[Path] = []
         for session_date in session_dates:
             path = (
@@ -84,19 +77,65 @@ class Phase6ControlBuilder:
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
         )
-        _write_once(
-            aggregation_output,
-            json.dumps(
-                spec.model_dump(mode="json"),
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode(),
-        )
         return Phase6ControlArtifacts(
             aggregation_spec=spec,
-            health_sha256=health.sha256,
+            health_sha256=workflow_health.sha256,
             included_report_files=tuple(report_files),
         )
+
+    def build(
+        self,
+        *,
+        calendar: SessionFile,
+        session_file: Path,
+        workflow_store: DailyWorkflowStore,
+        proof_start: date,
+        proof_end: date,
+        current_trade_date: date,
+        initial_cash: float,
+        artifact_root: Path,
+        health_output: Path,
+        aggregation_output: Path,
+        bootstrap_resamples: int = 10_000,
+        seed: int = 20260427,
+    ) -> Phase6ControlArtifacts:
+        """Evaluate health and persist fixed-path rolling controls."""
+        health = WorkflowHealthEvaluator().evaluate(
+            calendar=calendar,
+            store=workflow_store,
+            start_date=proof_start,
+            end_date=proof_end,
+        )
+        controls = self.prepare(
+            calendar=calendar,
+            session_file=session_file,
+            workflow_health=health,
+            proof_start=proof_start,
+            proof_end=proof_end,
+            current_trade_date=current_trade_date,
+            initial_cash=initial_cash,
+            artifact_root=artifact_root,
+            health_output=health_output,
+            bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
+        )
+        health.write(health_output)
+        write_phase6_controls(controls.aggregation_spec, aggregation_output)
+        return controls
+
+
+def encode_phase6_controls(spec: Phase6AggregationSpec) -> bytes:
+    """Encode one Phase 6 aggregation input canonically."""
+    return json.dumps(
+        spec.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+
+def write_phase6_controls(spec: Phase6AggregationSpec, output: Path) -> None:
+    """Persist canonical Phase 6 controls with collision checks."""
+    _write_once(output, encode_phase6_controls(spec))
 
 
 def _write_once(path: Path, encoded: bytes) -> None:

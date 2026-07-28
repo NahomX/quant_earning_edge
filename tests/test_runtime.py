@@ -9,6 +9,7 @@ import pytest
 from quant_earning_edge.runtime import (
     RuntimeConfigurationError,
     load_runtime_environment,
+    load_subprocess_environment,
 )
 
 if TYPE_CHECKING:
@@ -50,8 +51,10 @@ def test_process_environment_takes_precedence(
     monkeypatch.setenv("POLYGON_API_KEY", "process-key")
 
     environment = load_runtime_environment(env_file=env_file)
+    child = load_subprocess_environment(env_file=env_file)
 
     assert environment.require_polygon_api_key() == "process-key"
+    assert child["POLYGON_API_KEY"] == "process-key"
 
 
 def test_missing_key_and_unsafe_endpoint_fail_cleanly(

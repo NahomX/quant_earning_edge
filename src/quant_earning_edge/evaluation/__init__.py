@@ -8,6 +8,13 @@ from quant_earning_edge.evaluation.folds import (
 from quant_earning_edge.evaluation.phase6_controls import (
     Phase6ControlArtifacts,
     Phase6ControlBuilder,
+    encode_phase6_controls,
+    write_phase6_controls,
+)
+from quant_earning_edge.evaluation.phase6_finalize import (
+    Phase6CompletionFinalizer,
+    Phase6FinalizationArtifacts,
+    Phase6FinalizationEvidence,
 )
 from quant_earning_edge.evaluation.phase6_gate import (
     Phase6AggregationSpec,
@@ -54,8 +61,11 @@ __all__ = [
     "Phase4GateEvaluation",
     "Phase4GateEvaluator",
     "Phase6AggregationSpec",
+    "Phase6CompletionFinalizer",
     "Phase6ControlArtifacts",
     "Phase6ControlBuilder",
+    "Phase6FinalizationArtifacts",
+    "Phase6FinalizationEvidence",
     "Phase6GateEvaluator",
     "Phase6GateReport",
     "ReplayRoundTrip",
@@ -66,4 +76,6 @@ __all__ = [
     "ReplaySessionReport",
     "WalkForwardEvaluation",
     "WalkForwardEvaluator",
+    "encode_phase6_controls",
+    "write_phase6_controls",
 ]

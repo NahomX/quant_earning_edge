@@ -394,6 +394,8 @@ def _bootstrap_sharpe(
     resamples: int,
     seed: int,
 ) -> ConfidenceInterval:
+    if returns.size < 2:
+        return ConfidenceInterval(lower=point, point=point, upper=point)
     generator = np.random.default_rng(seed)
     values = np.empty(resamples, dtype=float)
     batch_size = 512

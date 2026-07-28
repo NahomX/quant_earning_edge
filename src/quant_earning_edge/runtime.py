@@ -5,9 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from dotenv import dotenv_values
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class RuntimeConfigurationError(RuntimeError):
@@ -91,6 +95,17 @@ def load_runtime_environment(*, env_file: Path | None = None) -> RuntimeEnvironm
         _alpaca_api_key_id=_clean_secret(setting("APCA_API_KEY_ID")),
         _alpaca_secret_key=_clean_secret(setting("APCA_API_SECRET_KEY")),
     )
+
+
+def load_subprocess_environment(*, env_file: Path | None = None) -> Mapping[str, str]:
+    """Merge dotenv values into a child-only environment without mutating this process."""
+    selected_file = env_file or Path(".env")
+    child = dict(os.environ)
+    if selected_file.exists():
+        for key, value in dotenv_values(selected_file).items():
+            if value is not None and key not in child:
+                child[key] = str(value)
+    return child
 
 
 def _clean_secret(value: str | None) -> str | None:

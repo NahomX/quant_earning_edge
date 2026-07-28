@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -15,10 +15,14 @@ from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
     ReplaySessionAggregator,
 )
-from quant_earning_edge.orchestration import WorkflowHealthReport
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from quant_earning_edge.orchestration import (
+    DailyWorkflowRunner,
+    DailyWorkflowState,
+    DailyWorkflowStore,
+    WorkflowHealthReport,
+    WorkflowStage,
+    WorkflowTrigger,
+)
 
 
 def test_prepare_phase6_controls_includes_current_future_output_path(
@@ -85,3 +89,89 @@ def test_prepare_phase6_controls_includes_current_future_output_path(
     health = WorkflowHealthReport.load(health_output)
     assert health.missing_dates == dates
     assert json.loads(result.stdout)["report_count"] == 2
+
+
+def test_finalize_phase6_refreshes_health_after_workflow_completion(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    calendar = SessionFileStore(LakehouseLayout(tmp_path / "calendar")).write(
+        (
+            MarketSession(
+                session_date=session_date,
+                open_at=datetime(2026, 7, 28, 13, 30, tzinfo=UTC),
+                close_at=datetime(2026, 7, 28, 20, 0, tzinfo=UTC),
+            ),
+        )
+    )
+    artifact_root = tmp_path / "artifacts"
+    replay_path = artifact_root / "trade_date=2026-07-28" / "replay-session.json"
+    ReplaySessionAggregator().evaluate(
+        evidence=(),
+        round_trips=(),
+        session_date=session_date,
+        initial_cash=100_000,
+    ).write(replay_path)
+    data_lake = tmp_path / "lake"
+    store = DailyWorkflowStore(data_lake)
+
+    def handler(
+        _: DailyWorkflowState,
+        stage: WorkflowStage,
+    ) -> tuple[Path, ...]:
+        output = tmp_path / "stage-artifacts" / f"{stage.value}.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("{}", encoding="utf-8")
+        return (output,)
+
+    state = DailyWorkflowRunner(
+        store=store,
+        handlers={stage: handler for stage in WorkflowStage},
+        worker_id="worker",
+        clock=lambda: datetime.now(UTC),
+        trigger=WorkflowTrigger.SCHEDULED,
+    ).run_until_idle(trade_date=session_date)
+    assert state.complete
+    original = tmp_path / "pre-run-phase6.json"
+    original.write_text(
+        json.dumps(
+            {
+                "session_file": str(calendar.path),
+                "workflow_health_file": "pre-run-health.json",
+                "proof_start": session_date.isoformat(),
+                "proof_end": session_date.isoformat(),
+                "initial_cash": 100_000,
+                "session_report_files": [str(replay_path)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"DATA_LAKE_ROOT={data_lake}", encoding="utf-8")
+    output_directory = tmp_path / "post-completion"
+    arguments = [
+        "evaluation",
+        "finalize-phase6",
+        "--aggregation-spec",
+        str(original),
+        "--current-trade-date",
+        session_date.isoformat(),
+        "--artifact-root",
+        str(artifact_root),
+        "--output-directory",
+        str(output_directory),
+        "--env-file",
+        str(env_file),
+    ]
+
+    result = CliRunner().invoke(app, arguments)
+    repeated = CliRunner().invoke(app, arguments)
+
+    assert result.exit_code == 0
+    assert repeated.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == json.loads(repeated.stdout)
+    gate = json.loads(Path(payload["gate_report_path"]).read_bytes())
+    assert gate["scheduled_complete_session_count"] == 1
+    assert gate["observed_session_count"] == 1
+    assert Path(payload["manifest_path"]).is_file()

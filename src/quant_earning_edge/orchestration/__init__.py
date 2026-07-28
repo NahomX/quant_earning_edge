@@ -8,6 +8,7 @@ from quant_earning_edge.orchestration.commands import (
     QeeCommandSpec,
     WorkflowRunSpec,
     WorkflowStageCommandSpec,
+    execute_qee_command,
 )
 from quant_earning_edge.orchestration.generator import DailyWorkflowSpecGenerator
 from quant_earning_edge.orchestration.health import (
@@ -64,4 +65,5 @@ __all__ = [
     "WorkflowStageCommandSpec",
     "WorkflowTrigger",
     "WorkflowWorkerStore",
+    "execute_qee_command",
 ]

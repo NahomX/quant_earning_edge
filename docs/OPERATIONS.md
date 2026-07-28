@@ -965,6 +965,21 @@ Receipts retain the workflow hash, stage/attempt, allowed command prefix,
 argument hash, exit code, duration, and stdout/stderr hashes. Raw command
 streams and credentials are never stored in receipts.
 
+After all eight stages are durably complete, the worker automatically reruns
+Phase 6 with refreshed workflow health. It writes content-addressed health,
+aggregation, gate, and finalization-manifest files beneath
+`trade_date=<date>/post-completion`. The manifest links the complete workflow
+state hash to all three artifact hashes. A failed finalizer makes the worker
+cycle incomplete and is retried; an intact manifest suppresses duplicate
+bootstrap work. This post-completion report is the one that can count the
+current session's scheduled completion.
+
+When `workflow worker --env-file` is used, dotenv settings are merged into a
+child-only subprocess environment. Existing process variables still take
+precedence, the parent environment is not mutated, and secrets never become
+workflow command arguments. This makes the Windows launcher equivalent to
+systemd's `EnvironmentFile` behavior for provider-using stages.
+
 Deployment assets are in `ops/`: a hardened non-root systemd service with a
 restricted writable data path, and a Windows PowerShell launcher using the
 project virtual environment. Provider secrets remain in the external env file.

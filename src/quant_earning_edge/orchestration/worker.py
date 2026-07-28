@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -19,7 +21,6 @@ from quant_earning_edge.orchestration.workflow import DailyWorkflowRunner, Daily
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -194,14 +195,27 @@ class WorkflowInboxWorker:
                 (item for item in state.stages if item.status.value != "succeeded"),
                 None,
             )
+            finalization_error = (
+                self._finalize_completed(spec=spec, spec_path=path, state_sha256=state.sha256)
+                if state.complete
+                else None
+            )
             return WorkerSpecResult(
                 spec_path=str(path.resolve()),
                 spec_sha256=digest,
                 trade_date=spec.trade_date.isoformat(),
                 workflow_state_sha256=state.sha256,
-                complete=state.complete,
-                error_type=current.error_type if current else None,
-                error_message=current.error_message if current else None,
+                complete=state.complete and finalization_error is None,
+                error_type=(
+                    "Phase6FinalizationError"
+                    if finalization_error is not None
+                    else (current.error_type if current else None)
+                ),
+                error_message=(
+                    finalization_error
+                    if finalization_error is not None
+                    else (current.error_message if current else None)
+                ),
             )
         except (OSError, ValidationError, ValueError, RuntimeError) as error:
             return WorkerSpecResult(
@@ -214,6 +228,107 @@ class WorkflowInboxWorker:
                 error_message=(str(error).strip() or "workflow spec failed")[:1000],
             )
 
+    def _finalize_completed(
+        self,
+        *,
+        spec: WorkflowRunSpec,
+        spec_path: Path,
+        state_sha256: str,
+    ) -> str | None:
+        command = spec.stages[-1].commands[-1]
+        arguments = command.arguments
+        aggregation = _option_value(arguments, "--aggregation-spec")
+        phase6_output = _option_value(arguments, "--output")
+        if aggregation is None or phase6_output is None:
+            return None
+        working_directory = spec_path.parent.resolve()
+        aggregation_path = _resolved(aggregation, relative_to=working_directory)
+        original_output = _resolved(phase6_output, relative_to=working_directory)
+        daily_root = original_output.parent
+        artifact_root = daily_root.parent
+        output_directory = daily_root / "post-completion"
+        marker = output_directory / f"finalization-{state_sha256}.json"
+        if marker.is_file() and _finalization_marker_is_intact(
+            marker,
+            output_directory=output_directory,
+            state_sha256=state_sha256,
+        ):
+            return None
+        result = self._executor(
+            (
+                sys.executable,
+                "-m",
+                "quant_earning_edge.cli",
+                "evaluation",
+                "finalize-phase6",
+                "--aggregation-spec",
+                str(aggregation_path),
+                "--current-trade-date",
+                spec.trade_date.isoformat(),
+                "--artifact-root",
+                str(artifact_root),
+                "--output-directory",
+                str(output_directory),
+            ),
+            cwd=working_directory,
+            timeout_seconds=spec.command_timeout_seconds,
+        )
+        if result.return_code:
+            return f"post-completion Phase 6 finalizer exited {result.return_code}"
+        if not _finalization_marker_is_intact(
+            marker,
+            output_directory=output_directory,
+            state_sha256=state_sha256,
+        ):
+            return "post-completion Phase 6 finalizer produced no intact manifest"
+        return None
+
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(item in "0123456789abcdef" for item in value)
+
+
+def _option_value(arguments: tuple[str, ...], option: str) -> str | None:
+    try:
+        index = arguments.index(option)
+    except ValueError:
+        return None
+    return arguments[index + 1] if index + 1 < len(arguments) else None
+
+
+def _resolved(value: str, *, relative_to: Path) -> Path:
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (relative_to / path).resolve()
+
+
+def _finalization_marker_is_intact(
+    path: Path,
+    *,
+    output_directory: Path,
+    state_sha256: str,
+) -> bool:
+    try:
+        raw = json.loads(path.read_bytes())
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schema_version") != 1
+            or raw.get("workflow_state_sha256") != state_sha256
+        ):
+            return False
+        for path_key, hash_key in (
+            ("health_path", "health_sha256"),
+            ("aggregation_path", "aggregation_sha256"),
+            ("gate_report_path", "gate_report_sha256"),
+        ):
+            artifact = Path(str(raw[path_key])).resolve()
+            digest = str(raw[hash_key])
+            if (
+                not artifact.is_relative_to(output_directory.resolve())
+                or not artifact.is_file()
+                or not _is_sha256(digest)
+                or hashlib.sha256(artifact.read_bytes()).hexdigest() != digest
+            ):
+                return False
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return True

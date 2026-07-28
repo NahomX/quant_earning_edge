@@ -95,6 +95,9 @@ reproducible through `uv.lock`.
 | Temporal workflow readiness | Complete | post-close stages remain pending without false attempts while the worker loop polls |
 | Rolling Phase 6 control preparation | Complete | calendar-bound workflow health, discovered prior reports, deterministic current report path |
 | Rolling breaker control preparation | Complete | prior frozen/replay pairing, distinct source/control dates, current provider freshness |
+| Provider-native freshness evidence | Complete | Polygon snapshot and Alpaca clock timestamps, raw bronze payload hashes, canonical immutable evidence |
+| Reconciliation-break age derivation | Complete | authoritative-session close count, latest-revision resolution, immutable report provenance |
+| Pre-open workflow readiness | Complete | order-control stages stay pending until ten minutes before the planned entry |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -126,10 +129,13 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Automate the genuinely current breaker inputs: provider-freshness capture and
-unresolved reconciliation age. Then the generated daily workflow will need only
-causal planning inputs plus deployed provider credentials. After credentialed
-historical/strategy gates pass, begin the real 90-session run.
+Move freshness capture and evidence-backed breaker preparation into the
+pre-open workflow stage, so a queued daily specification refreshes its own
+controls at the readiness boundary instead of accepting an externally prepared
+breaker file. Then consolidate generation of the daily control bundle around
+causal planning inputs, the authoritative calendar, prior immutable evidence,
+and deployed provider credentials. After credentialed historical/strategy gates
+pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

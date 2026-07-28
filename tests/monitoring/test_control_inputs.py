@@ -9,10 +9,13 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
+from quant_earning_edge.data import LakehouseLayout, SessionFileStore
+from quant_earning_edge.data.clients import MarketSession
 from quant_earning_edge.evaluation import ReplaySessionAggregator
 from quant_earning_edge.monitoring import (
     CircuitBreakerEvaluationSpec,
     CircuitBreakerEvaluator,
+    ProviderFreshnessEvidence,
 )
 from quant_earning_edge.signals import (
     DailyOrderPlanningSpec,
@@ -109,3 +112,66 @@ def test_prepare_breaker_controls_keeps_control_and_replay_dates_distinct(
         date(2026, 7, 28),
     )
     assert json.loads(result.stdout)["control_date"] == "2026-07-29"
+
+
+def test_prepare_breaker_evidence_consumes_freshness_and_calendar(
+    tmp_path: Path,
+) -> None:
+    frozen, replay = _source(tmp_path, date(2026, 7, 28))
+    evaluated = datetime(2026, 7, 29, 13, 20, tzinfo=UTC)
+    freshness_path = tmp_path / "freshness.json"
+    ProviderFreshnessEvidence(
+        schema_version=1,
+        evaluated_at=evaluated,
+        polygon_symbol="SPY",
+        polygon_data_observed_at=evaluated - timedelta(minutes=1),
+        polygon_payload_sha256="a" * 64,
+        polygon_request_id="polygon",
+        alpaca_data_observed_at=evaluated - timedelta(minutes=2),
+        alpaca_payload_sha256="b" * 64,
+        alpaca_request_id="alpaca",
+    ).write(freshness_path)
+    calendar = SessionFileStore(LakehouseLayout(tmp_path / "calendar")).write(
+        (
+            MarketSession(
+                session_date=date(2026, 7, 28),
+                open_at=datetime(2026, 7, 28, 13, 30, tzinfo=UTC),
+                close_at=datetime(2026, 7, 28, 20, 0, tzinfo=UTC),
+            ),
+            MarketSession(
+                session_date=date(2026, 7, 29),
+                open_at=datetime(2026, 7, 29, 13, 30, tzinfo=UTC),
+                close_at=datetime(2026, 7, 29, 20, 0, tzinfo=UTC),
+            ),
+        )
+    )
+    output = tmp_path / "breaker.json"
+    age_output = tmp_path / "age.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "monitoring",
+            "prepare-breaker-evidence",
+            "--control-date",
+            "2026-07-29",
+            "--freshness-file",
+            str(freshness_path),
+            "--session-file",
+            str(calendar.path),
+            "--frozen-orders",
+            str(frozen),
+            "--replay-report",
+            str(replay),
+            "--reconciliation-age-output",
+            str(age_output),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    spec = CircuitBreakerEvaluationSpec.model_validate_json(output.read_bytes())
+    assert spec.observations[-1].replay_source_date == date(2026, 7, 28)
+    assert spec.observations[-1].session_date == date(2026, 7, 29)
+    assert json.loads(age_output.read_bytes())["reconciliation_break_age_sessions"] is None

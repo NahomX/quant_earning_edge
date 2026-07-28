@@ -584,6 +584,50 @@ date, and both date sequences survive into the breaker decision. Current
 provider timestamps remain explicit because fabricating freshness would defeat
 the fail-closed control.
 
+For an operational run, capture those timestamps directly from the providers
+instead of entering them by hand:
+
+```powershell
+uv run qee monitoring probe-freshness `
+  --symbol SPY `
+  --output .\controls\2026-07-29-freshness.json
+```
+
+The probe reads Polygon's latest single-ticker snapshot timestamp and Alpaca's
+paper-account clock timestamp, stores both raw responses in bronze, and binds
+their payload hashes and request IDs into canonical immutable evidence. It
+refuses noncanonical provider hosts and does not substitute the local receipt
+time for provider freshness.
+
+Derive the age of any unresolved paper reconciliation break from the
+authoritative session calendar. Repeated reports for one session are revisions;
+the latest clean revision resolves an earlier break:
+
+```powershell
+uv run qee monitoring reconciliation-age `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --control-date 2026-07-29 `
+  --evaluated-at 2026-07-29T13:20:00Z `
+  --report .\artifacts\trade_date=2026-07-28\paper-reconciliation.json `
+  --output .\controls\2026-07-29-reconciliation-age.json
+```
+
+The age is `0` on the broken session and increments only across authoritative
+completed session closes. Prepare the complete breaker input from immutable
+freshness, replay, frozen-order, reconciliation, and calendar evidence:
+
+```powershell
+uv run qee monitoring prepare-breaker-evidence `
+  --control-date 2026-07-29 `
+  --freshness-file .\controls\2026-07-29-freshness.json `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --frozen-orders .\artifacts\trade_date=2026-07-28\frozen-daily-orders.json `
+  --replay-report .\artifacts\trade_date=2026-07-28\replay-session.json `
+  --reconciliation-report .\artifacts\trade_date=2026-07-28\paper-reconciliation.json `
+  --reconciliation-age-output .\controls\2026-07-29-reconciliation-age.json `
+  --output .\controls\2026-07-29-breakers.json
+```
+
 The command writes immutable evidence and exits `1` when any documented halt is
 active: replay loss above 2% of notional, three consecutive applicable fill
 rates below 70%, either provider more than 30 minutes stale, or a reconciliation
@@ -774,11 +818,12 @@ keys, tokens, passwords, and secrets are rejected as command arguments and must
 come from the runtime environment. Nonzero command exits become durable failed
 stages and are retried on the next loop invocation.
 
-The generated market-capture stage has a timezone-aware `not_before` boundary
-five minutes after the frozen exit expiry. While that boundary is in the
-future, a polling worker leaves the stage pending with zero attempts; it does
-not manufacture retry failures. Once ready, the same loop resumes
-automatically.
+The generated first stage has a timezone-aware `not_before` boundary ten
+minutes before the planned entry, preventing early queueing from consuming
+stale order controls. Market capture has a second boundary five minutes after
+the frozen exit expiry. While either boundary is in the future, a polling
+worker leaves the stage pending with zero attempts; it does not manufacture
+retry failures. Once ready, the same loop resumes automatically.
 
 Evaluate unattended readiness only against an authoritative calendar:
 

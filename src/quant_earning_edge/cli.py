@@ -79,6 +79,7 @@ from quant_earning_edge.live import (
     PaperOrderBatchSpec,
     PaperOrderReconciler,
     PaperOrderRequest,
+    PaperReconciliationReport,
     PaperReconciliationSpec,
 )
 from quant_earning_edge.monitoring import (
@@ -87,6 +88,9 @@ from quant_earning_edge.monitoring import (
     CircuitBreakerEvaluationSpec,
     CircuitBreakerEvaluator,
     CompletedReplayControlSource,
+    ProviderFreshnessEvidence,
+    ProviderFreshnessProbe,
+    ReconciliationAgeEvaluator,
 )
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
@@ -1329,6 +1333,110 @@ def evaluate_circuit_breakers(
         raise typer.Exit(code=1)
 
 
+@monitoring_app.command("probe-freshness")
+def probe_provider_freshness(
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable provider freshness evidence."),
+    ],
+    symbol: Annotated[
+        str,
+        typer.Option(help="Liquid US-equity Polygon snapshot probe."),
+    ] = "SPY",
+    env_file: EnvFileOption = None,
+) -> None:
+    """Capture provider-native timestamps from Polygon and Alpaca paper."""
+    environment = _environment(env_file)
+    try:
+        polygon_key = environment.require_polygon_api_key()
+        alpaca_key, alpaca_secret = environment.require_alpaca_credentials()
+        layout = LakehouseLayout(environment.data_lake_root)
+        with (
+            httpx.Client(
+                base_url=environment.polygon_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as polygon_http,
+            httpx.Client(
+                base_url=environment.alpaca_trading_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as alpaca_http,
+        ):
+            evidence = ProviderFreshnessProbe(
+                polygon_api_key=polygon_key,
+                alpaca_api_key_id=alpaca_key,
+                alpaca_secret_key=alpaca_secret,
+                polygon_http=polygon_http,
+                alpaca_http=alpaca_http,
+                bronze_writer=BronzeWriter(layout),
+            ).probe(symbol=symbol)
+        evidence.write(output)
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="provider freshness inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": evidence.sha256,
+            "evaluated_at": evidence.evaluated_at,
+            "polygon_data_observed_at": evidence.polygon_data_observed_at,
+            "alpaca_data_observed_at": evidence.alpaca_data_observed_at,
+        }
+    )
+
+
+@monitoring_app.command("reconciliation-age")
+def evaluate_reconciliation_age(
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative sessions."),
+    ],
+    control_date: Annotated[str, typer.Option(help="Session being authorized.")],
+    evaluated_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware control evaluation timestamp."),
+    ],
+    report_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--report",
+            exists=True,
+            dir_okay=False,
+            help="Paper reconciliation revision; repeat chronologically.",
+        ),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable reconciliation-age evidence."),
+    ] = Path("reconciliation-age.json"),
+) -> None:
+    """Select latest reconciliation revisions and count completed closes."""
+    try:
+        evidence = ReconciliationAgeEvaluator().evaluate(
+            calendar=SessionFileStore.load(session_file),
+            reports=tuple(
+                PaperReconciliationReport.load(path) for path in tuple(report_files or ())
+            ),
+            control_date=_parse_date(control_date, option="--control-date"),
+            evaluated_at=_parse_datetime(evaluated_at, option="--evaluated-at"),
+        )
+        evidence.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="reconciliation-age inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": evidence.sha256,
+            "unresolved_session_dates": evidence.unresolved_session_dates,
+            "reconciliation_break_age_sessions": (evidence.reconciliation_break_age_sessions),
+        }
+    )
+
+
 @monitoring_app.command("prepare-breaker-controls")
 def prepare_breaker_controls(  # noqa: PLR0917 - explicit control provenance contract.
     control_date: Annotated[str, typer.Option(help="Session being authorized.")],
@@ -1408,6 +1516,102 @@ def prepare_breaker_controls(  # noqa: PLR0917 - explicit control provenance con
             "control_date": spec.observations[-1].session_date,
             "replay_source_dates": [item.replay_source_date for item in spec.observations],
             "observation_count": len(spec.observations),
+        }
+    )
+
+
+@monitoring_app.command("prepare-breaker-evidence")
+def prepare_breaker_evidence(  # noqa: PLR0917 - complete evidence boundary.
+    control_date: Annotated[str, typer.Option(help="Session being authorized.")],
+    freshness_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Provider freshness evidence."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative sessions."),
+    ],
+    frozen_order_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--frozen-orders",
+            exists=True,
+            dir_okay=False,
+            help="Completed frozen session; repeat in date order.",
+        ),
+    ],
+    replay_report_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--replay-report",
+            exists=True,
+            dir_okay=False,
+            help="Matching replay report; repeat in date order.",
+        ),
+    ],
+    reconciliation_report_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--reconciliation-report",
+            exists=True,
+            dir_okay=False,
+            help="Paper reconciliation revision; repeat as available.",
+        ),
+    ] = None,
+    reconciliation_age_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable reconciliation-age evidence."),
+    ] = Path("reconciliation-age.json"),
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Canonical breaker evaluation input."),
+    ] = Path("breaker-controls.json"),
+) -> None:
+    """Prepare breaker controls entirely from immutable operational evidence."""
+    try:
+        if len(frozen_order_files) != len(replay_report_files):
+            raise ValueError("frozen-order and replay-report counts must match")
+        selected_date = _parse_date(control_date, option="--control-date")
+        freshness = ProviderFreshnessEvidence.load(freshness_file)
+        age = ReconciliationAgeEvaluator().evaluate(
+            calendar=SessionFileStore.load(session_file),
+            reports=tuple(
+                PaperReconciliationReport.load(path)
+                for path in tuple(reconciliation_report_files or ())
+            ),
+            control_date=selected_date,
+            evaluated_at=freshness.evaluated_at,
+        )
+        age.write(reconciliation_age_output)
+        spec = CircuitBreakerControlBuilder().build(
+            control_date=selected_date,
+            evaluated_at=freshness.evaluated_at,
+            polygon_data_observed_at=freshness.polygon_data_observed_at,
+            alpaca_data_observed_at=freshness.alpaca_data_observed_at,
+            sources=tuple(
+                CompletedReplayControlSource(
+                    frozen_orders=FrozenDailyOrders.load(frozen_path),
+                    replay_report=ReplaySessionReport.load(report_path),
+                )
+                for frozen_path, report_path in zip(
+                    frozen_order_files,
+                    replay_report_files,
+                    strict=True,
+                )
+            ),
+            reconciliation_break_age_sessions=(age.reconciliation_break_age_sessions),
+            output=output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="breaker evidence inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "reconciliation_age_output": str(reconciliation_age_output.resolve()),
+            "control_date": spec.observations[-1].session_date,
+            "freshness_sha256": freshness.sha256,
+            "reconciliation_age_sha256": age.sha256,
+            "reconciliation_break_age_sessions": (age.reconciliation_break_age_sessions),
         }
     )
 
@@ -1791,6 +1995,7 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
             breaker_spec=breaker_spec,
             phase6_spec=phase6_spec,
             artifact_root=artifact_root,
+            order_controls_not_before=(planning.entry_submitted_at - timedelta(minutes=10)),
             market_events_not_before=(planning.exit_expires_at + timedelta(minutes=5)),
             lease_seconds=lease_seconds,
             command_timeout_seconds=command_timeout_seconds,

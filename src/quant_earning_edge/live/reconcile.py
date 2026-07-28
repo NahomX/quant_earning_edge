@@ -8,10 +8,10 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
 from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime annotations.
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from quant_earning_edge.live.alpaca_paper import (  # noqa: TC001 - Pydantic resolves annotations.
     BrokerOrder,
@@ -51,6 +51,23 @@ class PaperOrderReconciliation:
     terminal: bool
     break_reasons: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if not self.client_order_id.strip() or not self.symbol.strip():
+            raise ValueError("paper reconciliation identities must not be blank")
+        if self.symbol != self.symbol.strip().upper() or self.side not in {"buy", "sell"}:
+            raise ValueError("paper reconciliation symbol or side is invalid")
+        if (
+            self.intended_quantity <= 0
+            or not 0 <= self.replay_filled_quantity <= self.intended_quantity
+            or not 0 <= self.paper_filled_quantity <= self.intended_quantity
+        ):
+            raise ValueError("paper reconciliation quantities are invalid")
+        if (
+            self.fill_quantity_difference
+            != self.paper_filled_quantity - self.replay_filled_quantity
+        ):
+            raise ValueError("paper reconciliation fill difference is inconsistent")
+
 
 @dataclass(frozen=True)
 class PaperReconciliationReport:
@@ -66,6 +83,8 @@ class PaperReconciliationReport:
     paper_pnl_is_gate_input: bool
 
     def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported paper reconciliation schema")
         if self.evaluated_at.tzinfo is None or self.evaluated_at.utcoffset() is None:
             raise ValueError("reconciliation evaluated_at must be timezone-aware")
         if self.paper_pnl_is_gate_input:
@@ -75,6 +94,15 @@ class PaperReconciliationReport:
             raise ValueError("reconciliation break count is inconsistent")
         if self.all_orders_terminal != all(item.terminal for item in self.orders):
             raise ValueError("all-orders-terminal flag is inconsistent")
+        hashes = self.replay_evidence_sha256
+        if hashes != tuple(sorted(set(hashes))) or any(
+            len(item) != 64 or any(character not in "0123456789abcdef" for character in item)
+            for item in hashes
+        ):
+            raise ValueError("paper reconciliation evidence hashes are invalid")
+        order_ids = tuple(item.client_order_id for item in self.orders)
+        if order_ids != tuple(sorted(set(order_ids))):
+            raise ValueError("paper reconciliation orders must be unique and sorted")
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -98,6 +126,24 @@ class PaperReconciliationReport:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"paper reconciliation collision at {output}") from None
+
+    @classmethod
+    def load(cls, path: Path) -> PaperReconciliationReport:
+        """Reload canonical reconciliation evidence for rolling controls."""
+        try:
+            raw = json.loads(path.read_bytes())
+            report = _PaperReconciliationReportSpec.model_validate(raw).to_domain()
+        except (
+            json.JSONDecodeError,
+            OSError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as error:
+            raise ValueError(f"invalid paper reconciliation report: {path}") from error
+        if json.loads(report.canonical_bytes) != raw:
+            raise ValueError("paper reconciliation report is not canonical")
+        return report
 
 
 class PaperOrderReconciler:
@@ -229,6 +275,47 @@ class PaperReconciliationSpec(BaseModel):
     evaluated_at: datetime
     replay_evidence_files: tuple[Path, ...] = Field(min_length=1)
     broker_orders: tuple[BrokerOrder, ...] = Field(min_length=1)
+
+
+class _PaperOrderReconciliationSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_order_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1)
+    side: Literal["buy", "sell"]
+    intended_quantity: int = Field(gt=0)
+    replay_filled_quantity: int = Field(ge=0)
+    replay_fill_price: float | None = Field(default=None, gt=0)
+    paper_status: str = Field(min_length=1)
+    paper_filled_quantity: int = Field(ge=0)
+    paper_fill_price: float | None = Field(default=None, gt=0)
+    fill_quantity_difference: int
+    paper_vs_replay_price_bps: float | None
+    terminal: bool
+    break_reasons: tuple[str, ...]
+
+    def to_domain(self) -> PaperOrderReconciliation:
+        return PaperOrderReconciliation(**self.model_dump())
+
+
+class _PaperReconciliationReportSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    session_date: date
+    evaluated_at: datetime
+    replay_evidence_sha256: tuple[str, ...]
+    orders: tuple[_PaperOrderReconciliationSpec, ...]
+    reconciliation_break_count: int = Field(ge=0)
+    all_orders_terminal: bool
+    paper_pnl_is_gate_input: Literal[False]
+
+    def to_domain(self) -> PaperReconciliationReport:
+        values = self.model_dump(exclude={"orders"})
+        return PaperReconciliationReport(
+            **values,
+            orders=tuple(item.to_domain() for item in self.orders),
+        )
 
 
 def _price_divergence_bps(

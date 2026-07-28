@@ -33,6 +33,7 @@ class DailyWorkflowSpecGenerator:
         breaker_spec: Path,
         phase6_spec: Path,
         artifact_root: Path,
+        order_controls_not_before: datetime,
         market_events_not_before: datetime,
         lease_seconds: int = 900,
         command_timeout_seconds: float = 1800,
@@ -58,6 +59,7 @@ class DailyWorkflowSpecGenerator:
         stages = (
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.FREEZE_INPUTS,
+                not_before=order_controls_not_before,
                 commands=(
                     QeeCommandSpec(
                         arguments=(

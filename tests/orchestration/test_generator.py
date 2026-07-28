@@ -109,6 +109,14 @@ def test_generate_cli_writes_complete_bound_workflow(tmp_path: Path) -> None:
     assert tuple(item.stage for item in spec.stages) == tuple(WorkflowStage)
     assert spec.trigger.value == "scheduled"
     assert json.loads(result.stdout)["sha256"] == spec.sha256
+    assert spec.stages[0].not_before == datetime(
+        2026,
+        7,
+        28,
+        13,
+        20,
+        tzinfo=UTC,
+    )
     capture = spec.stages[4].commands[0]
     assert capture.arguments[:2] == ("ingest", "frozen-market-events")
     assert spec.stages[4].not_before == datetime(

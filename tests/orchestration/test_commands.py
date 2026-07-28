@@ -36,6 +36,7 @@ def _run_spec() -> WorkflowRunSpec:
     return WorkflowRunSpec.model_validate(
         {
             "trade_date": "2026-07-28",
+            "trigger": "scheduled",
             "worker_id": "production-worker-1",
             "stages": [
                 {
@@ -98,6 +99,7 @@ def test_configured_handlers_execute_without_shell_and_complete_loop(tmp_path: P
         handlers=spec.handlers(working_directory=tmp_path, executor=execute),
         worker_id=spec.worker_id,
         clock=lambda: datetime.now(UTC),
+        trigger=spec.trigger,
     )
 
     result = runner.run_until_idle(trade_date=spec.trade_date)
@@ -125,6 +127,7 @@ def test_nonzero_qee_exit_becomes_durable_retryable_stage_failure(tmp_path: Path
         handlers=spec.handlers(working_directory=tmp_path, executor=reject),
         worker_id=spec.worker_id,
         clock=lambda: datetime.now(UTC),
+        trigger=spec.trigger,
     ).run_until_idle(trade_date=date(2026, 7, 28))
 
     assert not result.complete

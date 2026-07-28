@@ -662,9 +662,10 @@ uv run qee workflow run `
   --spec-file .\daily-workflow-2026-07-28.json
 ```
 
-The spec contains the trade date, worker ID, lease/command timeouts, and exactly
-one entry for each of the eight stages in the order above. Each stage entry has
-one or more `commands`, expressed as arguments after `qee`, plus either known
+The spec contains the trade date, explicit `trigger` (`scheduled` or `manual`),
+worker ID, lease/command timeouts, and exactly one entry for each of the eight
+stages in the order above. Each stage entry has one or more `commands`,
+expressed as arguments after `qee`, plus either known
 `output_files` or `artifact_json_keys` naming path fields in command JSON
 output. For example:
 
@@ -692,3 +693,19 @@ are passed directly to the current Python interpreter without a shell. API
 keys, tokens, passwords, and secrets are rejected as command arguments and must
 come from the runtime environment. Nonzero command exits become durable failed
 stages and are retried on the next loop invocation.
+
+Evaluate unattended readiness only against an authoritative calendar:
+
+```powershell
+uv run qee workflow health `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --start 2026-07-20 `
+  --end 2026-07-24 `
+  --output .\workflow-health.json
+```
+
+The command exits `0` only after five consecutive intact `scheduled` workflow
+completions. Manual runs, missing dates, unfinished or failed stages, and
+tampered artifacts never count as uptime. The immutable report records each
+category, excess retry attempts, scheduled uptime, source state hashes, and the
+calendar hash.

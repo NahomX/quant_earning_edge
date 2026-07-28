@@ -7,6 +7,10 @@ from quant_earning_edge.orchestration.commands import (
     WorkflowRunSpec,
     WorkflowStageCommandSpec,
 )
+from quant_earning_edge.orchestration.health import (
+    WorkflowHealthEvaluator,
+    WorkflowHealthReport,
+)
 from quant_earning_edge.orchestration.workflow import (
     ArtifactReference,
     DailyWorkflowController,
@@ -16,6 +20,7 @@ from quant_earning_edge.orchestration.workflow import (
     StageRecord,
     StageStatus,
     WorkflowStage,
+    WorkflowTrigger,
 )
 
 __all__ = [
@@ -29,7 +34,10 @@ __all__ = [
     "QeeCommandSpec",
     "StageRecord",
     "StageStatus",
+    "WorkflowHealthEvaluator",
+    "WorkflowHealthReport",
     "WorkflowRunSpec",
     "WorkflowStage",
     "WorkflowStageCommandSpec",
+    "WorkflowTrigger",
 ]

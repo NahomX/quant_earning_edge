@@ -81,7 +81,9 @@ from quant_earning_edge.orchestration import (
     DailyWorkflowState,
     DailyWorkflowStore,
     StageStatus,
+    WorkflowHealthEvaluator,
     WorkflowRunSpec,
+    WorkflowTrigger,
 )
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
@@ -1153,6 +1155,7 @@ def run_daily_workflow(
             handlers=spec.handlers(working_directory=spec_file.parent),
             worker_id=spec.worker_id,
             clock=lambda: datetime.now(UTC),
+            trigger=spec.trigger,
             lease_duration=timedelta(seconds=spec.lease_seconds),
         ).run_until_idle(trade_date=spec.trade_date)
     except (OSError, ValidationError, ValueError, RuntimeError) as error:
@@ -1194,6 +1197,7 @@ def initialize_daily_workflow(
             DailyWorkflowState.initialize(
                 trade_date=selected_date,
                 now=datetime.now(UTC),
+                trigger=WorkflowTrigger.MANUAL,
             )
         )
     _echo_json(
@@ -1240,6 +1244,7 @@ def daily_workflow_status(
             "initialized": True,
             "revision": state.revision,
             "sha256": state.sha256,
+            "trigger": state.trigger,
             "complete": state.complete,
             "artifacts_intact": artifact_error is None,
             "artifact_error": artifact_error,
@@ -1251,6 +1256,47 @@ def daily_workflow_status(
         }
     )
     if not state.complete or artifact_error is not None:
+        raise typer.Exit(code=1)
+
+
+@workflow_app.command("health")
+def daily_workflow_health(
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative market-session JSON."),
+    ],
+    start: Annotated[str, typer.Option(help="Inclusive health range start (YYYY-MM-DD).")],
+    end: Annotated[str, typer.Option(help="Inclusive health range end (YYYY-MM-DD).")],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable unattended workflow health JSON."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Evaluate scheduled operational uptime and five-session readiness."""
+    environment = _environment(env_file)
+    try:
+        report = WorkflowHealthEvaluator().evaluate(
+            calendar=SessionFileStore.load(session_file),
+            store=DailyWorkflowStore(environment.data_lake_root),
+            start_date=_parse_date(start, option="--start"),
+            end_date=_parse_date(end, option="--end"),
+        )
+        report.write(output)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="workflow health inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "operational_uptime": report.operational_uptime,
+            "maximum_consecutive_scheduled_successes": (
+                report.maximum_consecutive_scheduled_successes
+            ),
+            "passes_five_session_unattended_gate": (report.passes_five_session_unattended_gate),
+        }
+    )
+    if not report.passes_five_session_unattended_gate:
         raise typer.Exit(code=1)
 
 

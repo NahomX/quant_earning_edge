@@ -41,6 +41,13 @@ class StageStatus(StrEnum):
     FAILED = "failed"
 
 
+class WorkflowTrigger(StrEnum):
+    """Invocation provenance; only scheduled runs count as unattended proof."""
+
+    MANUAL = "manual"
+    SCHEDULED = "scheduled"
+
+
 @dataclass(frozen=True)
 class ArtifactReference:
     """Content identity for one stage output."""
@@ -112,6 +119,7 @@ class DailyWorkflowState:
 
     schema_version: int
     trade_date: date
+    trigger: WorkflowTrigger
     revision: int
     previous_sha256: str | None
     created_at: datetime
@@ -125,7 +133,7 @@ class DailyWorkflowState:
             raise ValueError("workflow update cannot precede creation")
         if self.revision < 0:
             raise ValueError("workflow revision cannot be negative")
-        if self.schema_version != 1:
+        if self.schema_version != 2:
             raise ValueError("unsupported workflow schema version")
         if (self.revision == 0) != (self.previous_sha256 is None):
             raise ValueError("only the initial workflow revision can omit previous_sha256")
@@ -144,12 +152,19 @@ class DailyWorkflowState:
                 incomplete_seen = True
 
     @classmethod
-    def initialize(cls, *, trade_date: date, now: datetime) -> DailyWorkflowState:
+    def initialize(
+        cls,
+        *,
+        trade_date: date,
+        now: datetime,
+        trigger: WorkflowTrigger = WorkflowTrigger.MANUAL,
+    ) -> DailyWorkflowState:
         """Create the first pending revision."""
         _require_aware("now", now)
         return cls(
-            schema_version=1,
+            schema_version=2,
             trade_date=trade_date,
+            trigger=trigger,
             revision=0,
             previous_sha256=None,
             created_at=now,
@@ -336,12 +351,14 @@ class DailyWorkflowRunner:
         handlers: Mapping[WorkflowStage, StageHandler],
         worker_id: str,
         clock: Clock,
+        trigger: WorkflowTrigger = WorkflowTrigger.MANUAL,
         lease_duration: timedelta = timedelta(minutes=15),
     ) -> None:
         self._store = store
         self._handlers = handlers
         self._worker_id = worker_id
         self._clock = clock
+        self._trigger = trigger
         self._lease_duration = lease_duration
         self._controller = DailyWorkflowController()
 
@@ -350,7 +367,16 @@ class DailyWorkflowRunner:
         state = self._store.load_latest(trade_date)
         if state is None:
             state = self._store.write(
-                DailyWorkflowState.initialize(trade_date=trade_date, now=self._clock())
+                DailyWorkflowState.initialize(
+                    trade_date=trade_date,
+                    now=self._clock(),
+                    trigger=self._trigger,
+                )
+            )
+        elif state.trigger is not self._trigger:
+            raise ValueError(
+                f"existing workflow trigger {state.trigger.value} does not match "
+                f"runner trigger {self._trigger.value}"
             )
         while not state.complete:
             claimed = self._controller.claim_next(
@@ -501,8 +527,9 @@ class StageRecordSpec(_StrictSpec):
 
 
 class DailyWorkflowStateSpec(_StrictSpec):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     trade_date: date
+    trigger: WorkflowTrigger
     revision: int = Field(ge=0)
     previous_sha256: str | None
     created_at: datetime
@@ -620,6 +647,7 @@ def _advance(
     return DailyWorkflowState(
         schema_version=state.schema_version,
         trade_date=state.trade_date,
+        trigger=state.trigger,
         revision=state.revision + 1,
         previous_sha256=state.sha256,
         created_at=state.created_at,

@@ -17,6 +17,7 @@ from quant_earning_edge.orchestration.workflow import (
     DailyWorkflowState,
     StageHandler,
     WorkflowStage,
+    WorkflowTrigger,
 )
 
 _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
@@ -154,6 +155,7 @@ class WorkflowRunSpec(_StrictSpec):
     """Complete concrete command plan for one daily workflow loop."""
 
     trade_date: date
+    trigger: WorkflowTrigger
     worker_id: str = Field(min_length=1)
     lease_seconds: int = Field(default=900, ge=1, le=3600)
     command_timeout_seconds: float = Field(default=1800, gt=0, le=7200)

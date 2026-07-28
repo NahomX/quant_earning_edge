@@ -29,6 +29,7 @@ from quant_earning_edge.data.replay_specs import (
     ReplayMaterializationManifest,
     ReplayMaterializationSpec,
     ReplaySpecMaterializer,
+    replay_sources_from_files,
 )
 from quant_earning_edge.data.silver import (
     DAILY_BARS_SCHEMA,
@@ -83,4 +84,5 @@ __all__ = [
     "SilverArtifact",
     "SilverDataset",
     "SilverWriter",
+    "replay_sources_from_files",
 ]

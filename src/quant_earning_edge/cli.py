@@ -17,6 +17,7 @@ from quant_earning_edge.backtest import (
     BacktestSpec,
     NbboReplayEvidence,
     NbboReplaySpec,
+    ReplayConfigSpec,
     VectorbtBacktestEngine,
     VectorbtIntradayEngine,
     WalkForwardConfig,
@@ -39,6 +40,7 @@ from quant_earning_edge.data import (
     SessionFileStore,
     SilverDataset,
     SilverWriter,
+    replay_sources_from_files,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
 from quant_earning_edge.evaluation import (
@@ -100,10 +102,14 @@ from quant_earning_edge.runtime import (
     load_runtime_environment,
 )
 from quant_earning_edge.signals import (
+    DailyOrderPlanningSpec,
     EventTradePlanner,
     EventTradePlanningSpec,
+    FrozenDailyOrders,
     LightgbmWalkForwardTrainer,
+    LiveOrderPlanner,
     load_strategy_config,
+    strategy_file_sha256,
 )
 from quant_earning_edge.universe import (
     DailyUniverseJob,
@@ -629,6 +635,80 @@ def materialize_replay_specs(
     )
 
 
+@backtest_app.command("materialize-frozen-replay-specs")
+def materialize_frozen_replay_specs(  # noqa: PLR0917 - explicit replay source contract.
+    frozen_orders: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical live-safe order artifact."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Matching earnings strategy YAML."),
+    ],
+    quote_files: Annotated[
+        list[Path] | None,
+        typer.Option("--quote-file", exists=True, dir_okay=False, help="Silver NBBO file."),
+    ] = None,
+    trade_files: Annotated[
+        list[Path] | None,
+        typer.Option("--trade-file", exists=True, dir_okay=False, help="Silver trades file."),
+    ] = None,
+    opening_auction_condition_codes: Annotated[
+        list[int] | None,
+        typer.Option("--opening-auction-code", min=0, help="Polygon opening-auction condition."),
+    ] = None,
+    output_dir: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Directory for canonical per-order replay specs."),
+    ] = Path("replay-specs"),
+    manifest_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable source/filtering audit manifest."),
+    ] = Path("replay-materialization-manifest.json"),
+) -> None:
+    """Materialize replay specs directly from the frozen live-order artifact."""
+    try:
+        frozen = FrozenDailyOrders.load(frozen_orders)
+        strategy = load_strategy_config(strategy_config)
+        if strategy_file_sha256(strategy_config) != frozen.strategy_config_sha256:
+            raise ValueError("strategy config does not match frozen daily orders")
+        symbols = tuple(item.ticker for item in frozen.decision_snapshots)
+        sources = replay_sources_from_files(
+            quote_files=tuple(quote_files or ()),
+            trade_files=tuple(trade_files or ()),
+            expected_symbols=symbols,
+            opening_auction_condition_codes=frozenset(opening_auction_condition_codes or ()),
+        )
+        spec = ReplayMaterializationSpec(
+            orders=frozen.intended_orders,
+            decision_snapshots=frozen.decision_snapshots,
+            event_sources=sources,
+            config=ReplayConfigSpec(
+                market_impact_bps_coefficient=(strategy.costs.market_impact_coef_bps)
+            ),
+        )
+        manifest = ReplaySpecMaterializer().materialize(
+            spec,
+            output_dir=output_dir,
+            manifest_output=manifest_output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(
+            str(error), param_hint="frozen replay materialization inputs"
+        ) from error
+    _echo_json(
+        {
+            "manifest_path": str(manifest_output.resolve()),
+            "manifest_sha256": manifest.sha256,
+            "input_sha256": manifest.input_sha256,
+            "order_count": len(manifest.artifacts),
+            "replay_spec_paths": [
+                str((output_dir / item.file_name).resolve()) for item in manifest.artifacts
+            ],
+        }
+    )
+
+
 @backtest_app.command("replay-nbbo")
 def replay_nbbo(
     spec_file: Annotated[
@@ -718,6 +798,55 @@ def train_walkforward_model(
             "plan_sha256": run.plan_sha256,
             "fold_count": len(run.folds),
             "prediction_count": sum(len(item.predictions) for item in run.folds),
+        }
+    )
+
+
+@model_app.command("plan-live-orders")
+def plan_live_orders(
+    planning_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Decision-time scores, sizing observations, outcomes, and NBBO snapshots.",
+        ),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable linked paper/replay order artifact."),
+    ],
+    paper_batch_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Direct input for `paper submit-batch`."),
+    ],
+) -> None:
+    """Freeze live-safe orders without realized labels or execution prices."""
+    try:
+        spec = DailyOrderPlanningSpec.model_validate_json(planning_spec.read_bytes())
+        artifact = LiveOrderPlanner(
+            load_strategy_config(strategy_config),
+            strategy_sha256=strategy_file_sha256(strategy_config),
+        ).plan(spec)
+        artifact.write(output)
+        artifact.paper_batch.write(paper_batch_output)
+    except (KeyError, OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="live order planning inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": artifact.sha256,
+            "input_sha256": artifact.input_sha256,
+            "trade_date": artifact.trade_date,
+            "position_count": len(artifact.portfolio.positions),
+            "intended_order_count": len(artifact.intended_orders),
+            "paper_order_count": len(artifact.paper_batch.orders),
+            "paper_batch_output": str(paper_batch_output.resolve()),
+            "paper_batch_sha256": artifact.paper_batch.sha256,
         }
     )
 

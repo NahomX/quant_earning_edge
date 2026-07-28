@@ -760,3 +760,41 @@ one self-contained canonical replay spec per order. The immutable manifest
 hashes semantic inputs and source files and records every filtering count.
 Relative silver paths resolve against the materialization JSON location. An
 explicit empty order set produces auditable no-trade evidence.
+
+## Freeze live-safe daily orders
+
+The live paper workflow must not reuse `plan-event-backtest`, because that
+research artifact contains realized entry/exit outcomes. Instead provide
+decision-time probabilities, causal sizing observations, historical outcomes
+closed before the trade date, frozen NBBO snapshots, and the intended execution
+windows:
+
+```powershell
+uv run qee model plan-live-orders `
+  --planning-spec .\live-order-planning.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --output .\frozen-daily-orders.json `
+  --paper-batch-output .\paper-order-batch.json
+```
+
+The command rejects realized labels, future observations, same-day Kelly
+outcomes, inconsistent timestamps, and paper/replay identity mismatches. It
+writes an explicit zero-order batch when closed history is insufficient.
+Closing paper orders use Alpaca's closing-auction time-in-force while replay
+orders retain their explicit close execution window.
+
+After silver market events exist, avoid copying nested order fields manually:
+
+```powershell
+uv run qee backtest materialize-frozen-replay-specs `
+  --frozen-orders .\frozen-daily-orders.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --quote-file .\silver-quotes-AAPL.parquet `
+  --trade-file .\silver-trades-AAPL.parquet `
+  --output-dir .\replay-specs `
+  --manifest-output .\replay-materialization-manifest.json
+```
+
+The strategy file must match the hash frozen with the orders. Silver files are
+grouped by their stored symbol rather than trusted filenames, and their symbol
+set must exactly match the selected portfolio.

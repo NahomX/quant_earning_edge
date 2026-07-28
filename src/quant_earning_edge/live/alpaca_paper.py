@@ -165,6 +165,28 @@ class PaperOrderBatchSpec(BaseModel):
             raise ValueError("batch client_order_id values must be unique and sorted")
         return self
 
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        encoded = self.canonical_bytes
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(encoded)
+        except FileExistsError:
+            if output.read_bytes() != encoded:
+                raise RuntimeError(f"paper-order batch collision at {output}") from None
+
 
 @dataclass(frozen=True)
 class PaperBatchSubmission:

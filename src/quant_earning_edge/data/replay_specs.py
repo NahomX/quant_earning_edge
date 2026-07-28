@@ -7,7 +7,9 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime annotations.
+from typing import TYPE_CHECKING
 
+import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_earning_edge.backtest.nbbo_spec import (
@@ -19,6 +21,9 @@ from quant_earning_edge.backtest.nbbo_spec import (
     TradePrintSpec,
 )
 from quant_earning_edge.data.market_events import ReplayMarketDataLoader
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class _StrictSpec(BaseModel):
@@ -253,3 +258,51 @@ def _write_once(path: Path, encoded: bytes, *, kind: str) -> None:
 def _slug(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-")
     return (normalized or "order")[:64]
+
+
+def replay_sources_from_files(
+    *,
+    quote_files: Sequence[Path],
+    trade_files: Sequence[Path],
+    expected_symbols: Sequence[str],
+    opening_auction_condition_codes: frozenset[int] = frozenset(),
+) -> tuple[ReplayEventSourceSpec, ...]:
+    """Group silver files by their single stored symbol without path conventions."""
+    normalized_expected = tuple(sorted({item.strip().upper() for item in expected_symbols}))
+    if any(not item for item in normalized_expected):
+        raise ValueError("expected replay symbols must not be blank")
+    quotes = _group_files_by_symbol(quote_files, kind="quote")
+    trades = _group_files_by_symbol(trade_files, kind="trade")
+    if set(quotes) != set(normalized_expected):
+        raise ValueError("quote-file symbols do not exactly match frozen order symbols")
+    if not set(trades).issubset(normalized_expected):
+        raise ValueError("trade-file symbol is not present in frozen orders")
+    return tuple(
+        ReplayEventSourceSpec(
+            symbol=symbol,
+            quote_files=tuple(quotes[symbol]),
+            trade_files=tuple(trades.get(symbol, ())),
+            opening_auction_condition_codes=opening_auction_condition_codes,
+        )
+        for symbol in normalized_expected
+    )
+
+
+def _group_files_by_symbol(
+    files: Sequence[Path],
+    *,
+    kind: str,
+) -> dict[str, list[Path]]:
+    grouped: dict[str, list[Path]] = {}
+    for path in sorted(set(files), key=str):
+        table = pq.read_table(path, columns=["symbol"])  # type: ignore[no-untyped-call]
+        symbols = {
+            str(item).strip().upper()
+            for item in table.column("symbol").to_pylist()
+            if item is not None
+        }
+        if len(symbols) != 1:
+            raise ValueError(f"{kind} file must contain exactly one symbol: {path}")
+        symbol = next(iter(symbols))
+        grouped.setdefault(symbol, []).append(path)
+    return grouped

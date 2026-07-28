@@ -35,7 +35,12 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
             ("features", "compute"),
         }
     ),
-    WorkflowStage.GENERATE_ORDER_PLAN: frozenset({("model", "plan-event-backtest")}),
+    WorkflowStage.GENERATE_ORDER_PLAN: frozenset(
+        {
+            ("model", "plan-event-backtest"),
+            ("model", "plan-live-orders"),
+        }
+    ),
     WorkflowStage.EVALUATE_BREAKERS: frozenset({("monitoring", "circuit-breakers")}),
     WorkflowStage.SUBMIT_PAPER_ORDERS: frozenset(
         {
@@ -46,6 +51,7 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
     WorkflowStage.CAPTURE_MARKET_EVENTS: frozenset({("ingest", "market-events")}),
     WorkflowStage.REPLAY_ORDERS: frozenset(
         {
+            ("backtest", "materialize-frozen-replay-specs"),
             ("backtest", "materialize-replay-specs"),
             ("backtest", "replay-nbbo"),
             ("evaluation", "replay-session"),

@@ -68,6 +68,8 @@ reproducible through `uv.lock`.
 | Conservative silver-to-replay normalization | Complete | one-sided/corrected/sub-share rejection audit |
 | Daily replay lifecycle reconciliation | Complete | exact entry/exit mapping, partial-fill breaks, commission/net P&L |
 | Immutable daily Phase 6 report and CLI | Complete | evidence hashes, fill/slippage percentiles, collision-safe JSON |
+| No-trade operational session evidence | Complete | explicit zero return, no invented orders or fill-rate denominator |
+| Locked 90-session Phase 6 hard gate | Complete | Sharpe CI, fills, global slippage, uptime, reconciliation, CLI |
 
 ## Phase 1 exit gate
 
@@ -98,9 +100,9 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Implement the multi-session Phase 6 proof rollup: authoritative-session
-continuity, bootstrap Sharpe confidence interval, 90th-percentile slippage
-stress, operational uptime, reconciliation aging, and the 90-session hard gate.
+Complete execution-cost attribution for replay fills, then add paper-broker
+submission/reconciliation and circuit-breaker operational records. After
+credentialed historical/strategy gates pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

@@ -65,8 +65,9 @@ ops/            Prefect flows, deploy scripts
 
 Phase 2's code-level no-lookahead gate and the Phase 3/4 research machinery are
 implemented. Phase 6's deterministic NBBO/trade replay core and active
-pre-decision-read property gate are also implemented; the real 90-session proof
-has not started. The credentialed historical backfill, real-data strategy
-evaluation, and unattended operational gates remain pending. See
+pre-decision-read property gate, daily reconciliation, and locked 90-session
+gate evaluator are also implemented; the real 90-session proof has not started.
+The credentialed historical backfill, real-data strategy evaluation, and
+unattended operational gates remain pending. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

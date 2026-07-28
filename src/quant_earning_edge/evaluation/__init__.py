@@ -5,6 +5,11 @@ from quant_earning_edge.evaluation.folds import (
     WalkForwardEvaluation,
     WalkForwardEvaluator,
 )
+from quant_earning_edge.evaluation.phase6_gate import (
+    Phase6AggregationSpec,
+    Phase6GateEvaluator,
+    Phase6GateReport,
+)
 from quant_earning_edge.evaluation.replay_session import (
     ReplayRoundTrip,
     ReplayRoundTripResult,
@@ -44,6 +49,9 @@ __all__ = [
     "Phase4AggregationSpec",
     "Phase4GateEvaluation",
     "Phase4GateEvaluator",
+    "Phase6AggregationSpec",
+    "Phase6GateEvaluator",
+    "Phase6GateReport",
     "ReplayRoundTrip",
     "ReplayRoundTripResult",
     "ReplayRoundTripSpec",

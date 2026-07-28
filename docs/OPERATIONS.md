@@ -354,6 +354,46 @@ percentiles, opening-auction quantity, commission, and matched-quantity P&L. A
 partial-fill mismatch leaves net P&L/return unset and records a reconciliation
 break; it is never silently marked to an invented closing price.
 
+An operationally successful day with no candidates uses empty
+`evidence_files` and `round_trips`. It produces an explicit zero return and
+counts toward uptime without creating a fill-rate denominator.
+
+## Evaluate the 90-session Phase 6 gate
+
+Create an aggregation spec that references an immutable Alpaca session file and
+all available daily replay reports:
+
+```json
+{
+  "session_file": "sessions-<hash>.json",
+  "proof_start": "2026-07-28",
+  "proof_end": "2026-12-02",
+  "initial_cash": 100000,
+  "session_report_files": ["sessions/2026-07-28.json"],
+  "minimum_session_count": 90,
+  "bootstrap_resamples": 10000,
+  "seed": 20260427
+}
+```
+
+```powershell
+uv run qee evaluation phase6-gate `
+  --aggregation-spec .\phase6-proof.json `
+  --output .\data\manifests\replay\phase6-gate.json
+```
+
+The 90-session minimum is schema-locked and cannot be lowered in configuration.
+Missing authoritative sessions count as downtime and zero return. A daily
+reconciliation break makes performance metrics unavailable and fails the gate;
+it is not converted to a zero return. Daily starting capital must equal the
+prior resolved equity, preventing hidden account resets.
+
+The final verdict requires all of: net Sharpe above 0.8, bootstrap lower bound
+above 0.3, fully-filled intended-order rate above 90%, global 90th-percentile
+adverse slippage below twice modeled, uptime above 95%, at least 90
+authoritative sessions, and no reconciliation breaks. Paper-broker P&L is not
+an input.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

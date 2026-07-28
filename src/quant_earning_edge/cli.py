@@ -44,8 +44,11 @@ from quant_earning_edge.evaluation import (
     PerformanceEvaluator,
     Phase4AggregationSpec,
     Phase4GateEvaluator,
+    Phase6AggregationSpec,
+    Phase6GateEvaluator,
     ReplaySessionAggregationSpec,
     ReplaySessionAggregator,
+    ReplaySessionReport,
 )
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
@@ -827,6 +830,65 @@ def aggregate_replay_session(
             "share_fill_rate": report.share_fill_rate,
             "reconciliation_break_count": report.reconciliation_break_count,
             "net_pnl": report.net_pnl,
+        }
+    )
+
+
+@evaluation_app.command("phase6-gate")
+def evaluate_phase6_gate(
+    aggregation_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Calendar, proof bounds, capital, and immutable daily report paths.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable terminal Phase 6 gate JSON."),
+    ],
+) -> None:
+    """Evaluate the locked 90-session NBBO replay terminal thresholds."""
+    try:
+        spec = Phase6AggregationSpec.model_validate_json(aggregation_spec.read_bytes())
+        session_path = (
+            spec.session_file
+            if spec.session_file.is_absolute()
+            else aggregation_spec.parent / spec.session_file
+        )
+        calendar = SessionFileStore.load(session_path)
+        reports = tuple(
+            ReplaySessionReport.load(
+                configured_path
+                if configured_path.is_absolute()
+                else aggregation_spec.parent / configured_path
+            )
+            for configured_path in spec.session_report_files
+        )
+        evaluator = Phase6GateEvaluator(
+            bootstrap_resamples=spec.bootstrap_resamples,
+            seed=spec.seed,
+        )
+        report = evaluator.evaluate(
+            calendar=calendar,
+            reports=reports,
+            proof_start=spec.proof_start,
+            proof_end=spec.proof_end,
+            initial_cash=spec.initial_cash,
+        )
+        report.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="Phase 6 aggregation") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "verdict": report.verdict,
+            "authoritative_session_count": report.authoritative_session_count,
+            "observed_session_count": report.observed_session_count,
+            "operational_uptime": report.operational_uptime,
+            "passes_phase6_gate": report.passes_phase6_gate,
         }
     )
 

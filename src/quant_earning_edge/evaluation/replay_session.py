@@ -74,10 +74,12 @@ class ReplaySessionReport:
     evidence_sha256: tuple[str, ...]
     intended_order_count: int
     fully_filled_order_count: int
-    fully_filled_order_rate: float
+    fully_filled_order_rate: float | None
     intended_share_count: int
     filled_share_count: int
-    share_fill_rate: float
+    share_fill_rate: float | None
+    realized_adverse_slippage_bps: tuple[float, ...]
+    predicted_adverse_slippage_bps: tuple[float, ...]
     realized_adverse_slippage_bps_p10: float | None
     realized_adverse_slippage_bps_p50: float | None
     realized_adverse_slippage_bps_p90: float | None
@@ -90,6 +92,11 @@ class ReplaySessionReport:
     net_pnl: float | None
     net_return: float | None
     round_trips: tuple[ReplayRoundTripResult, ...]
+
+    def __post_init__(self) -> None:
+        _validate_session_counts(self)
+        _validate_session_reconciliation(self)
+        _validate_session_metrics(self)
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -114,6 +121,18 @@ class ReplaySessionReport:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"replay-session report collision at {output}") from None
 
+    @classmethod
+    def load(cls, path: Path) -> ReplaySessionReport:
+        """Reload strict canonical daily evidence and re-run reconciliation."""
+        try:
+            raw = json.loads(path.read_bytes())
+            report = ReplaySessionReportSpec.model_validate(raw).to_domain()
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid replay-session report: {path}") from error
+        if json.loads(report.canonical_bytes) != raw:
+            raise ValueError("replay-session report is not canonical or uses unsupported fields")
+        return report
+
 
 class _StrictSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -135,8 +154,62 @@ class ReplaySessionAggregationSpec(_StrictSpec):
     session_date: date
     initial_cash: float = Field(gt=0)
     commission_bps_per_side: float = Field(default=1.0, ge=0)
-    evidence_files: tuple[Path, ...] = Field(min_length=1)
-    round_trips: tuple[ReplayRoundTripSpec, ...] = Field(min_length=1)
+    evidence_files: tuple[Path, ...] = ()
+    round_trips: tuple[ReplayRoundTripSpec, ...] = ()
+
+
+class ReplayRoundTripResultSpec(_StrictSpec):
+    trade_id: str
+    symbol: str
+    side: Literal["long", "short"]
+    intended_quantity: int = Field(gt=0)
+    entry_filled_quantity: int = Field(ge=0)
+    exit_filled_quantity: int = Field(ge=0)
+    matched_quantity: int = Field(ge=0)
+    unmatched_quantity: int = Field(ge=0)
+    entry_fill_price: float | None = Field(default=None, gt=0)
+    exit_fill_price: float | None = Field(default=None, gt=0)
+    gross_pnl: float
+    commission: float = Field(ge=0)
+    net_pnl_on_matched_quantity: float
+    reconciled: bool
+
+    def to_domain(self) -> ReplayRoundTripResult:
+        return ReplayRoundTripResult(**self.model_dump())
+
+
+class ReplaySessionReportSpec(_StrictSpec):
+    schema_version: Literal[1]
+    session_date: date
+    initial_cash: float = Field(gt=0)
+    evidence_sha256: tuple[str, ...]
+    intended_order_count: int = Field(ge=0)
+    fully_filled_order_count: int = Field(ge=0)
+    fully_filled_order_rate: float | None = Field(default=None, ge=0, le=1)
+    intended_share_count: int = Field(ge=0)
+    filled_share_count: int = Field(ge=0)
+    share_fill_rate: float | None = Field(default=None, ge=0, le=1)
+    realized_adverse_slippage_bps: tuple[float, ...]
+    predicted_adverse_slippage_bps: tuple[float, ...]
+    realized_adverse_slippage_bps_p10: float | None = Field(default=None, ge=0)
+    realized_adverse_slippage_bps_p50: float | None = Field(default=None, ge=0)
+    realized_adverse_slippage_bps_p90: float | None = Field(default=None, ge=0)
+    predicted_adverse_slippage_bps_p90: float | None = Field(default=None, ge=0)
+    p90_realized_to_predicted_ratio: float | None = Field(default=None, ge=0)
+    opening_auction_filled_share_count: int = Field(ge=0)
+    reconciliation_break_count: int = Field(ge=0)
+    gross_pnl: float | None = None
+    commission: float = Field(ge=0)
+    net_pnl: float | None = None
+    net_return: float | None = None
+    round_trips: tuple[ReplayRoundTripResultSpec, ...]
+
+    def to_domain(self) -> ReplaySessionReport:
+        values = self.model_dump(exclude={"round_trips"})
+        return ReplaySessionReport(
+            round_trips=tuple(item.to_domain() for item in self.round_trips),
+            **values,
+        )
 
 
 class ReplaySessionAggregator:
@@ -151,8 +224,6 @@ class ReplaySessionAggregator:
         initial_cash: float,
         commission_bps_per_side: float = 1.0,
     ) -> ReplaySessionReport:
-        if not evidence or not round_trips:
-            raise ValueError("replay evidence and round trips are required")
         if not math.isfinite(initial_cash) or initial_cash <= 0:
             raise ValueError("initial_cash must be finite and positive")
         if not math.isfinite(commission_bps_per_side) or commission_bps_per_side < 0:
@@ -248,12 +319,15 @@ class ReplaySessionAggregator:
         fully_filled = sum(
             item.result.filled_qty == item.result.order.quantity for item in evidence
         )
-        realized = tuple(
-            max(item.result.slippage_bps_realized, 0.0)
-            for item in evidence
-            if item.result.slippage_bps_realized is not None
+        filled_evidence = tuple(
+            item for item in evidence if item.result.slippage_bps_realized is not None
         )
-        predicted = tuple(max(item.result.slippage_bps_predicted, 0.0) for item in evidence)
+        realized = tuple(
+            sorted(max(item.result.slippage_bps_realized or 0.0, 0.0) for item in filled_evidence)
+        )
+        predicted = tuple(
+            sorted(max(item.result.slippage_bps_predicted, 0.0) for item in filled_evidence)
+        )
         realized_p90 = _percentile(realized, 0.90)
         predicted_p90 = _percentile(predicted, 0.90)
         ratio = (
@@ -272,10 +346,12 @@ class ReplaySessionAggregator:
             evidence_sha256=tuple(sorted(item.sha256 for item in evidence)),
             intended_order_count=len(evidence),
             fully_filled_order_count=fully_filled,
-            fully_filled_order_rate=fully_filled / len(evidence),
+            fully_filled_order_rate=fully_filled / len(evidence) if evidence else None,
             intended_share_count=intended_shares,
             filled_share_count=filled_shares,
-            share_fill_rate=filled_shares / intended_shares,
+            share_fill_rate=filled_shares / intended_shares if intended_shares else None,
+            realized_adverse_slippage_bps=realized,
+            predicted_adverse_slippage_bps=predicted,
             realized_adverse_slippage_bps_p10=_percentile(realized, 0.10),
             realized_adverse_slippage_bps_p50=_percentile(realized, 0.50),
             realized_adverse_slippage_bps_p90=realized_p90,
@@ -317,3 +393,187 @@ def _percentile(values: Sequence[float], probability: float) -> float | None:
         return ordered[lower_index]
     weight = rank - lower_index
     return ordered[lower_index] * (1 - weight) + ordered[upper_index] * weight
+
+
+def _validate_session_counts(report: ReplaySessionReport) -> None:
+    if report.schema_version != 1:
+        raise ValueError("unsupported replay-session schema version")
+    if not math.isfinite(report.initial_cash) or report.initial_cash <= 0:
+        raise ValueError("session initial cash must be finite and positive")
+    if report.intended_order_count != len(report.round_trips) * 2:
+        raise ValueError("session order count does not reconcile to round trips")
+    if len(report.evidence_sha256) != report.intended_order_count:
+        raise ValueError("session evidence hashes do not reconcile to order count")
+    if report.evidence_sha256 != tuple(sorted(set(report.evidence_sha256))):
+        raise ValueError("session evidence hashes must be unique and sorted")
+    if any(
+        len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        for value in report.evidence_sha256
+    ):
+        raise ValueError("session contains an invalid evidence hash")
+    intended = sum(item.intended_quantity * 2 for item in report.round_trips)
+    filled = sum(
+        item.entry_filled_quantity + item.exit_filled_quantity for item in report.round_trips
+    )
+    if intended != report.intended_share_count or filled != report.filled_share_count:
+        raise ValueError("session share counts do not reconcile to round trips")
+    if report.opening_auction_filled_share_count > report.filled_share_count:
+        raise ValueError("opening-auction quantity exceeds all filled shares")
+    if report.fully_filled_order_count > report.intended_order_count:
+        raise ValueError("fully filled count exceeds intended order count")
+    fully_filled = sum(
+        quantity == item.intended_quantity
+        for item in report.round_trips
+        for quantity in (item.entry_filled_quantity, item.exit_filled_quantity)
+    )
+    if fully_filled != report.fully_filled_order_count:
+        raise ValueError("fully filled count does not reconcile to round trips")
+    expected_order_rate = (
+        report.fully_filled_order_count / report.intended_order_count
+        if report.intended_order_count
+        else None
+    )
+    expected_share_rate = (
+        report.filled_share_count / report.intended_share_count
+        if report.intended_share_count
+        else None
+    )
+    if not _optional_close(report.fully_filled_order_rate, expected_order_rate):
+        raise ValueError("fully filled order rate does not reconcile")
+    if not _optional_close(report.share_fill_rate, expected_share_rate):
+        raise ValueError("share fill rate does not reconcile")
+
+
+def _validate_session_reconciliation(report: ReplaySessionReport) -> None:
+    for item in report.round_trips:
+        _validate_round_trip_result(item)
+    break_count = sum(not item.reconciled for item in report.round_trips)
+    commission = sum(item.commission for item in report.round_trips)
+    if break_count != report.reconciliation_break_count:
+        raise ValueError("session reconciliation-break count is inconsistent")
+    if not math.isclose(report.commission, commission, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError("session commission does not reconcile")
+    if break_count:
+        if (
+            report.gross_pnl is not None
+            or report.net_pnl is not None
+            or report.net_return is not None
+        ):
+            raise ValueError("session with a reconciliation break must not report P&L")
+        return
+    gross = sum(item.gross_pnl for item in report.round_trips)
+    net = gross - commission
+    if not _optional_close(report.gross_pnl, gross):
+        raise ValueError("session gross P&L does not reconcile")
+    if not _optional_close(report.net_pnl, net):
+        raise ValueError("session net P&L does not reconcile")
+    if not _optional_close(report.net_return, net / report.initial_cash):
+        raise ValueError("session net return does not reconcile")
+
+
+def _validate_round_trip_result(item: ReplayRoundTripResult) -> None:
+    matched = min(item.entry_filled_quantity, item.exit_filled_quantity)
+    unmatched = abs(item.entry_filled_quantity - item.exit_filled_quantity)
+    if matched != item.matched_quantity or unmatched != item.unmatched_quantity:
+        raise ValueError("round-trip fill quantities do not reconcile")
+    if item.reconciled != (unmatched == 0):
+        raise ValueError("round-trip reconciliation flag is inconsistent")
+    if (item.entry_fill_price is None) != (item.entry_filled_quantity == 0):
+        raise ValueError("round-trip entry fill price is inconsistent")
+    if (item.exit_fill_price is None) != (item.exit_filled_quantity == 0):
+        raise ValueError("round-trip exit fill price is inconsistent")
+    expected_gross = 0.0
+    if matched:
+        if item.entry_fill_price is None or item.exit_fill_price is None:
+            raise ValueError("matched round trip requires both fill prices")
+        direction = 1.0 if item.side == "long" else -1.0
+        expected_gross = direction * (item.exit_fill_price - item.entry_fill_price) * matched
+    if not math.isclose(
+        item.gross_pnl,
+        expected_gross,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip gross P&L does not reconcile")
+    if not math.isclose(
+        item.net_pnl_on_matched_quantity,
+        item.gross_pnl - item.commission,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip net P&L does not reconcile")
+
+
+def _validate_session_metrics(report: ReplaySessionReport) -> None:
+    if any(
+        not math.isfinite(item) or item < 0
+        for item in (
+            *report.realized_adverse_slippage_bps,
+            *report.predicted_adverse_slippage_bps,
+        )
+    ):
+        raise ValueError("session slippage observations must be finite and non-negative")
+    if report.realized_adverse_slippage_bps != tuple(
+        sorted(report.realized_adverse_slippage_bps)
+    ) or report.predicted_adverse_slippage_bps != tuple(
+        sorted(report.predicted_adverse_slippage_bps)
+    ):
+        raise ValueError("session slippage observations must be sorted")
+    if len(report.realized_adverse_slippage_bps) != len(report.predicted_adverse_slippage_bps):
+        raise ValueError("realized and predicted slippage observations must align")
+    filled_order_count = sum(
+        quantity > 0
+        for item in report.round_trips
+        for quantity in (item.entry_filled_quantity, item.exit_filled_quantity)
+    )
+    if len(report.realized_adverse_slippage_bps) != filled_order_count:
+        raise ValueError("slippage observations do not reconcile to filled orders")
+    slippage = (
+        report.realized_adverse_slippage_bps_p10,
+        report.realized_adverse_slippage_bps_p50,
+        report.realized_adverse_slippage_bps_p90,
+    )
+    expected_slippage = tuple(
+        _percentile(report.realized_adverse_slippage_bps, probability)
+        for probability in (0.10, 0.50, 0.90)
+    )
+    if any(
+        not _optional_close(actual, expected)
+        for actual, expected in zip(slippage, expected_slippage, strict=True)
+    ):
+        raise ValueError("session realized slippage percentiles do not reconcile")
+    expected_predicted = _percentile(report.predicted_adverse_slippage_bps, 0.90)
+    if not _optional_close(report.predicted_adverse_slippage_bps_p90, expected_predicted):
+        raise ValueError("session predicted slippage percentile does not reconcile")
+    expected_ratio = (
+        expected_slippage[2] / expected_predicted
+        if expected_slippage[2] is not None
+        and expected_predicted is not None
+        and expected_predicted > 0
+        else None
+    )
+    if not _optional_close(report.p90_realized_to_predicted_ratio, expected_ratio):
+        raise ValueError("session slippage ratio does not reconcile")
+    numeric = (
+        report.commission,
+        *(item for item in slippage if item is not None),
+        *(
+            item
+            for item in (
+                report.predicted_adverse_slippage_bps_p90,
+                report.p90_realized_to_predicted_ratio,
+                report.gross_pnl,
+                report.net_pnl,
+                report.net_return,
+            )
+            if item is not None
+        ),
+    )
+    if any(not math.isfinite(item) for item in numeric):
+        raise ValueError("session metrics must be finite")
+
+
+def _optional_close(actual: float | None, expected: float | None) -> bool:
+    if actual is None or expected is None:
+        return actual is expected
+    return math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-12)

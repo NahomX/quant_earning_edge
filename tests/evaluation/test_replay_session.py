@@ -11,7 +11,11 @@ from typer.testing import CliRunner
 
 from quant_earning_edge.backtest import NbboReplayEvidence, NbboReplaySpec, replay_order
 from quant_earning_edge.cli import app
-from quant_earning_edge.evaluation import ReplayRoundTrip, ReplaySessionAggregator
+from quant_earning_edge.evaluation import (
+    ReplayRoundTrip,
+    ReplaySessionAggregator,
+    ReplaySessionReport,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -153,6 +157,23 @@ def test_round_trip_requires_exact_order_mapping() -> None:
         )
 
 
+def test_no_trade_day_is_valid_zero_return_uptime_evidence() -> None:
+    report = ReplaySessionAggregator().evaluate(
+        evidence=(),
+        round_trips=(),
+        session_date=date(2025, 1, 3),
+        initial_cash=100_000,
+    )
+
+    assert report.intended_order_count == 0
+    assert report.fully_filled_order_rate is None
+    assert report.share_fill_rate is None
+    assert report.reconciliation_break_count == 0
+    assert report.gross_pnl == 0
+    assert report.net_pnl == 0
+    assert report.net_return == 0
+
+
 def test_session_report_is_immutable_and_cli_reloads_evidence(tmp_path: Path) -> None:
     entry, exit_fill = _full_round_trip()
     entry_path = tmp_path / "entry.json"
@@ -199,3 +220,24 @@ def test_session_report_is_immutable_and_cli_reloads_evidence(tmp_path: Path) ->
     assert command_result["reconciliation_break_count"] == 0
     assert report["schema_version"] == 1
     assert report["evidence_sha256"] == sorted((entry.sha256, exit_fill.sha256))
+    assert ReplaySessionReport.load(output).sha256 == command_result["sha256"]
+
+
+def test_session_loader_rejects_tampered_reconciliation(tmp_path: Path) -> None:
+    evidence = _full_round_trip()
+    report = ReplaySessionAggregator().evaluate(
+        evidence=evidence,
+        round_trips=(ReplayRoundTrip("trade-1", "entry", "exit", "long"),),
+        session_date=date(2025, 1, 3),
+        initial_cash=100_000,
+    )
+    raw = json.loads(report.canonical_bytes)
+    raw["filled_share_count"] -= 1
+    output = tmp_path / "tampered.json"
+    output.write_text(
+        json.dumps(raw, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid replay-session report"):
+        ReplaySessionReport.load(output)

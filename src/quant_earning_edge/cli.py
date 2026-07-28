@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -75,9 +75,11 @@ from quant_earning_edge.monitoring import (
     CircuitBreakerEvaluator,
 )
 from quant_earning_edge.orchestration import (
+    DailyWorkflowRunner,
     DailyWorkflowState,
     DailyWorkflowStore,
     StageStatus,
+    WorkflowRunSpec,
 )
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
@@ -1069,6 +1071,52 @@ def reconcile_paper_orders(
         }
     )
     if report.reconciliation_break_count:
+        raise typer.Exit(code=1)
+
+
+@workflow_app.command("run")
+def run_daily_workflow(
+    spec_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Complete stage-to-qee-command mapping for one trade date.",
+        ),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Loop through concrete qee stages until complete, leased, or failed."""
+    environment = _environment(env_file)
+    try:
+        spec = WorkflowRunSpec.model_validate_json(spec_file.read_bytes())
+        state = DailyWorkflowRunner(
+            store=DailyWorkflowStore(environment.data_lake_root),
+            handlers=spec.handlers(working_directory=spec_file.parent),
+            worker_id=spec.worker_id,
+            clock=lambda: datetime.now(UTC),
+            lease_duration=timedelta(seconds=spec.lease_seconds),
+        ).run_until_idle(trade_date=spec.trade_date)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="workflow run inputs") from error
+    current = next(
+        (record for record in state.stages if record.status is not StageStatus.SUCCEEDED),
+        None,
+    )
+    _echo_json(
+        {
+            "trade_date": state.trade_date,
+            "revision": state.revision,
+            "sha256": state.sha256,
+            "complete": state.complete,
+            "current_stage": current.stage if current else None,
+            "current_status": current.status if current else None,
+            "attempts": current.attempts if current else None,
+            "error_type": current.error_type if current else None,
+            "error_message": current.error_message if current else None,
+        }
+    )
+    if not state.complete:
         raise typer.Exit(code=1)
 
 

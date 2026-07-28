@@ -638,3 +638,42 @@ capture market events, replay orders, reconcile the session, and evaluate Phase
 6 progress. A worker crash leaves a lease; another worker can reclaim the same
 stage only after expiry. A stage cannot succeed without at least one immutable
 output artifact, so a missing step cannot be silently marked complete.
+
+To execute rather than only inspect the loop, provide a complete JSON run spec
+and run:
+
+```powershell
+uv run qee workflow run `
+  --spec-file .\daily-workflow-2026-07-28.json
+```
+
+The spec contains the trade date, worker ID, lease/command timeouts, and exactly
+one entry for each of the eight stages in the order above. Each stage entry has
+one or more `commands`, expressed as arguments after `qee`, plus either known
+`output_files` or `artifact_json_keys` naming path fields in command JSON
+output. For example:
+
+```json
+{
+  "stage": "capture_market_events",
+  "commands": [
+    {
+      "arguments": [
+        "ingest", "market-events",
+        "--symbol", "AAPL",
+        "--event-date", "2026-07-28",
+        "--start-at", "2026-07-28T13:30:00Z",
+        "--end-at", "2026-07-28T20:00:00Z"
+      ],
+      "artifact_json_keys": ["quote_path", "trade_path"]
+    }
+  ],
+  "output_files": []
+}
+```
+
+Only stage-appropriate existing `qee` command prefixes are accepted. Commands
+are passed directly to the current Python interpreter without a shell. API
+keys, tokens, passwords, and secrets are rejected as command arguments and must
+come from the runtime environment. Nonzero command exits become durable failed
+stages and are retried on the next loop invocation.

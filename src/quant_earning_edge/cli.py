@@ -52,6 +52,7 @@ from quant_earning_edge.runtime import (
     RuntimeEnvironment,
     load_runtime_environment,
 )
+from quant_earning_edge.signals import LightgbmWalkForwardTrainer, load_strategy_config
 from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
@@ -78,6 +79,7 @@ data_app = typer.Typer(no_args_is_help=True, help="Manage local lake query surfa
 features_app = typer.Typer(no_args_is_help=True, help="Compute point-in-time features.")
 labels_app = typer.Typer(no_args_is_help=True, help="Materialize forward labels and datasets.")
 backtest_app = typer.Typer(no_args_is_help=True, help="Plan and run reproducible backtests.")
+model_app = typer.Typer(no_args_is_help=True, help="Train deterministic signal models.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
@@ -86,6 +88,7 @@ app.add_typer(data_app, name="data")
 app.add_typer(features_app, name="features")
 app.add_typer(labels_app, name="labels")
 app.add_typer(backtest_app, name="backtest")
+app.add_typer(model_app, name="model")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -509,6 +512,56 @@ def run_backtest_ledger(
             "tearsheet_output": (
                 str(tearsheet_output.resolve()) if tearsheet_output is not None else None
             ),
+        }
+    )
+
+
+@model_app.command("train-walkforward")
+def train_walkforward_model(
+    dataset_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--dataset-file",
+            exists=True,
+            dir_okay=False,
+            help="Assembled training Parquet; repeat in the split-plan file set.",
+        ),
+    ],
+    split_plan: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical walk-forward JSON plan."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Immutable model artifact directory."),
+    ],
+) -> None:
+    """Train fold models without exposing OOS rows to fit or early stopping."""
+    try:
+        config = load_strategy_config(strategy_config)
+        plan = WalkForwardPlanner.load(split_plan)
+        trainer = LightgbmWalkForwardTrainer(
+            feature_names=config.features,
+            label_name="forward_1d_close",
+            threshold=config.label.threshold,
+            seed=config.seed,
+            early_stopping_rounds=config.model.early_stopping_rounds,
+        )
+        run = trainer.run(dataset_files=dataset_files, plan=plan)
+        trainer.write(run, output_dir)
+    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="model inputs") from error
+    _echo_json(
+        {
+            "output_dir": str(output_dir.resolve()),
+            "run_sha256": run.sha256,
+            "plan_sha256": run.plan_sha256,
+            "fold_count": len(run.folds),
+            "prediction_count": sum(len(item.predictions) for item in run.folds),
         }
     )
 

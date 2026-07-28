@@ -193,6 +193,28 @@ Integer-share rounding is always downward. The resulting plan enforces at most
 5% per position, 20% per sector, and 50% gross exposure. The effective weights
 can therefore be slightly below caps but never above them.
 
+## Train purged LightGBM folds
+
+After assembling training partitions and writing the matching split plan:
+
+```powershell
+uv run qee model train-walkforward `
+  --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
+  --split-plan .\data\manifests\backtest\walk-forward.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --output-dir .\data\models\earnings-v1
+```
+
+The command hashes every dataset before parsing and requires exact agreement
+with the split plan. Each fold reserves the latest 20% of its training sessions
+for early stopping and purges an additional five sessions plus overlapping
+label horizons before that validation block. The declared test indices are
+used only for OOS probabilities and realized-label evidence.
+
+Every booster is stored separately under its model hash. Canonical run JSON
+records the plan and dataset hashes, exact feature order, threshold, seed,
+LightGBM version, best iterations, partition counts, and OOS row keys.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

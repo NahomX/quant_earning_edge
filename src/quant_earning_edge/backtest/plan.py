@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import pyarrow as pa
@@ -100,6 +101,36 @@ class WalkForwardPlanner:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"walk-forward plan collision at {output}") from None
+
+    @staticmethod
+    def load(path: Path) -> WalkForwardPlan:
+        """Load canonical JSON split evidence."""
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            plan = WalkForwardPlan(
+                dataset_sha256=tuple(raw["dataset_sha256"]),
+                sample_count=int(raw["sample_count"]),
+                config=WalkForwardConfig(**raw["config"]),
+                folds=tuple(
+                    WalkForwardFold(
+                        fold_index=int(item["fold_index"]),
+                        train_indices=tuple(item["train_indices"]),
+                        embargo_dates=tuple(
+                            date.fromisoformat(value) for value in item["embargo_dates"]
+                        ),
+                        test_indices=tuple(item["test_indices"]),
+                        train_end_date=date.fromisoformat(item["train_end_date"]),
+                        test_start_date=date.fromisoformat(item["test_start_date"]),
+                        test_end_date=date.fromisoformat(item["test_end_date"]),
+                    )
+                    for item in raw["folds"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid walk-forward plan: {path}") from error
+        if plan.to_json_bytes() != path.read_bytes():
+            raise ValueError("walk-forward plan is not canonical or uses unsupported fields")
+        return plan
 
     @classmethod
     def _validate_schema(cls, schema: pa.Schema, *, path: Path) -> None:

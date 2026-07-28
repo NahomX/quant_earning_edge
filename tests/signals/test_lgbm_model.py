@@ -80,6 +80,11 @@ def test_walk_forward_models_and_oos_predictions_are_deterministic(tmp_path: Pat
         assert all(0 <= item.probability_up <= 1 for item in fold_result.predictions)
         assert fold_result.fit_count < len(fold_plan.train_indices)
         assert fold_result.validation_count > 0
+        assert len(fold_result.feature_attribution) == len(first.feature_names)
+        assert {item.feature_name for item in fold_result.feature_attribution} == set(
+            first.feature_names
+        )
+        assert all(item.mean_absolute_shap >= 0 for item in fold_result.feature_attribution)
     evidence = tuple(output.glob("run-*.json"))
     models = tuple(output.glob("fold-*.txt"))
     assert len(evidence) == 1

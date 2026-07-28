@@ -56,6 +56,7 @@ reproducible through `uv.lock`.
 | Strict earnings-v1 strategy configuration | Complete | registry feature match and cross-field risk/cost validation |
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
+| OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 
 ## Phase 1 exit gate
 

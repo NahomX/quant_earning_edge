@@ -32,6 +32,14 @@ class OosPrediction:
 
 
 @dataclass(frozen=True)
+class FeatureAttribution:
+    """Mean absolute OOS SHAP contribution for one feature."""
+
+    feature_name: str
+    mean_absolute_shap: float
+
+
+@dataclass(frozen=True)
 class FoldModelResult:
     """Fold model identity and OOS predictions."""
 
@@ -41,6 +49,7 @@ class FoldModelResult:
     fit_count: int
     validation_count: int
     predictions: tuple[OosPrediction, ...]
+    feature_attribution: tuple[FeatureAttribution, ...]
     model_text: str = field(repr=False)
 
 
@@ -193,6 +202,19 @@ class LightgbmWalkForwardTrainer:
             features[list(fold.test_indices)],
             num_iteration=model.best_iteration_,
         )[:, 1]
+        contributions = np.asarray(
+            model.booster_.predict(
+                features[list(fold.test_indices)],
+                num_iteration=model.best_iteration_,
+                pred_contrib=True,
+            ),
+            dtype=np.float64,
+        )
+        if contributions.shape != (
+            len(fold.test_indices),
+            len(self._feature_names) + 1,
+        ):
+            raise RuntimeError("unexpected LightGBM SHAP contribution shape")
         model_text = str(model.booster_.model_to_string(num_iteration=model.best_iteration_))
         return FoldModelResult(
             fold_index=fold.fold_index,
@@ -213,6 +235,13 @@ class LightgbmWalkForwardTrainer:
                     probabilities,
                     strict=True,
                 )
+            ),
+            feature_attribution=tuple(
+                FeatureAttribution(
+                    feature_name=name,
+                    mean_absolute_shap=float(np.mean(np.abs(contributions[:, index]))),
+                )
+                for index, name in enumerate(self._feature_names)
             ),
             model_text=model_text,
         )

@@ -2,6 +2,7 @@
 
 from quant_earning_edge.signals.config import EarningsStrategyConfig, load_strategy_config
 from quant_earning_edge.signals.lgbm_model import (
+    FeatureAttribution,
     FoldModelResult,
     LightgbmWalkForwardTrainer,
     OosPrediction,
@@ -17,6 +18,7 @@ from quant_earning_edge.signals.momentum import (
 __all__ = [
     "CrossSectionalMomentum",
     "EarningsStrategyConfig",
+    "FeatureAttribution",
     "FoldModelResult",
     "LightgbmWalkForwardTrainer",
     "MomentumPrice",

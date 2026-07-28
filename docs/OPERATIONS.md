@@ -214,6 +214,9 @@ used only for OOS probabilities and realized-label evidence.
 Every booster is stored separately under its model hash. Canonical run JSON
 records the plan and dataset hashes, exact feature order, threshold, seed,
 LightGBM version, best iterations, partition counts, and OOS row keys.
+Each fold also records mean absolute SHAP contribution per feature, calculated
+only from that fold's OOS rows. The expected feature-plus-bias contribution
+shape is validated before evidence is written.
 
 ## Fetch authoritative market sessions
 

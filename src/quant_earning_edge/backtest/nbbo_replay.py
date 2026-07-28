@@ -209,6 +209,13 @@ class ReplayFill:
     read_trade_timestamps: tuple[datetime, ...]
     notes: str = ""
 
+    def __post_init__(self) -> None:
+        _validate_replay_identity(self)
+        _validate_replay_quantities(self)
+        _validate_replay_auction(self)
+        _validate_replay_timestamps(self)
+        _validate_replay_metrics(self)
+
 
 def replay_order(
     order: IntendedOrder,
@@ -559,3 +566,81 @@ def _require_aware(value: datetime, *, field: str) -> None:
 def _require_positive_finite(value: float, *, field: str) -> None:
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{field} must be finite and positive")
+
+
+def _validate_replay_identity(result: ReplayFill) -> None:
+    if result.decision_snapshot.ticker != result.order.ticker:
+        raise ValueError("replay result order and snapshot tickers differ")
+    if result.decision_snapshot.observed_at > result.order.decision_time:
+        raise ValueError("replay snapshot was not observable by decision_time")
+
+
+def _validate_replay_quantities(result: ReplayFill) -> None:
+    if result.filled_qty < 0 or result.unfilled_qty < 0:
+        raise ValueError("replay quantities must not be negative")
+    if result.filled_qty + result.unfilled_qty != result.order.quantity:
+        raise ValueError("replay quantities do not reconcile to intended quantity")
+    if sum(item.quantity for item in result.fragments) != result.filled_qty:
+        raise ValueError("fill fragments do not reconcile to filled quantity")
+    if not math.isclose(
+        result.fill_rate,
+        result.filled_qty / result.order.quantity,
+        rel_tol=0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("fill_rate does not reconcile to quantity")
+    if result.filled_qty == 0:
+        if (
+            result.fill_price is not None
+            or result.slippage_bps_realized is not None
+            or result.fragments
+        ):
+            raise ValueError("unfilled replay must not contain fill evidence")
+        return
+    if result.fill_price is None or result.slippage_bps_realized is None:
+        raise ValueError("filled replay must contain price and realized slippage")
+    weighted_price = (
+        sum(item.price * item.quantity for item in result.fragments) / result.filled_qty
+    )
+    if not math.isclose(
+        result.fill_price,
+        weighted_price,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("fill_price does not reconcile to fill fragments")
+
+
+def _validate_replay_auction(result: ReplayFill) -> None:
+    auction_quantity = sum(
+        item.quantity for item in result.fragments if item.source == "opening_auction"
+    )
+    if auction_quantity != result.opening_auction_filled_qty:
+        raise ValueError("opening-auction quantity does not reconcile")
+    if auction_quantity == 0 and result.opening_auction_skew_bps is not None:
+        raise ValueError("opening-auction skew requires an auction fill")
+
+
+def _validate_replay_timestamps(result: ReplayFill) -> None:
+    timestamps = (
+        *(item.timestamp for item in result.fragments),
+        *result.read_quote_timestamps,
+        *result.read_trade_timestamps,
+    )
+    for timestamp in timestamps:
+        _require_aware(timestamp, field="replay evidence timestamp")
+        if not result.order.submitted_at <= timestamp <= result.order.expires_at:
+            raise ValueError("replay evidence timestamp is outside the order window")
+
+
+def _validate_replay_metrics(result: ReplayFill) -> None:
+    if not 0 <= result.fill_probability_assumption <= 1:
+        raise ValueError("fill probability assumption must be in [0, 1]")
+    numeric = (
+        result.fill_rate,
+        result.slippage_bps_predicted,
+        result.market_move_bps,
+        result.fill_probability_assumption,
+    )
+    if any(not math.isfinite(value) for value in numeric):
+        raise ValueError("replay metrics must be finite")

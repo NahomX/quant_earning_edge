@@ -5,6 +5,14 @@ from quant_earning_edge.evaluation.folds import (
     WalkForwardEvaluation,
     WalkForwardEvaluator,
 )
+from quant_earning_edge.evaluation.replay_session import (
+    ReplayRoundTrip,
+    ReplayRoundTripResult,
+    ReplayRoundTripSpec,
+    ReplaySessionAggregationSpec,
+    ReplaySessionAggregator,
+    ReplaySessionReport,
+)
 from quant_earning_edge.evaluation.report import (
     BootstrapSummary,
     ConfidenceInterval,
@@ -36,6 +44,12 @@ __all__ = [
     "Phase4AggregationSpec",
     "Phase4GateEvaluation",
     "Phase4GateEvaluator",
+    "ReplayRoundTrip",
+    "ReplayRoundTripResult",
+    "ReplayRoundTripSpec",
+    "ReplaySessionAggregationSpec",
+    "ReplaySessionAggregator",
+    "ReplaySessionReport",
     "WalkForwardEvaluation",
     "WalkForwardEvaluator",
 ]

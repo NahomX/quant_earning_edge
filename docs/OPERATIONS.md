@@ -318,6 +318,42 @@ prints, floors fractional shares, and reports every exclusion. Opening-auction
 classification must use explicitly supplied provider condition codes; the
 normalizer does not guess their meaning.
 
+## Aggregate one replay session
+
+After producing immutable order-level replay evidence, create a strict session
+mapping:
+
+```json
+{
+  "session_date": "2026-07-28",
+  "initial_cash": 100000,
+  "commission_bps_per_side": 1,
+  "evidence_files": ["entry-AAPL.json", "exit-AAPL.json"],
+  "round_trips": [
+    {
+      "trade_id": "earnings-AAPL-20260728",
+      "entry_order_id": "entry-AAPL",
+      "exit_order_id": "exit-AAPL",
+      "side": "long"
+    }
+  ]
+}
+```
+
+Then run:
+
+```powershell
+uv run qee evaluation replay-session `
+  --aggregation-spec .\replay-session-2026-07-28.json `
+  --output .\data\manifests\replay\sessions\2026-07-28.json
+```
+
+Every order must occur exactly once in an entry/exit pair. The report computes
+both fully-filled-order and share-weighted fill rates, adverse slippage
+percentiles, opening-auction quantity, commission, and matched-quantity P&L. A
+partial-fill mismatch leaves net P&L/return unset and records a reconciliation
+break; it is never silently marked to an invented closing price.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

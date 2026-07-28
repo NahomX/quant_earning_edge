@@ -75,8 +75,10 @@ def test_spec_hash_is_semantic_and_replay_evidence_is_idempotent(tmp_path: Path)
 
     evidence.write(output)
     evidence.write(output)
+    loaded = NbboReplayEvidence.load(output)
 
     assert compact.sha256 == indented.sha256
+    assert loaded == evidence
     assert json.loads(output.read_bytes())["input_sha256"] == compact.sha256
     assert evidence.sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
 
@@ -97,6 +99,29 @@ def test_evidence_collision_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="collision"):
         evidence.write(output)
+
+
+def test_evidence_loader_rejects_tampered_fill_totals(tmp_path: Path) -> None:
+    spec = NbboReplaySpec.model_validate(_payload())
+    order, snapshot, quotes, trades, config = spec.domain_inputs()
+    result = replay_order(
+        order,
+        decision_snapshot=snapshot,
+        quotes=quotes,
+        trades=trades,
+        config=config,
+    )
+    evidence = NbboReplayEvidence.build(spec=spec, result=result)
+    output = tmp_path / "tampered.json"
+    raw = json.loads(evidence.canonical_bytes)
+    raw["result"]["filled_qty"] = 99
+    output.write_text(
+        json.dumps(raw, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid NBBO replay evidence"):
+        NbboReplayEvidence.load(output)
 
 
 def test_spec_forbids_unknown_fields() -> None:

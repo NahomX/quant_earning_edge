@@ -66,6 +66,8 @@ reproducible through `uv.lock`.
 | Polygon historical NBBO/trade client | Complete | bounded SIP-time pagination, bronze capture, contract tests |
 | Tick-level silver schemas and SQL views | Complete | conditions/corrections retained, content-addressed Parquet |
 | Conservative silver-to-replay normalization | Complete | one-sided/corrected/sub-share rejection audit |
+| Daily replay lifecycle reconciliation | Complete | exact entry/exit mapping, partial-fill breaks, commission/net P&L |
+| Immutable daily Phase 6 report and CLI | Complete | evidence hashes, fill/slippage percentiles, collision-safe JSON |
 
 ## Phase 1 exit gate
 
@@ -96,8 +98,9 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Implement replay-session aggregation so a set of frozen orders and their
-content-addressed market-event files produce one immutable daily Phase 6 record.
+Implement the multi-session Phase 6 proof rollup: authoritative-session
+continuity, bootstrap Sharpe confidence interval, 90th-percentile slippage
+stress, operational uptime, reconciliation aging, and the 90-session hard gate.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

@@ -44,6 +44,8 @@ from quant_earning_edge.evaluation import (
     PerformanceEvaluator,
     Phase4AggregationSpec,
     Phase4GateEvaluator,
+    ReplaySessionAggregationSpec,
+    ReplaySessionAggregator,
 )
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
@@ -775,6 +777,56 @@ def evaluate_phase4_gate(
             "fold_count": len(report.walk_forward.folds),
             "passes_phase4_research_gate": report.passes_phase4_research_gate,
             "passes_pre_paper_backtest_gate": report.passes_pre_paper_backtest_gate,
+        }
+    )
+
+
+@evaluation_app.command("replay-session")
+def aggregate_replay_session(
+    aggregation_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Session, replay-evidence paths, and round-trip lifecycle mapping.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable daily Phase 6 replay report."),
+    ],
+) -> None:
+    """Reconcile entry/exit fills and aggregate one daily replay proof record."""
+    try:
+        spec = ReplaySessionAggregationSpec.model_validate_json(aggregation_spec.read_bytes())
+        evidence = tuple(
+            NbboReplayEvidence.load(
+                configured_path
+                if configured_path.is_absolute()
+                else aggregation_spec.parent / configured_path
+            )
+            for configured_path in spec.evidence_files
+        )
+        aggregator = ReplaySessionAggregator()
+        report = aggregator.evaluate(
+            evidence=evidence,
+            round_trips=tuple(item.to_domain() for item in spec.round_trips),
+            session_date=spec.session_date,
+            initial_cash=spec.initial_cash,
+            commission_bps_per_side=spec.commission_bps_per_side,
+        )
+        report.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="replay-session inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "session_date": report.session_date,
+            "order_count": report.intended_order_count,
+            "share_fill_rate": report.share_fill_rate,
+            "reconciliation_break_count": report.reconciliation_break_count,
+            "net_pnl": report.net_pnl,
         }
     )
 

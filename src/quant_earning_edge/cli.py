@@ -82,9 +82,11 @@ from quant_earning_edge.live import (
     PaperReconciliationSpec,
 )
 from quant_earning_edge.monitoring import (
+    CircuitBreakerControlBuilder,
     CircuitBreakerDecision,
     CircuitBreakerEvaluationSpec,
     CircuitBreakerEvaluator,
+    CompletedReplayControlSource,
 )
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
@@ -1325,6 +1327,89 @@ def evaluate_circuit_breakers(
     )
     if decision.halt_new_orders:
         raise typer.Exit(code=1)
+
+
+@monitoring_app.command("prepare-breaker-controls")
+def prepare_breaker_controls(  # noqa: PLR0917 - explicit control provenance contract.
+    control_date: Annotated[str, typer.Option(help="Session being authorized.")],
+    evaluated_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware control evaluation timestamp."),
+    ],
+    polygon_data_observed_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware latest Polygon observation."),
+    ],
+    alpaca_data_observed_at: Annotated[
+        str,
+        typer.Option(help="Offset-aware latest Alpaca observation."),
+    ],
+    frozen_order_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--frozen-orders",
+            exists=True,
+            dir_okay=False,
+            help="Completed frozen session; repeat in date order.",
+        ),
+    ],
+    replay_report_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--replay-report",
+            exists=True,
+            dir_okay=False,
+            help="Matching completed replay report; repeat in date order.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Canonical breaker evaluation input."),
+    ],
+    reconciliation_break_age_sessions: Annotated[
+        int | None,
+        typer.Option(min=0, help="Age of any unresolved operational break."),
+    ] = None,
+) -> None:
+    """Build breaker controls without relabeling prior-session replay evidence."""
+    try:
+        if len(frozen_order_files) != len(replay_report_files):
+            raise ValueError("frozen-order and replay-report counts must match")
+        spec = CircuitBreakerControlBuilder().build(
+            control_date=_parse_date(control_date, option="--control-date"),
+            evaluated_at=_parse_datetime(evaluated_at, option="--evaluated-at"),
+            polygon_data_observed_at=_parse_datetime(
+                polygon_data_observed_at,
+                option="--polygon-data-observed-at",
+            ),
+            alpaca_data_observed_at=_parse_datetime(
+                alpaca_data_observed_at,
+                option="--alpaca-data-observed-at",
+            ),
+            sources=tuple(
+                CompletedReplayControlSource(
+                    frozen_orders=FrozenDailyOrders.load(frozen_path),
+                    replay_report=ReplaySessionReport.load(report_path),
+                )
+                for frozen_path, report_path in zip(
+                    frozen_order_files,
+                    replay_report_files,
+                    strict=True,
+                )
+            ),
+            reconciliation_break_age_sessions=reconciliation_break_age_sessions,
+            output=output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="breaker control inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "control_date": spec.observations[-1].session_date,
+            "replay_source_dates": [item.replay_source_date for item in spec.observations],
+            "observation_count": len(spec.observations),
+        }
+    )
 
 
 @paper_app.command("submit-order")

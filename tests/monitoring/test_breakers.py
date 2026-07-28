@@ -63,6 +63,29 @@ def test_healthy_observation_allows_new_orders() -> None:
     assert not decision.halt_new_orders
     assert decision.triggered_breakers == ()
     assert decision.replay_loss_fraction == 0
+    assert decision.replay_source_dates == decision.observation_dates
+
+
+def test_control_date_retains_prior_replay_source_provenance() -> None:
+    observation = CircuitBreakerObservation(
+        **{
+            **_observation(day=3).__dict__,
+            "replay_source_date": date(2025, 1, 2),
+        }
+    )
+
+    decision = CircuitBreakerEvaluator().evaluate((observation,))
+
+    assert decision.session_date == date(2025, 1, 3)
+    assert decision.replay_source_dates == (date(2025, 1, 2),)
+
+    with pytest.raises(ValueError, match="cannot be after"):
+        CircuitBreakerObservation(
+            **{
+                **observation.__dict__,
+                "replay_source_date": date(2025, 1, 4),
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -168,6 +191,7 @@ def test_circuit_breaker_cli_writes_halt_and_exits_nonzero(tmp_path: Path) -> No
                     {
                         **observation.__dict__,
                         "session_date": observation.session_date.isoformat(),
+                        "replay_source_date": observation.replay_source_date.isoformat(),
                         "evaluated_at": observation.evaluated_at.isoformat(),
                         "polygon_data_observed_at": (
                             observation.polygon_data_observed_at.isoformat()

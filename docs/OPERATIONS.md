@@ -541,6 +541,7 @@ original close and `1` is T+1 close.
   "observations": [
     {
       "session_date": "2026-07-28",
+      "replay_source_date": "2026-07-27",
       "evaluated_at": "2026-07-28T13:25:00Z",
       "replay_notional": 100000.0,
       "replay_net_pnl": -500.0,
@@ -560,6 +561,28 @@ uv run qee monitoring circuit-breakers `
   --spec-file .\breaker-observations.json `
   --output .\breaker-decision.json
 ```
+
+Build that observation file from completed frozen/replay sessions while
+retaining the distinction between evidence date and the new control date:
+
+```powershell
+uv run qee monitoring prepare-breaker-controls `
+  --control-date 2026-07-29 `
+  --evaluated-at 2026-07-29T13:20:00Z `
+  --polygon-data-observed-at 2026-07-29T13:19:00Z `
+  --alpaca-data-observed-at 2026-07-29T13:19:30Z `
+  --frozen-orders .\artifacts\trade_date=2026-07-27\frozen-daily-orders.json `
+  --replay-report .\artifacts\trade_date=2026-07-27\replay-session.json `
+  --frozen-orders .\artifacts\trade_date=2026-07-28\frozen-daily-orders.json `
+  --replay-report .\artifacts\trade_date=2026-07-28\replay-session.json `
+  --output .\controls\2026-07-29-breakers.json
+```
+
+Frozen portfolio notionals, replay P&L, and fill rates must reconcile by source
+session. The latest completed source is explicitly mapped to the new control
+date, and both date sequences survive into the breaker decision. Current
+provider timestamps remain explicit because fabricating freshness would defeat
+the fail-closed control.
 
 The command writes immutable evidence and exits `1` when any documented halt is
 active: replay loss above 2% of notional, three consecutive applicable fill

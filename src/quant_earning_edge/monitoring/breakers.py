@@ -44,8 +44,13 @@ class CircuitBreakerObservation:
     polygon_data_observed_at: datetime | None
     alpaca_data_observed_at: datetime | None
     reconciliation_break_age_sessions: int | None = None
+    replay_source_date: date | None = None
 
     def __post_init__(self) -> None:
+        source_date = self.replay_source_date or self.session_date
+        if source_date > self.session_date:
+            raise ValueError("replay source date cannot be after the control session date")
+        object.__setattr__(self, "replay_source_date", source_date)
         _require_aware("evaluated_at", self.evaluated_at)
         if not math.isfinite(self.replay_notional) or self.replay_notional < 0:
             raise ValueError("replay_notional must be finite and non-negative")
@@ -81,6 +86,7 @@ class CircuitBreakerDecision:
     session_date: date
     evaluated_at: datetime
     observation_dates: tuple[date, ...]
+    replay_source_dates: tuple[date, ...]
     halt_new_orders: bool
     triggered_breakers: tuple[str, ...]
     replay_loss_fraction: float | None
@@ -93,6 +99,15 @@ class CircuitBreakerDecision:
         _require_aware("evaluated_at", self.evaluated_at)
         if not self.observation_dates or self.observation_dates[-1] != self.session_date:
             raise ValueError("decision must identify the current observation date")
+        if len(self.replay_source_dates) != len(self.observation_dates) or any(
+            source > control
+            for source, control in zip(
+                self.replay_source_dates,
+                self.observation_dates,
+                strict=True,
+            )
+        ):
+            raise ValueError("decision replay-source provenance is inconsistent")
         if self.halt_new_orders != bool(self.triggered_breakers):
             raise ValueError("halt flag must exactly match triggered breakers")
         if tuple(sorted(set(self.triggered_breakers))) != self.triggered_breakers:
@@ -149,6 +164,7 @@ class CircuitBreakerObservationSpec(_StrictSpec):
     polygon_data_observed_at: datetime | None
     alpaca_data_observed_at: datetime | None
     reconciliation_break_age_sessions: int | None = Field(default=None, ge=0)
+    replay_source_date: date | None = None
 
     def to_domain(self) -> CircuitBreakerObservation:
         return CircuitBreakerObservation(**self.model_dump())
@@ -167,6 +183,7 @@ class CircuitBreakerDecisionSpec(_StrictSpec):
     session_date: date
     evaluated_at: datetime
     observation_dates: tuple[date, ...] = Field(min_length=1)
+    replay_source_dates: tuple[date, ...] = Field(min_length=1)
     halt_new_orders: bool
     triggered_breakers: tuple[str, ...]
     replay_loss_fraction: float | None = Field(default=None, ge=0)
@@ -223,10 +240,13 @@ class CircuitBreakerEvaluator:
             triggered.append(RECONCILIATION_OVERDUE)
         reasons = tuple(sorted(triggered))
         return CircuitBreakerDecision(
-            schema_version=1,
+            schema_version=2,
             session_date=current.session_date,
             evaluated_at=current.evaluated_at,
             observation_dates=dates,
+            replay_source_dates=tuple(
+                item.replay_source_date or item.session_date for item in observations
+            ),
             halt_new_orders=bool(reasons),
             triggered_breakers=reasons,
             replay_loss_fraction=loss_fraction,

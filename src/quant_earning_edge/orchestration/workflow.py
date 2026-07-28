@@ -109,8 +109,6 @@ class StageRecord:
         _validate_stage_status(self)
         for digest in self.input_sha256:
             _validate_digest("stage input sha256", digest)
-        if len(set(self.input_sha256)) != len(self.input_sha256):
-            raise ValueError("stage input hashes must be unique")
 
 
 @dataclass(frozen=True)

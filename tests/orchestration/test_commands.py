@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
 from pydantic import ValidationError
 
 from quant_earning_edge.orchestration import (
+    ArtifactReference,
+    ConfiguredQeeStageHandler,
     DailyWorkflowController,
     DailyWorkflowRunner,
     DailyWorkflowState,
@@ -16,6 +18,8 @@ from quant_earning_edge.orchestration import (
     QeeCommandResult,
     WorkflowRunSpec,
     WorkflowStage,
+    WorkflowStageCommandSpec,
+    WorkflowTrigger,
 )
 
 if TYPE_CHECKING:
@@ -179,3 +183,136 @@ def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Pa
     outputs = handler(claimed, WorkflowStage.FREEZE_INPUTS)
     assert artifact.resolve() in outputs
     assert any(path.name == "command-001.json" for path in outputs)
+
+
+def _claimed_replay_state(tmp_path: Path) -> DailyWorkflowState:
+    controller = DailyWorkflowController()
+    now = datetime.now(UTC)
+    state = DailyWorkflowState.initialize(
+        trade_date=date(2026, 7, 28),
+        now=now,
+        trigger=WorkflowTrigger.SCHEDULED,
+    )
+    for index, stage in enumerate(tuple(WorkflowStage)[:5], start=1):
+        claimed = controller.claim_next(
+            state,
+            worker_id="worker",
+            now=now + timedelta(seconds=index * 2),
+        )
+        assert claimed is not None
+        paths: tuple[Path, ...]
+        if stage is WorkflowStage.CAPTURE_MARKET_EVENTS:
+            paths = (
+                tmp_path / "dataset=nbbo-quotes" / "quotes.parquet",
+                tmp_path / "dataset=stock-trades" / "trades.parquet",
+            )
+        else:
+            paths = (tmp_path / stage.value / "output.json",)
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
+        state = controller.succeed(
+            claimed,
+            worker_id="worker",
+            stage=stage,
+            artifacts=tuple(ArtifactReference.capture(path) for path in paths),
+            now=now + timedelta(seconds=index * 2 + 1),
+        )
+    replay = controller.claim_next(
+        state,
+        worker_id="worker",
+        now=now + timedelta(seconds=20),
+    )
+    assert replay is not None
+    return replay
+
+
+def test_artifact_bindings_expand_selected_prior_stage_files(tmp_path: Path) -> None:
+    state = _claimed_replay_state(tmp_path)
+    output = tmp_path / "manifest.json"
+    output.write_text("{}", encoding="utf-8")
+    seen: list[tuple[str, ...]] = []
+
+    def execute(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        del cwd, timeout_seconds
+        seen.append(argv)
+        return QeeCommandResult(return_code=0, stdout="{}")
+
+    spec = WorkflowStageCommandSpec.model_validate(
+        {
+            "stage": "replay_orders",
+            "commands": [
+                {
+                    "arguments": [
+                        "backtest",
+                        "materialize-frozen-replay-specs",
+                        "--frozen-orders",
+                        "frozen.json",
+                    ],
+                    "artifact_bindings": [
+                        {
+                            "source_stage": "capture_market_events",
+                            "option": "--quote-file",
+                            "file_glob": "*.parquet",
+                            "path_contains": ["dataset=nbbo-quotes"],
+                            "maximum_matches": 1,
+                        },
+                        {
+                            "source_stage": "capture_market_events",
+                            "option": "--trade-file",
+                            "file_glob": "*.parquet",
+                            "path_contains": ["dataset=stock-trades"],
+                            "maximum_matches": 1,
+                        },
+                    ],
+                }
+            ],
+            "output_files": [output],
+        }
+    )
+    ConfiguredQeeStageHandler(
+        spec=spec,
+        working_directory=tmp_path,
+        timeout_seconds=30,
+        executor=execute,
+    )(state, WorkflowStage.REPLAY_ORDERS)
+
+    argv = seen[0]
+    quote = str((tmp_path / "dataset=nbbo-quotes" / "quotes.parquet").resolve())
+    trade = str((tmp_path / "dataset=stock-trades" / "trades.parquet").resolve())
+    assert argv[argv.index("--quote-file") + 1] == quote
+    assert argv[argv.index("--trade-file") + 1] == trade
+
+
+def test_artifact_binding_cardinality_failure_prevents_command(tmp_path: Path) -> None:
+    state = _claimed_replay_state(tmp_path)
+    spec = WorkflowStageCommandSpec.model_validate(
+        {
+            "stage": "replay_orders",
+            "commands": [
+                {
+                    "arguments": ["backtest", "materialize-frozen-replay-specs"],
+                    "artifact_bindings": [
+                        {
+                            "source_stage": "capture_market_events",
+                            "option": "--quote-file",
+                            "path_contains": ["does-not-exist"],
+                        }
+                    ],
+                }
+            ],
+            "output_files": [tmp_path / "manifest.json"],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="matched 0"):
+        ConfiguredQeeStageHandler(
+            spec=spec,
+            working_directory=tmp_path,
+            timeout_seconds=30,
+        )(state, WorkflowStage.REPLAY_ORDERS)

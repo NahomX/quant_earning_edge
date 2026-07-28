@@ -87,6 +87,7 @@ reproducible through `uv.lock`.
 | Silver-to-replay specification materialization | Complete | frozen orders/snapshots, source hashes, interval filtering audits, CLI |
 | Live-safe frozen daily order artifact | Complete | decision-only scores/sizing/NBBO; linked intended and paper order IDs |
 | Frozen-order-to-replay linkage | Complete | strategy hash check, silver symbol grouping, direct causal materialization CLI |
+| Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
 
@@ -117,10 +118,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add typed dynamic artifact bindings between workflow stages, then generate
-complete daily workflow run specifications so operators do not hand-author
-eight-stage JSON or content-addressed downstream paths. After credentialed
-historical/strategy gates pass, begin the real 90-session run.
+Automate batch replay and after-close broker fetch/reconciliation from frozen
+orders, then generate complete daily workflow run specifications so operators
+do not hand-author eight-stage JSON or content-addressed downstream paths.
+After credentialed historical/strategy gates pass, begin the real 90-session
+run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

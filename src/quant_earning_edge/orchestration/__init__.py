@@ -1,6 +1,7 @@
 """Restart-safe orchestration for the daily paper/replay workflow."""
 
 from quant_earning_edge.orchestration.commands import (
+    ArtifactArgumentBinding,
     CommandReceipt,
     ConfiguredQeeStageHandler,
     QeeCommandResult,
@@ -31,6 +32,7 @@ from quant_earning_edge.orchestration.workflow import (
 )
 
 __all__ = [
+    "ArtifactArgumentBinding",
     "ArtifactReference",
     "CommandReceipt",
     "ConfiguredQeeStageHandler",

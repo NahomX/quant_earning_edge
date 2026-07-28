@@ -798,3 +798,12 @@ uv run qee backtest materialize-frozen-replay-specs `
 The strategy file must match the hash frozen with the orders. Silver files are
 grouped by their stored symbol rather than trusted filenames, and their symbol
 set must exactly match the selected portfolio.
+
+Workflow command specs may consume content-addressed outputs through typed
+`artifact_bindings`. A binding names an earlier stage, a repeated long option,
+a filename glob, required path markers, and minimum/maximum match counts. The
+runner resolves and sorts matching immutable artifact paths and passes them as
+direct argv values without invoking a shell. Missing or ambiguous inputs fail
+the stage before the command runs. This is how replay materialization selects
+`dataset=nbbo-quotes` and `dataset=stock-trades` Parquet outputs from the market
+capture stage without predicting their content hashes.

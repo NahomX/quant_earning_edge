@@ -9,6 +9,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import date  # noqa: TC003 - Pydantic resolves runtime annotations.
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Protocol
 
@@ -166,11 +167,35 @@ class _StrictSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ArtifactArgumentBinding(_StrictSpec):
+    """Expand prior immutable artifacts into repeated command option arguments."""
+
+    source_stage: WorkflowStage
+    option: str
+    file_glob: str = "*"
+    path_contains: tuple[str, ...] = ()
+    minimum_matches: int = Field(default=1, ge=0)
+    maximum_matches: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> ArtifactArgumentBinding:
+        if not self.option.startswith("--") or self.option.lower() in _SECRET_ARGUMENT_MARKERS:
+            raise ValueError("artifact binding option must be a non-secret long option")
+        if not self.file_glob.strip():
+            raise ValueError("artifact binding file_glob must not be blank")
+        if any(not item.strip() for item in self.path_contains):
+            raise ValueError("artifact binding path_contains values must not be blank")
+        if self.maximum_matches is not None and self.maximum_matches < self.minimum_matches:
+            raise ValueError("artifact binding maximum cannot be below minimum")
+        return self
+
+
 class QeeCommandSpec(_StrictSpec):
     """Arguments after `qee`; secrets must come from the environment."""
 
     arguments: tuple[str, ...] = Field(min_length=2)
     artifact_json_keys: tuple[str, ...] = ()
+    artifact_bindings: tuple[ArtifactArgumentBinding, ...] = ()
 
     @model_validator(mode="after")
     def validate_arguments(self) -> QeeCommandSpec:
@@ -202,6 +227,9 @@ class WorkflowStageCommandSpec(_StrictSpec):
                 raise ValueError(
                     f"qee command {prefix[0]} {prefix[1]} is not allowed for {self.stage.value}"
                 )
+            for binding in command.artifact_bindings:
+                if STAGE_ORDER.index(binding.source_stage) > STAGE_ORDER.index(self.stage):
+                    raise ValueError("artifact binding cannot read a later workflow stage")
         if len(set(self.output_files)) != len(self.output_files):
             raise ValueError("workflow stage output files must be unique")
         if not self.output_files and not any(
@@ -282,11 +310,16 @@ class ConfiguredQeeStageHandler:
             if record.stage is stage and record.status.value == "running"
         )
         for command_index, command in enumerate(self._spec.commands, start=1):
+            expanded_arguments = self._expand_arguments(
+                command,
+                state=state,
+                current_outputs=tuple(outputs),
+            )
             argv = (
                 sys.executable,
                 "-m",
                 "quant_earning_edge.cli",
-                *command.arguments,
+                *expanded_arguments,
             )
             result = self._executor(
                 argv,
@@ -298,11 +331,11 @@ class ConfiguredQeeStageHandler:
                 stage=stage,
                 stage_attempt=running.attempts,
                 command_index=command_index,
-                command=command,
+                arguments=expanded_arguments,
                 result=result,
             )
             if result.return_code:
-                prefix = " ".join(command.arguments[:2])
+                prefix = " ".join(expanded_arguments[:2])
                 raise RuntimeError(
                     f"qee {prefix} failed with exit code {result.return_code} "
                     f"for trade date {state.trade_date}; receipt={receipt_path}"
@@ -319,6 +352,51 @@ class ConfiguredQeeStageHandler:
             raise RuntimeError(f"workflow stage {stage.value} produced no artifact paths")
         return unique_outputs
 
+    def _expand_arguments(
+        self,
+        command: QeeCommandSpec,
+        *,
+        state: DailyWorkflowState,
+        current_outputs: tuple[Path, ...],
+    ) -> tuple[str, ...]:
+        arguments = list(command.arguments)
+        for binding in command.artifact_bindings:
+            if binding.source_stage is self._spec.stage:
+                candidates = current_outputs
+            else:
+                source = next(item for item in state.stages if item.stage is binding.source_stage)
+                if source.status.value != "succeeded":
+                    raise RuntimeError(
+                        f"artifact source stage {binding.source_stage.value} has not succeeded"
+                    )
+                candidates = tuple(Path(item.path) for item in source.output_artifacts)
+            contains = tuple(item.lower() for item in binding.path_contains)
+            matches = tuple(
+                sorted(
+                    (
+                        path.resolve()
+                        for path in candidates
+                        if fnmatch(path.name, binding.file_glob)
+                        and all(
+                            marker in str(path.resolve()).replace("\\", "/").lower()
+                            for marker in contains
+                        )
+                    ),
+                    key=str,
+                )
+            )
+            if len(matches) < binding.minimum_matches or (
+                binding.maximum_matches is not None and len(matches) > binding.maximum_matches
+            ):
+                raise RuntimeError(
+                    f"artifact binding for {binding.option} matched {len(matches)} files; "
+                    f"expected {binding.minimum_matches}.."
+                    f"{binding.maximum_matches if binding.maximum_matches is not None else 'many'}"
+                )
+            for path in matches:
+                arguments.extend((binding.option, str(path)))
+        return tuple(arguments)
+
     def _write_receipt(
         self,
         *,
@@ -326,11 +404,11 @@ class ConfiguredQeeStageHandler:
         stage: WorkflowStage,
         stage_attempt: int,
         command_index: int,
-        command: QeeCommandSpec,
+        arguments: tuple[str, ...],
         result: QeeCommandResult,
     ) -> Path:
         encoded_arguments = json.dumps(
-            command.arguments,
+            arguments,
             ensure_ascii=True,
             separators=(",", ":"),
         ).encode()
@@ -341,7 +419,7 @@ class ConfiguredQeeStageHandler:
             stage=stage,
             stage_attempt=stage_attempt,
             command_index=command_index,
-            command_prefix=(command.arguments[0], command.arguments[1]),
+            command_prefix=(arguments[0], arguments[1]),
             arguments_sha256=hashlib.sha256(encoded_arguments).hexdigest(),
             return_code=result.return_code,
             stdout_sha256=hashlib.sha256(result.stdout.encode()).hexdigest(),

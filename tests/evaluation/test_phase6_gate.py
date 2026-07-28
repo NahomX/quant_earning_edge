@@ -19,6 +19,7 @@ from quant_earning_edge.evaluation import (
     ReplaySessionAggregator,
     ReplaySessionReport,
 )
+from quant_earning_edge.orchestration import WorkflowHealthReport
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -46,6 +47,36 @@ def _calendar(tmp_path: Path, count: int) -> SessionFile:
         for session_date in _session_dates(count)
     )
     return SessionFileStore(LakehouseLayout(tmp_path)).write(sessions)
+
+
+def _health(
+    calendar: SessionFile,
+    *,
+    scheduled_count: int | None = None,
+) -> WorkflowHealthReport:
+    dates = tuple(item.session_date for item in calendar.sessions)
+    count = len(dates) if scheduled_count is None else scheduled_count
+    completed = dates[:count]
+    return WorkflowHealthReport(
+        schema_version=1,
+        calendar_sha256=calendar.sha256,
+        start_date=dates[0],
+        end_date=dates[-1],
+        authoritative_session_dates=dates,
+        workflow_state_sha256=tuple(
+            hashlib.sha256(item.isoformat().encode()).hexdigest() for item in completed
+        ),
+        scheduled_complete_dates=completed,
+        manual_complete_dates=(),
+        missing_dates=dates[count:],
+        failed_dates=(),
+        incomplete_dates=(),
+        invalid_artifact_dates=(),
+        operational_uptime=count / len(dates),
+        maximum_consecutive_scheduled_successes=count,
+        excess_stage_attempt_count=0,
+        passes_five_session_unattended_gate=count >= 5,
+    )
 
 
 def _daily_report(
@@ -147,6 +178,7 @@ def test_phase6_gate_passes_only_with_all_locked_thresholds(tmp_path: Path) -> N
 
     result = Phase6GateEvaluator(bootstrap_resamples=500, seed=7).evaluate(
         calendar=calendar,
+        workflow_health=_health(calendar),
         reports=reports,
         proof_start=calendar.sessions[0].session_date,
         proof_end=calendar.sessions[-1].session_date,
@@ -190,6 +222,7 @@ def test_missing_sessions_fail_strict_uptime_gate(tmp_path: Path) -> None:
 
     result = Phase6GateEvaluator(bootstrap_resamples=50).evaluate(
         calendar=calendar,
+        workflow_health=_health(calendar, scheduled_count=85),
         reports=all_reports[:85],
         proof_start=calendar.sessions[0].session_date,
         proof_end=calendar.sessions[-1].session_date,
@@ -200,6 +233,25 @@ def test_missing_sessions_fail_strict_uptime_gate(tmp_path: Path) -> None:
     assert len(result.missing_session_dates) == 5
     assert not result.passes_uptime_gate
     assert not result.passes_phase6_gate
+    assert result.verdict == "insufficient-evidence"
+
+
+def test_complete_replay_reports_still_fail_without_scheduled_uptime(tmp_path: Path) -> None:
+    calendar = _calendar(tmp_path, 90)
+    reports = _profitable_reports(tuple(item.session_date for item in calendar.sessions))
+
+    result = Phase6GateEvaluator(bootstrap_resamples=50).evaluate(
+        calendar=calendar,
+        workflow_health=_health(calendar, scheduled_count=85),
+        reports=reports,
+        proof_start=calendar.sessions[0].session_date,
+        proof_end=calendar.sessions[-1].session_date,
+        initial_cash=100_000,
+    )
+
+    assert result.observed_session_count == 90
+    assert result.scheduled_complete_session_count == 85
+    assert not result.passes_uptime_gate
     assert result.verdict == "fail"
 
 
@@ -214,6 +266,7 @@ def test_phase6_gate_rejects_hidden_daily_capital_reset(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="capital continuity"):
         Phase6GateEvaluator(bootstrap_resamples=10).evaluate(
             calendar=calendar,
+            workflow_health=_health(calendar),
             reports=reports,
             proof_start=dates[0],
             proof_end=dates[-1],
@@ -235,11 +288,14 @@ def test_phase6_cli_marks_short_fixture_as_insufficient(tmp_path: Path) -> None:
         report.write(path)
         report_paths.append(path.name)
     spec_path = tmp_path / "phase6.json"
+    health_path = tmp_path / "workflow-health.json"
+    _health(calendar).write(health_path)
     output = tmp_path / "gate.json"
     spec_path.write_text(
         json.dumps(
             {
                 "session_file": calendar.path.name,
+                "workflow_health_file": health_path.name,
                 "proof_start": calendar.sessions[0].session_date.isoformat(),
                 "proof_end": calendar.sessions[-1].session_date.isoformat(),
                 "initial_cash": 100_000,

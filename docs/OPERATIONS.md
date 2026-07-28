@@ -710,6 +710,13 @@ tampered artifacts never count as uptime. The immutable report records each
 category, excess retry attempts, scheduled uptime, source state hashes, and the
 calendar hash.
 
+The terminal `evaluation phase6-gate` aggregation spec must include
+`workflow_health_file`. Its calendar hash, start/end bounds, and complete
+authoritative session sequence must exactly match the Phase 6 calendar and
+proof window. The terminal uptime threshold is calculated from intact scheduled
+workflow completions; replay-report presence is tracked separately and cannot
+satisfy the uptime gate.
+
 Run the continuous inbox worker:
 
 ```powershell

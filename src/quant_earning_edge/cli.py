@@ -83,6 +83,7 @@ from quant_earning_edge.orchestration import (
     DailyWorkflowStore,
     StageStatus,
     WorkflowHealthEvaluator,
+    WorkflowHealthReport,
     WorkflowInboxWorker,
     WorkflowRunSpec,
     WorkflowTrigger,
@@ -888,6 +889,12 @@ def evaluate_phase6_gate(
             else aggregation_spec.parent / spec.session_file
         )
         calendar = SessionFileStore.load(session_path)
+        health_path = (
+            spec.workflow_health_file
+            if spec.workflow_health_file.is_absolute()
+            else aggregation_spec.parent / spec.workflow_health_file
+        )
+        workflow_health = WorkflowHealthReport.load(health_path)
         reports = tuple(
             ReplaySessionReport.load(
                 configured_path
@@ -902,6 +909,7 @@ def evaluate_phase6_gate(
         )
         report = evaluator.evaluate(
             calendar=calendar,
+            workflow_health=workflow_health,
             reports=reports,
             proof_start=spec.proof_start,
             proof_end=spec.proof_end,
@@ -917,6 +925,7 @@ def evaluate_phase6_gate(
             "verdict": report.verdict,
             "authoritative_session_count": report.authoritative_session_count,
             "observed_session_count": report.observed_session_count,
+            "scheduled_complete_session_count": report.scheduled_complete_session_count,
             "operational_uptime": report.operational_uptime,
             "passes_phase6_gate": report.passes_phase6_gate,
         }

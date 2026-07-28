@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from quant_earning_edge.data.calendar import SessionFile
     from quant_earning_edge.evaluation.replay_session import ReplaySessionReport
+    from quant_earning_edge.orchestration import WorkflowHealthReport
 
 _TRADING_SESSIONS_PER_YEAR = 252.0
 
@@ -32,6 +33,7 @@ class Phase6AggregationSpec(_StrictSpec):
     """Immutable daily files and calendar bounds for one terminal proof."""
 
     session_file: Path
+    workflow_health_file: Path
     proof_start: date
     proof_end: date
     initial_cash: float = Field(gt=0)
@@ -53,11 +55,13 @@ class Phase6GateReport:
 
     schema_version: int
     calendar_sha256: str
+    workflow_health_sha256: str
     proof_start: date
     proof_end: date
     required_session_count: int
     authoritative_session_count: int
     observed_session_count: int
+    scheduled_complete_session_count: int
     missing_session_dates: tuple[date, ...]
     operational_uptime: float
     initial_cash: float
@@ -131,6 +135,7 @@ class Phase6GateEvaluator:
         self,
         *,
         calendar: SessionFile,
+        workflow_health: WorkflowHealthReport,
         reports: Sequence[ReplaySessionReport],
         proof_start: date,
         proof_end: date,
@@ -147,6 +152,14 @@ class Phase6GateEvaluator:
         )
         if not session_dates or session_dates[0] != proof_start or session_dates[-1] != proof_end:
             raise ValueError("proof bounds must both be authoritative trading sessions")
+        if workflow_health.calendar_sha256 != calendar.sha256:
+            raise ValueError("workflow health calendar does not match Phase 6 calendar")
+        if (
+            workflow_health.start_date != proof_start
+            or workflow_health.end_date != proof_end
+            or workflow_health.authoritative_session_dates != session_dates
+        ):
+            raise ValueError("workflow health range does not exactly match Phase 6 proof sessions")
         by_date = {item.session_date: item for item in reports}
         if len(by_date) != len(reports):
             raise ValueError("daily replay reports contain duplicate session dates")
@@ -161,6 +174,7 @@ class Phase6GateEvaluator:
         )
         return self._report(
             calendar=calendar,
+            workflow_health=workflow_health,
             session_dates=session_dates,
             reports=ordered_reports,
             missing=missing,
@@ -232,6 +246,7 @@ class Phase6GateEvaluator:
     def _report(
         *,
         calendar: SessionFile,
+        workflow_health: WorkflowHealthReport,
         session_dates: tuple[date, ...],
         reports: tuple[ReplaySessionReport, ...],
         missing: tuple[date, ...],
@@ -274,7 +289,7 @@ class Phase6GateEvaluator:
         modeled_impact_cost = sum(item.modeled_market_impact_cost for item in reports)
         execution_residual_cost = sum(item.execution_residual_cost for item in reports)
         commission = sum(item.commission for item in reports)
-        session_count_gate = len(session_dates) >= 90
+        session_count_gate = len(session_dates) >= 90 and not missing
         sharpe_gate = (
             net_sharpe is not None
             and bootstrap is not None
@@ -288,7 +303,7 @@ class Phase6GateEvaluator:
             and predicted_p90 is not None
             and realized_p90 < 2 * predicted_p90
         )
-        uptime = len(reports) / len(session_dates)
+        uptime = workflow_health.operational_uptime
         uptime_gate = uptime > 0.95
         reconciliation_gate = not breaks
         phase6_gate = all(
@@ -302,13 +317,15 @@ class Phase6GateEvaluator:
             )
         )
         return Phase6GateReport(
-            schema_version=2,
+            schema_version=3,
             calendar_sha256=calendar.sha256,
+            workflow_health_sha256=workflow_health.sha256,
             proof_start=proof_start,
             proof_end=proof_end,
             required_session_count=90,
             authoritative_session_count=len(session_dates),
             observed_session_count=len(reports),
+            scheduled_complete_session_count=len(workflow_health.scheduled_complete_dates),
             missing_session_dates=missing,
             operational_uptime=uptime,
             initial_cash=initial_cash,

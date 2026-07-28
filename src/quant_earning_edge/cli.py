@@ -34,6 +34,8 @@ from quant_earning_edge.data import (
     EarningsIngestor,
     LakehouseLayout,
     MarketEventsIngestor,
+    ReplayMaterializationSpec,
+    ReplaySpecMaterializer,
     SessionFileStore,
     SilverDataset,
     SilverWriter,
@@ -579,6 +581,50 @@ def run_backtest_ledger(
             "tearsheet_output": (
                 str(tearsheet_output.resolve()) if tearsheet_output is not None else None
             ),
+        }
+    )
+
+
+@backtest_app.command("materialize-replay-specs")
+def materialize_replay_specs(
+    materialization_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Frozen orders, decision snapshots, and silver event sources.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Directory for canonical per-order replay specs."),
+    ],
+    manifest_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable source/filtering audit manifest."),
+    ],
+) -> None:
+    """Bridge frozen orders and silver events into self-contained causal replay specs."""
+    try:
+        spec = ReplayMaterializationSpec.model_validate_json(
+            materialization_spec.read_bytes()
+        ).resolve_paths(materialization_spec.parent)
+        manifest = ReplaySpecMaterializer().materialize(
+            spec,
+            output_dir=output_dir,
+            manifest_output=manifest_output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="replay materialization inputs") from error
+    _echo_json(
+        {
+            "manifest_path": str(manifest_output.resolve()),
+            "manifest_sha256": manifest.sha256,
+            "input_sha256": manifest.input_sha256,
+            "order_count": len(manifest.artifacts),
+            "replay_spec_paths": [
+                str((output_dir / item.file_name).resolve()) for item in manifest.artifacts
+            ],
         }
     )
 

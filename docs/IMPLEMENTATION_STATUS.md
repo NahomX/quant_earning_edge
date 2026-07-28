@@ -84,6 +84,7 @@ reproducible through `uv.lock`.
 | Persistent workflow inbox worker | Complete | continuous scan/resume, cycle heartbeats, invalid-spec isolation, CLI |
 | Worker deployment packaging | Complete | hardened systemd unit, Windows launcher, deployment asset tests |
 | Workflow-backed Phase 6 uptime gate | Complete | exact calendar/range binding; scheduled intact completions, not report presence |
+| Silver-to-replay specification materialization | Complete | frozen orders/snapshots, source hashes, interval filtering audits, CLI |
 
 ## Phase 1 exit gate
 
@@ -114,9 +115,10 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add a complete daily workflow-run specification generator from frozen strategy
-artifacts so operators do not hand-author eight-stage JSON. After credentialed
-historical/strategy gates pass, begin the real 90-session run.
+Add the missing live-safe frozen intended-order artifact, then generate complete
+daily workflow run specifications from it so operators do not hand-author
+eight-stage JSON. After credentialed historical/strategy gates pass, begin the
+real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

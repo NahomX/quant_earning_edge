@@ -739,3 +739,24 @@ streams and credentials are never stored in receipts.
 Deployment assets are in `ops/`: a hardened non-root systemd service with a
 restricted writable data path, and a Windows PowerShell launcher using the
 project virtual environment. Provider secrets remain in the external env file.
+
+## Materialize replay specifications after market-event ingestion
+
+The replay command does not read raw provider data directly. First create a
+strict materialization JSON containing sorted frozen intended orders, one
+decision-time snapshot per symbol, and the silver quote/trade files returned by
+`ingest market-events`. Then run:
+
+```powershell
+uv run qee backtest materialize-replay-specs `
+  --materialization-spec .\replay-materialization.json `
+  --output-dir .\replay-specs `
+  --manifest-output .\replay-materialization-manifest.json
+```
+
+The command filters each symbol to the order's submitted/expiry interval,
+normalizes corrected, one-sided, and sub-share events conservatively, and emits
+one self-contained canonical replay spec per order. The immutable manifest
+hashes semantic inputs and source files and records every filtering count.
+Relative silver paths resolve against the materialization JSON location. An
+explicit empty order set produces auditable no-trade evidence.

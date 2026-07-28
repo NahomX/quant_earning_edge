@@ -46,6 +46,7 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
     WorkflowStage.CAPTURE_MARKET_EVENTS: frozenset({("ingest", "market-events")}),
     WorkflowStage.REPLAY_ORDERS: frozenset(
         {
+            ("backtest", "materialize-replay-specs"),
             ("backtest", "replay-nbbo"),
             ("evaluation", "replay-session"),
         }

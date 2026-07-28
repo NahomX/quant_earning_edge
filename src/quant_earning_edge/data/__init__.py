@@ -24,6 +24,12 @@ from quant_earning_edge.data.ingest import (
 )
 from quant_earning_edge.data.layout import DataTier, LakehouseLayout
 from quant_earning_edge.data.market_events import ReplayMarketDataLoader, ReplayMarketEvents
+from quant_earning_edge.data.replay_specs import (
+    ReplayEventSourceSpec,
+    ReplayMaterializationManifest,
+    ReplayMaterializationSpec,
+    ReplaySpecMaterializer,
+)
 from quant_earning_edge.data.silver import (
     DAILY_BARS_SCHEMA,
     DIVIDENDS_SCHEMA,
@@ -66,8 +72,12 @@ __all__ = [
     "LakehouseLayout",
     "MarketEventsIngestionResult",
     "MarketEventsIngestor",
+    "ReplayEventSourceSpec",
     "ReplayMarketDataLoader",
     "ReplayMarketEvents",
+    "ReplayMaterializationManifest",
+    "ReplayMaterializationSpec",
+    "ReplaySpecMaterializer",
     "SessionFile",
     "SessionFileStore",
     "SilverArtifact",

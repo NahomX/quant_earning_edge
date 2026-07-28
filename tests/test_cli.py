@@ -193,6 +193,7 @@ def test_backtest_plan_splits_writes_auditable_manifest(tmp_path: Path) -> None:
 def test_backtest_run_ledger_writes_standard_report(tmp_path: Path) -> None:
     spec = tmp_path / "backtest.json"
     output = tmp_path / "report.json"
+    tearsheet = tmp_path / "report.html"
     spec.write_text(
         json.dumps(
             {
@@ -232,6 +233,8 @@ def test_backtest_run_ledger_writes_standard_report(tmp_path: Path) -> None:
             str(spec),
             "--output",
             str(output),
+            "--tearsheet-output",
+            str(tearsheet),
             "--bootstrap-resamples",
             "100",
         ],
@@ -243,3 +246,5 @@ def test_backtest_run_ledger_writes_standard_report(tmp_path: Path) -> None:
     assert payload["trade_count"] == 1
     assert report["bootstrap"] is None
     assert report["final_net_equity"] < report["final_gross_equity"]
+    assert tearsheet.exists()
+    assert payload["tearsheet_output"] == str(tearsheet.resolve())

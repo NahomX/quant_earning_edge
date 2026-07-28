@@ -50,6 +50,8 @@ reproducible through `uv.lock`.
 | Exact daily cost attribution invariant | Complete | gross minus five cost components equals net on every session |
 | Standardized machine-readable evaluation | Complete | headline metrics, 10,000-resample CI, immutable JSON |
 | Reproducible backtest CLI | Complete | validated JSON input, semantic input hash, report hash |
+| Fold-level walk-forward gate evidence | Complete | ordered OOS folds and explicit 75% positive-Sharpe gate |
+| Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
 
 ## Phase 1 exit gate
 
@@ -80,9 +82,8 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Continue Phase 3 by adding fold aggregation and an HTML tearsheet adapter, then
-run the published 60-session SPY-component momentum reproduction against real
-point-in-time constituent and price data.
+Complete Phase 3 by running the published 60-session SPY-component momentum
+reproduction against real point-in-time constituent and price data.
 
 Credentialed calendar, backfill, five-session unattended execution, and the
 published momentum comparison remain operationally pending. Those gates cannot

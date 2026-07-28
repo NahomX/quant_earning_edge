@@ -158,6 +158,7 @@ Run the reconciled vectorbt ledger and standardized evaluation:
 uv run qee backtest run-ledger `
   --spec-file .\backtest-spec.json `
   --output .\data\manifests\backtest\performance-report.json `
+  --tearsheet-output .\data\manifests\backtest\performance-report.html `
   --bootstrap-resamples 10000 `
   --seed 20260427
 ```
@@ -170,6 +171,10 @@ gross/net Sharpe, annualized return, max drawdown, hit rate, payoff, exposure,
 turnover, sequential per-component Sharpe loss, and deterministic 95%
 trade-resampled confidence intervals. A one-trade diagnostic run has no
 bootstrap interval because it cannot estimate dispersion.
+
+The optional HTML output is self-contained and deterministic: it reads the
+same reconciled result as the JSON report, embeds no remote assets or current
+timestamps, and rejects a pre-existing different file.
 
 This daily chassis requires `entry_date < exit_date`. Earnings open-to-close
 execution is intentionally not represented by inventing two daily bars; the

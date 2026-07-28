@@ -33,7 +33,7 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
-from quant_earning_edge.evaluation import PerformanceEvaluator
+from quant_earning_edge.evaluation import HtmlTearsheetWriter, PerformanceEvaluator
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -462,6 +462,10 @@ def run_backtest_ledger(
         Path,
         typer.Option(dir_okay=False, help="Immutable standardized evaluation JSON."),
     ],
+    tearsheet_output: Annotated[
+        Path | None,
+        typer.Option(dir_okay=False, help="Optional immutable self-contained HTML tearsheet."),
+    ] = None,
     bootstrap_resamples: Annotated[
         int,
         typer.Option(min=1, help="Trade-vector bootstrap resamples."),
@@ -489,6 +493,12 @@ def run_backtest_ledger(
     )
     report = evaluator.evaluate(result)
     evaluator.write(report, output)
+    if tearsheet_output is not None:
+        HtmlTearsheetWriter().write(
+            report=report,
+            result=result,
+            output=tearsheet_output,
+        )
     _echo_json(
         {
             "output": str(output.resolve()),
@@ -496,6 +506,9 @@ def run_backtest_ledger(
             "input_sha256": report.input_sha256,
             "trade_count": report.trade_count,
             "session_count": report.session_count,
+            "tearsheet_output": (
+                str(tearsheet_output.resolve()) if tearsheet_output is not None else None
+            ),
         }
     )
 

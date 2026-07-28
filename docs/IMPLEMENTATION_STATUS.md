@@ -71,6 +71,10 @@ reproducible through `uv.lock`.
 | No-trade operational session evidence | Complete | explicit zero return, no invented orders or fill-rate denominator |
 | Locked 90-session Phase 6 hard gate | Complete | Sharpe CI, fills, global slippage, uptime, reconciliation, CLI |
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
+| Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
+| Immutable paper submission/reconciliation evidence | Complete | CLI records, exact paper/replay identity checks, non-gating divergence |
+| Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts |
+| Fail-closed paper submission boundary | Complete | fresh non-halted breaker decision required before any broker request |
 
 ## Phase 1 exit gate
 
@@ -101,9 +105,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add paper-broker submission/reconciliation and circuit-breaker operational
-records. After credentialed historical/strategy gates pass, begin the real
-90-session run.
+Add the restart-safe daily workflow state machine that connects frozen inputs,
+order planning, breaker evaluation, paper submission, market-event replay, and
+after-close reconciliation without silently skipping a stage. Then add
+unattended-loop health evidence and deployment packaging. After credentialed
+historical/strategy gates pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

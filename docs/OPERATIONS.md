@@ -529,3 +529,83 @@ uv run qee backfill coverage `
 Readiness requires every batch, no missing symbol/session pairs, a five-year
 date span, and at least 1,200 explicit sessions. It never infers the expected
 calendar from the data being audited.
+
+## Evaluate paper-order circuit breakers
+
+Create an ordered JSON observation history. Provider timestamps are fail-closed:
+an absent timestamp is treated as stale. A reconciliation age of `0` is the
+original close and `1` is T+1 close.
+
+```json
+{
+  "observations": [
+    {
+      "session_date": "2026-07-28",
+      "evaluated_at": "2026-07-28T13:25:00Z",
+      "replay_notional": 100000.0,
+      "replay_net_pnl": -500.0,
+      "replay_fill_rate": 0.95,
+      "polygon_data_observed_at": "2026-07-28T13:24:30Z",
+      "alpaca_data_observed_at": "2026-07-28T13:24:45Z",
+      "reconciliation_break_age_sessions": null
+    }
+  ]
+}
+```
+
+Run:
+
+```powershell
+uv run qee monitoring circuit-breakers `
+  --spec-file .\breaker-observations.json `
+  --output .\breaker-decision.json
+```
+
+The command writes immutable evidence and exits `1` when any documented halt is
+active: replay loss above 2% of notional, three consecutive applicable fill
+rates below 70%, either provider more than 30 minutes stale, or a reconciliation
+break still open at T+1 close. A no-trade day has a `null` fill rate and does not
+count as a low-fill day.
+
+## Submit and reconcile Alpaca paper orders
+
+Every request needs a unique deterministic `client_order_id`. The submission
+command requires an allow decision produced within the preceding 30 minutes:
+
+```json
+{
+  "client_order_id": "20260728-AAPL-entry",
+  "symbol": "AAPL",
+  "quantity": 10,
+  "side": "buy",
+  "order_type": "limit",
+  "time_in_force": "day",
+  "limit_price": 200.25,
+  "extended_hours": false
+}
+```
+
+```powershell
+uv run qee paper submit-order `
+  --spec-file .\paper-order.json `
+  --breaker-decision .\breaker-decision.json `
+  --output .\paper-submission.json
+```
+
+The client refuses every host except `https://paper-api.alpaca.markets`, queries
+the client ID before posting, rejects a conflicting existing order, captures the
+provider response in bronze, and writes immutable submission evidence. It never
+targets a live-capital account.
+
+After the close, construct a reconciliation spec with the replay evidence paths
+and Alpaca order resources, then run:
+
+```powershell
+uv run qee paper reconcile `
+  --spec-file .\paper-reconciliation-spec.json `
+  --output .\paper-reconciliation.json
+```
+
+The command exits `1` for identity, quantity, or non-terminal-order breaks.
+Paper-versus-replay price divergence is diagnostic only; Alpaca paper P&L is
+explicitly prohibited from entering the strategy proof gate.

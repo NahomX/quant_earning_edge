@@ -63,6 +63,17 @@ from quant_earning_edge.labels import (
     LabelStore,
     TrainingDatasetAssembler,
 )
+from quant_earning_edge.live import (
+    AlpacaPaperClient,
+    PaperOrderReconciler,
+    PaperOrderRequest,
+    PaperReconciliationSpec,
+)
+from quant_earning_edge.monitoring import (
+    CircuitBreakerDecision,
+    CircuitBreakerEvaluationSpec,
+    CircuitBreakerEvaluator,
+)
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
     PortfolioConfig,
@@ -106,6 +117,8 @@ labels_app = typer.Typer(no_args_is_help=True, help="Materialize forward labels 
 backtest_app = typer.Typer(no_args_is_help=True, help="Plan and run reproducible backtests.")
 model_app = typer.Typer(no_args_is_help=True, help="Train deterministic signal models.")
 evaluation_app = typer.Typer(no_args_is_help=True, help="Aggregate strategy gate evidence.")
+monitoring_app = typer.Typer(no_args_is_help=True, help="Evaluate operational safety gates.")
+paper_app = typer.Typer(no_args_is_help=True, help="Operate the isolated Alpaca paper account.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
@@ -116,6 +129,8 @@ app.add_typer(labels_app, name="labels")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(model_app, name="model")
 app.add_typer(evaluation_app, name="evaluation")
+app.add_typer(monitoring_app, name="monitoring")
+app.add_typer(paper_app, name="paper")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -891,6 +906,163 @@ def evaluate_phase6_gate(
             "passes_phase6_gate": report.passes_phase6_gate,
         }
     )
+
+
+@monitoring_app.command("circuit-breakers")
+def evaluate_circuit_breakers(
+    spec_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Ordered replay, provider-freshness, and reconciliation observations.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable circuit-breaker decision JSON."),
+    ],
+) -> None:
+    """Fail closed when any documented operational safety threshold is crossed."""
+    try:
+        spec = CircuitBreakerEvaluationSpec.model_validate_json(spec_file.read_bytes())
+        decision = CircuitBreakerEvaluator().evaluate(
+            tuple(item.to_domain() for item in spec.observations)
+        )
+        decision.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="circuit-breaker inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": decision.sha256,
+            "session_date": decision.session_date,
+            "halt_new_orders": decision.halt_new_orders,
+            "triggered_breakers": decision.triggered_breakers,
+        }
+    )
+    if decision.halt_new_orders:
+        raise typer.Exit(code=1)
+
+
+@paper_app.command("submit-order")
+def submit_paper_order(
+    spec_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Strict immutable simple-equity paper order request JSON.",
+        ),
+    ],
+    breaker_decision: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Current allow decision from `monitoring circuit-breakers`.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable paper submission evidence JSON."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Submit one idempotent order only to Alpaca's canonical paper host."""
+    environment = _environment(env_file)
+    try:
+        api_key_id, secret_key = environment.require_alpaca_credentials()
+    except RuntimeConfigurationError as error:
+        raise typer.BadParameter(str(error), param_hint="environment") from error
+    try:
+        request = PaperOrderRequest.model_validate_json(spec_file.read_bytes())
+        decision = CircuitBreakerDecision.load(breaker_decision)
+        if decision.halt_new_orders:
+            raise ValueError(
+                "paper submission refused because the circuit-breaker decision halts new orders"
+            )
+        decision_age_seconds = (
+            datetime.now(UTC) - decision.evaluated_at.astimezone(UTC)
+        ).total_seconds()
+        if not 0 <= decision_age_seconds <= 30 * 60:
+            raise ValueError(
+                "paper submission requires a circuit-breaker decision no more than 30 minutes old"
+            )
+        layout = LakehouseLayout(environment.data_lake_root)
+        with httpx.Client(
+            base_url=environment.alpaca_trading_base_url,
+            timeout=environment.http_timeout_seconds,
+        ) as http_client:
+            submission = AlpacaPaperClient(
+                api_key_id=api_key_id,
+                secret_key=secret_key,
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ).submit(request)
+        submission.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="paper submission inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": submission.sha256,
+            "client_order_id": submission.request.client_order_id,
+            "broker_order_id": submission.broker_order.order_id,
+            "status": submission.broker_order.status,
+            "idempotent_reuse": submission.idempotent_reuse,
+        }
+    )
+
+
+@paper_app.command("reconcile")
+def reconcile_paper_orders(
+    spec_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Replay evidence paths and after-close Alpaca paper order resources.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable paper/replay reconciliation JSON."),
+    ],
+) -> None:
+    """Reconcile paper operations without using paper P&L in strategy gates."""
+    try:
+        spec = PaperReconciliationSpec.model_validate_json(spec_file.read_bytes())
+        evidence = tuple(
+            NbboReplayEvidence.load(
+                configured_path
+                if configured_path.is_absolute()
+                else spec_file.parent / configured_path
+            )
+            for configured_path in spec.replay_evidence_files
+        )
+        report = PaperOrderReconciler().evaluate(
+            evidence=evidence,
+            broker_orders=spec.broker_orders,
+            session_date=spec.session_date,
+            evaluated_at=spec.evaluated_at,
+        )
+        report.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="paper reconciliation inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "session_date": report.session_date,
+            "order_count": len(report.orders),
+            "reconciliation_break_count": report.reconciliation_break_count,
+            "all_orders_terminal": report.all_orders_terminal,
+            "paper_pnl_is_gate_input": report.paper_pnl_is_gate_input,
+        }
+    )
+    if report.reconciliation_break_count:
+        raise typer.Exit(code=1)
 
 
 @ingest_app.command("earnings")

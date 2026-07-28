@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
-from datetime import date, datetime  # noqa: TC003 - Pydantic resolves types at runtime.
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,6 +15,7 @@ from quant_earning_edge.backtest import TradeIntent
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
     PortfolioPlan,
+    PositionTarget,
     ScoredCandidate,
     TradeOutcome,
 )
@@ -255,6 +256,44 @@ class EventTradePlanner:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"event-trade plan collision at {output}") from None
+
+    @staticmethod
+    def load(path: Path) -> PlannedEventTrades:
+        """Load canonical event-trade plan evidence."""
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            portfolio_raw = raw["portfolio"]
+            plan = PlannedEventTrades(
+                trade_date=date.fromisoformat(raw["trade_date"]),
+                portfolio=PortfolioPlan(
+                    equity=float(portfolio_raw["equity"]),
+                    history_count=int(portfolio_raw["history_count"]),
+                    raw_kelly=float(portfolio_raw["raw_kelly"]),
+                    fractional_kelly=float(portfolio_raw["fractional_kelly"]),
+                    positions=tuple(PositionTarget(**item) for item in portfolio_raw["positions"]),
+                    gross_weight=float(portfolio_raw["gross_weight"]),
+                    sector_weights=tuple(
+                        (str(item[0]), float(item[1])) for item in portfolio_raw["sector_weights"]
+                    ),
+                ),
+                intents=tuple(
+                    TradeIntent(
+                        **{
+                            **item,
+                            "entry_date": date.fromisoformat(item["entry_date"]),
+                            "exit_date": date.fromisoformat(item["exit_date"]),
+                            "entry_at": datetime.fromisoformat(item["entry_at"]),
+                            "exit_at": datetime.fromisoformat(item["exit_at"]),
+                        }
+                    )
+                    for item in raw["intents"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid event-trade plan: {path}") from error
+        if json.loads(plan.to_json_bytes()) != raw:
+            raise ValueError("event-trade plan is not canonical or uses unsupported fields")
+        return plan
 
 
 def _intent(

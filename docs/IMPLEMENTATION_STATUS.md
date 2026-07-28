@@ -59,6 +59,7 @@ reproducible through `uv.lock`.
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
+| Phase 4 multi-fold gate aggregation | Complete | capital continuity and both documented threshold sets |
 
 ## Phase 1 exit gate
 
@@ -92,9 +93,9 @@ data completeness or strategy performance.
 Complete Phase 3 by running the published 60-session SPY-component momentum
 reproduction against real point-in-time constituent and price data.
 
-Continue Phase 4 by aggregating OOS event plans across folds into the full
-strategy evaluation and gate evidence. Real five-year strategy results remain
-pending data access.
+The Phase 4 code path now reaches the full strategy gate report. Populate it
+with five years of real PIT event plans to obtain the required performance
+evidence. Real strategy results remain pending data access.
 
 Credentialed calendar, backfill, five-session unattended execution, and the
 published momentum comparison remain operationally pending. Those gates cannot

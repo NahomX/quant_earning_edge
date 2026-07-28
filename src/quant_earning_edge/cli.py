@@ -34,7 +34,13 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
-from quant_earning_edge.evaluation import HtmlTearsheetWriter, PerformanceEvaluator
+from quant_earning_edge.evaluation import (
+    FoldBacktestResults,
+    HtmlTearsheetWriter,
+    PerformanceEvaluator,
+    Phase4AggregationSpec,
+    Phase4GateEvaluator,
+)
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -90,6 +96,7 @@ features_app = typer.Typer(no_args_is_help=True, help="Compute point-in-time fea
 labels_app = typer.Typer(no_args_is_help=True, help="Materialize forward labels and datasets.")
 backtest_app = typer.Typer(no_args_is_help=True, help="Plan and run reproducible backtests.")
 model_app = typer.Typer(no_args_is_help=True, help="Train deterministic signal models.")
+evaluation_app = typer.Typer(no_args_is_help=True, help="Aggregate strategy gate evidence.")
 app.add_typer(ingest_app, name="ingest")
 app.add_typer(universe_app, name="universe")
 app.add_typer(backfill_app, name="backfill")
@@ -99,6 +106,7 @@ app.add_typer(features_app, name="features")
 app.add_typer(labels_app, name="labels")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(model_app, name="model")
+app.add_typer(evaluation_app, name="evaluation")
 
 EnvFileOption = Annotated[
     Path | None,
@@ -654,6 +662,72 @@ def plan_event_backtest(
             "evaluation_output": str(evaluation_output.resolve()),
             "evaluation_sha256": report.sha256,
             "trade_count": len(plan.intents),
+        }
+    )
+
+
+@evaluation_app.command("phase4-gate")
+def evaluate_phase4_gate(
+    aggregation_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Fold mapping to immutable event-trade plan files.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable combined Phase 4 gate JSON."),
+    ],
+    bootstrap_resamples: Annotated[
+        int,
+        typer.Option(min=1, help="Trade bootstrap resamples."),
+    ] = 10_000,
+) -> None:
+    """Replay event plans and evaluate both documented strategy gates."""
+    try:
+        spec = Phase4AggregationSpec.model_validate_json(aggregation_spec.read_bytes())
+        fold_results = []
+        for fold in spec.folds:
+            results = []
+            for configured_path in fold.event_plan_files:
+                plan_path = (
+                    configured_path
+                    if configured_path.is_absolute()
+                    else aggregation_spec.parent / configured_path
+                )
+                plan = EventTradePlanner.load(plan_path)
+                results.append(
+                    VectorbtIntradayEngine().run(
+                        trades=plan.intents,
+                        sessions=(plan.trade_date,),
+                        initial_cash=plan.portfolio.equity,
+                    )
+                )
+            fold_results.append(
+                FoldBacktestResults(
+                    fold_index=fold.fold_index,
+                    test_start_date=fold.test_start_date,
+                    test_end_date=fold.test_end_date,
+                    results=tuple(results),
+                )
+            )
+        evaluator = Phase4GateEvaluator(
+            bootstrap_resamples=bootstrap_resamples,
+        )
+        report = evaluator.evaluate(tuple(fold_results))
+        evaluator.write(report, output)
+    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="Phase 4 aggregation") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": report.sha256,
+            "trade_count": report.overall.trade_count,
+            "fold_count": len(report.walk_forward.folds),
+            "passes_phase4_research_gate": report.passes_phase4_research_gate,
+            "passes_pre_paper_backtest_gate": report.passes_pre_paper_backtest_gate,
         }
     )
 

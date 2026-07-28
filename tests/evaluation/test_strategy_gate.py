@@ -1,0 +1,221 @@
+"""Chronological Phase 4 strategy gate tests."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING
+
+import pytest
+from typer.testing import CliRunner
+
+from quant_earning_edge.backtest import (
+    BacktestResult,
+    CostBreakdown,
+    DailyLedger,
+    TradeIntent,
+    TradeLedger,
+    VectorbtIntradayEngine,
+)
+from quant_earning_edge.cli import app
+from quant_earning_edge.evaluation import (
+    BacktestResultCombiner,
+    FoldBacktestResults,
+    Phase4GateEvaluator,
+)
+from quant_earning_edge.portfolio import PortfolioPlan
+from quant_earning_edge.signals import EventTradePlanner, PlannedEventTrades
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def _result(session: date, *, initial_cash: float, pnl: float, index: int) -> BacktestResult:
+    entry = 100.0
+    shares = 10
+    exit_price = entry + pnl / shares
+    intent = TradeIntent(
+        trade_id=f"trade-{index}",
+        symbol="AAA",
+        side="long",
+        entry_date=session,
+        exit_date=session,
+        shares=shares,
+        entry_price=entry,
+        exit_price=exit_price,
+        entry_average_daily_volume_shares=1_000_000,
+        exit_average_daily_volume_shares=1_000_000,
+        holding_sessions=0,
+        entry_at=datetime.combine(session, datetime.min.time(), UTC).replace(hour=14),
+        exit_at=datetime.combine(session, datetime.min.time(), UTC).replace(hour=21),
+    )
+    zero_entry = CostBreakdown(entry * shares, 0, 0, 0, 0, 0)
+    zero_exit = CostBreakdown(exit_price * shares, 0, 0, 0, 0, 0)
+    trade = TradeLedger(intent=intent, entry_cost=zero_entry, exit_cost=zero_exit)
+    daily = DailyLedger(
+        session_date=session,
+        gross_pnl=pnl,
+        commission=0,
+        half_spread=0,
+        market_impact=0,
+        borrow=0,
+        stop_slippage=0,
+        net_pnl=pnl,
+        gross_equity=initial_cash + pnl,
+        net_equity=initial_cash + pnl,
+        gross_exposure=entry * shares,
+    )
+    return BacktestResult(
+        engine="fixture",
+        input_sha256=f"{index:064x}",
+        initial_cash=initial_cash,
+        trades=(trade,),
+        daily=(daily,),
+    )
+
+
+def _chained_results() -> tuple[BacktestResult, ...]:
+    first = date(2025, 1, 2)
+    pnls = (100, -25, 80, 40, -15, 110, -30, 70, 60, -20) * 2
+    results = []
+    equity = 100_000.0
+    for index, pnl in enumerate(pnls):
+        result = _result(
+            first + timedelta(days=index),
+            initial_cash=equity,
+            pnl=float(pnl),
+            index=index,
+        )
+        results.append(result)
+        equity = result.final_net_equity
+    return tuple(results)
+
+
+def test_phase4_report_is_deterministic_and_persisted(tmp_path: Path) -> None:
+    results = _chained_results()
+    folds = (
+        FoldBacktestResults(
+            0, results[0].daily[0].session_date, results[9].daily[0].session_date, results[:10]
+        ),
+        FoldBacktestResults(
+            1, results[10].daily[0].session_date, results[-1].daily[0].session_date, results[10:]
+        ),
+    )
+    evaluator = Phase4GateEvaluator(bootstrap_resamples=100, seed=7)
+
+    first = evaluator.evaluate(folds)
+    second = evaluator.evaluate(folds)
+    output = tmp_path / "phase4-gate.json"
+    evaluator.write(first, output)
+    evaluator.write(first, output)
+
+    assert first == second
+    assert first.overall.trade_count == 20
+    assert first.walk_forward.positive_sharpe_fraction == 1.0
+    assert first.passes_phase4_research_gate == (
+        first.overall.net_sharpe >= 0.8
+        and first.overall.bootstrap is not None
+        and first.overall.bootstrap.sharpe.lower >= 0.3
+        and first.overall.max_drawdown <= 0.20
+    )
+    assert output.exists()
+
+
+def test_combiner_rejects_equity_discontinuity() -> None:
+    results = _chained_results()
+    broken = replace_result_initial(results[1], results[1].initial_cash + 1)
+
+    with pytest.raises(ValueError, match="equity"):
+        BacktestResultCombiner().combine((results[0], broken))
+
+
+def replace_result_initial(result: BacktestResult, value: float) -> BacktestResult:
+    return BacktestResult(
+        engine=result.engine,
+        input_sha256=result.input_sha256,
+        initial_cash=value,
+        trades=result.trades,
+        daily=result.daily,
+    )
+
+
+def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
+    first_date = date(2025, 1, 2)
+    first_fixture = _result(first_date, initial_cash=100_000, pnl=100, index=0)
+    first_plan = PlannedEventTrades(
+        trade_date=first_date,
+        portfolio=PortfolioPlan(100_000, 20, 0.1, 0.025, (), 0.01, ()),
+        intents=(first_fixture.trades[0].intent,),
+    )
+    first_path = tmp_path / "first.json"
+    EventTradePlanner.write(first_plan, first_path)
+    first_run = VectorbtIntradayEngine().run(
+        trades=first_plan.intents,
+        sessions=(first_date,),
+        initial_cash=first_plan.portfolio.equity,
+    )
+    second_date = first_date + timedelta(days=1)
+    second_fixture = _result(
+        second_date,
+        initial_cash=first_run.final_net_equity,
+        pnl=80,
+        index=1,
+    )
+    second_plan = PlannedEventTrades(
+        trade_date=second_date,
+        portfolio=PortfolioPlan(
+            first_run.final_net_equity,
+            20,
+            0.1,
+            0.025,
+            (),
+            0.01,
+            (),
+        ),
+        intents=(second_fixture.trades[0].intent,),
+    )
+    second_path = tmp_path / "second.json"
+    EventTradePlanner.write(second_plan, second_path)
+    spec = tmp_path / "aggregation.json"
+    output = tmp_path / "gate.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "folds": [
+                    {
+                        "fold_index": 0,
+                        "test_start_date": first_date.isoformat(),
+                        "test_end_date": first_date.isoformat(),
+                        "event_plan_files": [first_path.name],
+                    },
+                    {
+                        "fold_index": 1,
+                        "test_start_date": second_date.isoformat(),
+                        "test_end_date": second_date.isoformat(),
+                        "event_plan_files": [second_path.name],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "evaluation",
+            "phase4-gate",
+            "--aggregation-spec",
+            str(spec),
+            "--output",
+            str(output),
+            "--bootstrap-resamples",
+            "10",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["trade_count"] == 2
+    assert payload["fold_count"] == 2
+    assert output.exists()

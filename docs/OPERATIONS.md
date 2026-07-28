@@ -243,6 +243,33 @@ change selection or share counts. The command persists the immutable plan,
 runs its timestamped vectorbt orders, and writes the standardized reconciled
 evaluation. This is an OOS backtest path; it does not claim live fills.
 
+## Aggregate the Phase 4 gates
+
+Create an aggregation JSON whose `folds` entries declare consecutive
+`fold_index`, test start/end dates, and ordered `event_plan_files`. Relative
+paths resolve from the aggregation file:
+
+```powershell
+uv run qee evaluation phase4-gate `
+  --aggregation-spec .\phase4-folds.json `
+  --output .\data\manifests\backtest\phase4-gate.json `
+  --bootstrap-resamples 10000
+```
+
+Every plan is replayed through the timestamped cost ledger. The next plan's
+starting equity must equal the prior plan's final net equity, preventing hidden
+capital resets. Sessions and folds must be increasing and non-overlapping.
+
+The report keeps two separate decisions:
+
+- Phase 4 research gate: net Sharpe at least 0.8, bootstrap lower bound at
+  least 0.3, and max drawdown at most 20%.
+- Pre-paper backtest gate: net Sharpe above 1.0, bootstrap lower bound above
+  0.5, max drawdown below 15%, and at least 75% positive-Sharpe folds.
+
+Synthetic or fixture runs validate this machinery but cannot satisfy either
+operational performance gate.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

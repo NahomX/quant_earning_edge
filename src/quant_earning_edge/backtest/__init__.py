@@ -16,6 +16,16 @@ from quant_earning_edge.backtest.engine import (
     VectorbtBacktestEngine,
     VectorbtIntradayEngine,
 )
+from quant_earning_edge.backtest.nbbo_replay import (
+    DecisionSnapshot,
+    FillFragment,
+    IntendedOrder,
+    NbboQuote,
+    ReplayConfig,
+    ReplayFill,
+    TradePrint,
+    replay_order,
+)
 from quant_earning_edge.backtest.plan import WalkForwardPlan, WalkForwardPlanner
 from quant_earning_edge.backtest.spec import BacktestSpec, DailyMarkSpec, TradeIntentSpec
 from quant_earning_edge.backtest.splits import (
@@ -34,17 +44,25 @@ __all__ = [
     "DailyLedger",
     "DailyMark",
     "DailyMarkSpec",
+    "DecisionSnapshot",
     "ExecutionCostInput",
+    "FillFragment",
+    "IntendedOrder",
     "LabeledSample",
+    "NbboQuote",
     "PositionSide",
     "PurgedWalkForwardSplitter",
+    "ReplayConfig",
+    "ReplayFill",
     "TradeIntent",
     "TradeIntentSpec",
     "TradeLedger",
+    "TradePrint",
     "VectorbtBacktestEngine",
     "VectorbtIntradayEngine",
     "WalkForwardConfig",
     "WalkForwardFold",
     "WalkForwardPlan",
     "WalkForwardPlanner",
+    "replay_order",
 ]

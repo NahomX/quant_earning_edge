@@ -2210,6 +2210,125 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
     )
 
 
+@workflow_app.command("prepare")
+def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation boundary.
+    trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
+    planning_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Live-safe daily planning input."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated strategy YAML."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative proof sessions."),
+    ],
+    proof_start: Annotated[str, typer.Option(help="First Phase 6 session (YYYY-MM-DD).")],
+    proof_end: Annotated[str, typer.Option(help="Last Phase 6 session (YYYY-MM-DD).")],
+    initial_cash: Annotated[
+        float,
+        typer.Option(min=0.01, help="Initial proof capital."),
+    ],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Root for deterministic daily artifacts."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Workflow inbox specification."),
+    ],
+    worker_id: Annotated[str, typer.Option(help="Persistent worker identity.")],
+    freshness_symbol: Annotated[
+        str,
+        typer.Option(help="Liquid Polygon symbol used by pre-open controls."),
+    ] = "SPY",
+    trigger: Annotated[
+        WorkflowTrigger,
+        typer.Option(help="Workflow invocation provenance."),
+    ] = WorkflowTrigger.SCHEDULED,
+    lease_seconds: Annotated[
+        int,
+        typer.Option(min=1, max=3600, help="Per-stage lease duration."),
+    ] = 900,
+    command_timeout_seconds: Annotated[
+        float,
+        typer.Option(min=1, max=7200, help="Per-command timeout."),
+    ] = 1800,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Prepare rolling Phase 6 controls and one self-refreshing workflow spec."""
+    selected_date = _parse_date(trade_date, option="--trade-date")
+    selected_start = _parse_date(proof_start, option="--proof-start")
+    selected_end = _parse_date(proof_end, option="--proof-end")
+    try:
+        planning = DailyOrderPlanningSpec.model_validate_json(planning_spec.read_bytes())
+        if planning.trade_date != selected_date:
+            raise ValueError("planning spec trade date differs from workflow trade date")
+        load_strategy_config(strategy_config)
+        calendar = SessionFileStore.load(session_file)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+        environment = _environment(env_file)
+        control_root = (
+            artifact_root.resolve()
+            / f"trade_date={selected_date.isoformat()}"
+            / "control-preparation"
+        )
+        health_output = control_root / "workflow-health.json"
+        phase6_output = control_root / "phase6-controls.json"
+        controls = Phase6ControlBuilder().build(
+            calendar=calendar,
+            session_file=session_file,
+            workflow_store=DailyWorkflowStore(environment.data_lake_root),
+            proof_start=selected_start,
+            proof_end=selected_end,
+            current_trade_date=selected_date,
+            initial_cash=initial_cash,
+            artifact_root=artifact_root,
+            health_output=health_output,
+            aggregation_output=phase6_output,
+        )
+        spec = DailyWorkflowSpecGenerator().generate(
+            trade_date=selected_date,
+            trigger=trigger,
+            worker_id=worker_id,
+            planning_spec=planning_spec,
+            strategy_config=strategy_config,
+            breaker_spec=None,
+            phase6_spec=phase6_output,
+            artifact_root=artifact_root,
+            order_controls_not_before=(planning.entry_submitted_at - timedelta(minutes=10)),
+            market_events_not_before=(planning.exit_expires_at + timedelta(minutes=5)),
+            breaker_session_file=session_file,
+            freshness_symbol=freshness_symbol,
+            lease_seconds=lease_seconds,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+        spec.write(output)
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="daily workflow preparation") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": spec.sha256,
+            "trade_date": spec.trade_date,
+            "trigger": spec.trigger,
+            "health_output": str(health_output),
+            "health_sha256": controls.health_sha256,
+            "phase6_output": str(phase6_output),
+            "phase6_report_count": len(controls.included_report_files),
+            "breaker_mode": "self_refreshing",
+        }
+    )
+
+
 @workflow_app.command("initialize")
 def initialize_daily_workflow(
     trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],

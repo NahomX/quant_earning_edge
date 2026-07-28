@@ -794,6 +794,29 @@ outputs are immutable and idempotent. The pre-run health snapshot will classify
 the current date as incomplete; a final terminal verdict must be reevaluated
 after the workflow completes with refreshed health evidence.
 
+The preferred daily boundary combines that preparation with generation of the
+self-refreshing workflow:
+
+```powershell
+uv run qee workflow prepare `
+  --trade-date 2026-07-29 `
+  --planning-spec .\live-order-planning.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --proof-start 2026-07-28 `
+  --proof-end 2026-12-02 `
+  --initial-cash 100000 `
+  --artifact-root .\workflow-artifacts `
+  --output .\workflow-inbox\2026-07-29.json `
+  --worker-id paper-worker-1
+```
+
+This writes immutable pre-run workflow-health and Phase 6 aggregation controls
+under the current trade-date artifact directory, includes the deterministic
+future daily report path, and emits the complete inbox specification in one
+idempotent command. The live-safe causal planning input remains an explicit
+upstream artifact; the command does not fabricate signals or performance.
+
 ```powershell
 uv run qee workflow generate `
   --trade-date 2026-07-28 `

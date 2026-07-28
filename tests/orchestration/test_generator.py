@@ -9,6 +9,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
+from quant_earning_edge.evaluation import Phase6AggregationSpec
 from quant_earning_edge.orchestration import WorkflowRunSpec, WorkflowStage
 
 
@@ -239,3 +240,73 @@ def test_generator_requires_current_session_in_phase6_spec(tmp_path: Path) -> No
 
     assert result.exit_code == 2
     assert "deterministicreplay-sessionpath" in "".join(result.stderr.split())
+
+
+def test_prepare_cli_builds_phase6_controls_and_self_refreshing_workflow(
+    tmp_path: Path,
+) -> None:
+    planning, _, _, artifact_root = _inputs(tmp_path)
+    session_file = tmp_path / "sessions.json"
+    session_file.write_text(
+        json.dumps(
+            {
+                "provider": "alpaca",
+                "sessions": [
+                    {
+                        "session_date": "2026-07-28",
+                        "open_at": "2026-07-28T13:30:00Z",
+                        "close_at": "2026-07-28T20:00:00Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"DATA_LAKE_ROOT={tmp_path / 'lake'}",
+        encoding="utf-8",
+    )
+    output = tmp_path / "inbox" / "2026-07-28.json"
+    arguments = [
+        "workflow",
+        "prepare",
+        "--trade-date",
+        "2026-07-28",
+        "--planning-spec",
+        str(planning),
+        "--strategy-config",
+        str(_strategy_path()),
+        "--session-file",
+        str(session_file),
+        "--proof-start",
+        "2026-07-28",
+        "--proof-end",
+        "2026-07-28",
+        "--initial-cash",
+        "100000",
+        "--artifact-root",
+        str(artifact_root),
+        "--output",
+        str(output),
+        "--worker-id",
+        "paper-worker-1",
+        "--env-file",
+        str(env_file),
+    ]
+
+    result = CliRunner().invoke(app, arguments)
+    repeated = CliRunner().invoke(app, arguments)
+
+    assert result.exit_code == 0
+    assert repeated.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == json.loads(repeated.stdout)
+    workflow = WorkflowRunSpec.model_validate_json(output.read_bytes())
+    assert workflow.stages[0].commands[0].arguments[:2] == (
+        "monitoring",
+        "prepare-breaker-bundle",
+    )
+    phase6 = Phase6AggregationSpec.model_validate_json(Path(payload["phase6_output"]).read_bytes())
+    expected_report = artifact_root.resolve() / "trade_date=2026-07-28" / "replay-session.json"
+    assert phase6.session_report_files == (expected_report,)

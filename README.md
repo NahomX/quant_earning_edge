@@ -71,6 +71,7 @@ gate evaluator are also implemented. Paper-only Alpaca submission,
 paper/replay reconciliation, and fail-closed circuit breakers are implemented;
 the real 90-session proof has not started. The credentialed historical
 backfill, real-data strategy evaluation, and unattended operational gates
-remain pending. See
+remain pending observation, while the persistent restart-safe worker and its
+non-secret health evidence are implemented. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

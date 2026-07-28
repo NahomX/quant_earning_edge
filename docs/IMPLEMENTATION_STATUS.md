@@ -80,6 +80,9 @@ reproducible through `uv.lock`.
 | Concrete qee stage-command adapter | Complete | shell-free allowlist, environment-only secrets, JSON artifact discovery, CLI run |
 | Restart-safe session paper-order batch | Complete | sorted client IDs, partial-process resume, explicit no-trade evidence, CLI |
 | Unattended workflow health evidence | Complete | durable trigger provenance, authoritative sessions, uptime, five-run gate |
+| Non-secret command execution receipts | Complete | exit/timing and stream digests, argument hash, success/failure persistence |
+| Persistent workflow inbox worker | Complete | continuous scan/resume, cycle heartbeats, invalid-spec isolation, CLI |
+| Worker deployment packaging | Complete | hardened systemd unit, Windows launcher, deployment asset tests |
 
 ## Phase 1 exit gate
 
@@ -110,8 +113,10 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add command receipts and deployment packaging for a persistent worker. After
-credentialed historical/strategy gates pass, begin the real 90-session run.
+Link scheduled workflow-health evidence into the Phase 6 terminal gate so
+operational uptime is proven by intact workflow completion rather than merely
+the presence of replay reports. After credentialed historical/strategy gates
+pass, begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

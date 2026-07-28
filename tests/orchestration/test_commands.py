@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from quant_earning_edge.orchestration import (
+    DailyWorkflowController,
     DailyWorkflowRunner,
     DailyWorkflowState,
     DailyWorkflowStore,
@@ -108,6 +109,9 @@ def test_configured_handlers_execute_without_shell_and_complete_loop(tmp_path: P
     assert len(calls) == len(WorkflowStage)
     assert all(call[0][1:3] == ("-m", "quant_earning_edge.cli") for call in calls)
     assert all(call[1] == tmp_path.resolve() for call in calls)
+    receipts = tuple(tmp_path.rglob("command-*.json"))
+    assert len(receipts) == len(WorkflowStage)
+    assert all('"stdout":' not in path.read_text(encoding="utf-8") for path in receipts)
 
 
 def test_nonzero_qee_exit_becomes_durable_retryable_stage_failure(tmp_path: Path) -> None:
@@ -133,6 +137,7 @@ def test_nonzero_qee_exit_becomes_durable_retryable_stage_failure(tmp_path: Path
     assert not result.complete
     assert result.stages[0].error_type == "RuntimeError"
     assert "exit code 2" in (result.stages[0].error_message or "")
+    assert len(tuple(tmp_path.rglob("command-*.json"))) == 1
 
 
 def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Path) -> None:
@@ -162,6 +167,15 @@ def test_command_stdout_can_resolve_content_addressed_artifact_path(tmp_path: Pa
     state = DailyWorkflowState.initialize(
         trade_date=spec.trade_date,
         now=datetime.now(UTC),
+        trigger=spec.trigger,
     )
+    claimed = DailyWorkflowController().claim_next(
+        state,
+        worker_id=spec.worker_id,
+        now=datetime.now(UTC),
+    )
+    assert claimed is not None
 
-    assert handler(state, WorkflowStage.FREEZE_INPUTS) == (artifact.resolve(),)
+    outputs = handler(claimed, WorkflowStage.FREEZE_INPUTS)
+    assert artifact.resolve() in outputs
+    assert any(path.name == "command-001.json" for path in outputs)

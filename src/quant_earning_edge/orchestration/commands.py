@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
 from datetime import date  # noqa: TC003 - Pydantic resolves runtime annotations.
 from pathlib import Path
 from typing import Protocol
@@ -81,6 +83,51 @@ class QeeCommandResult:
 
     return_code: int
     stdout: str
+    stderr: str = ""
+    duration_ms: int = 0
+
+
+@dataclass(frozen=True)
+class CommandReceipt:
+    """Non-secret evidence for one attempted qee stage command."""
+
+    schema_version: int
+    trade_date: date
+    workflow_state_sha256: str
+    stage: WorkflowStage
+    stage_attempt: int
+    command_index: int
+    command_prefix: tuple[str, str]
+    arguments_sha256: str
+    return_code: int
+    stdout_sha256: str
+    stderr_sha256: str
+    duration_ms: int
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            asdict(self),
+            default=lambda item: (
+                item.value if isinstance(item, WorkflowStage) else item.isoformat()
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        encoded = self.canonical_bytes
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(encoded)
+        except FileExistsError:
+            if output.read_bytes() != encoded:
+                raise RuntimeError(f"command receipt collision at {output}") from None
 
 
 def execute_qee_command(
@@ -90,6 +137,7 @@ def execute_qee_command(
     timeout_seconds: float,
 ) -> QeeCommandResult:
     """Execute one validated qee argv without invoking a shell."""
+    started = time.perf_counter()
     completed = subprocess.run(
         argv,
         cwd=cwd,
@@ -99,7 +147,12 @@ def execute_qee_command(
         text=True,
         timeout=timeout_seconds,
     )
-    return QeeCommandResult(return_code=completed.returncode, stdout=completed.stdout)
+    return QeeCommandResult(
+        return_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        duration_ms=max(0, round((time.perf_counter() - started) * 1000)),
+    )
 
 
 class _StrictSpec(BaseModel):
@@ -216,7 +269,12 @@ class ConfiguredQeeStageHandler:
             path if path.is_absolute() else self._working_directory / path
             for path in self._spec.output_files
         ]
-        for command in self._spec.commands:
+        running = next(
+            record
+            for record in state.stages
+            if record.stage is stage and record.status.value == "running"
+        )
+        for command_index, command in enumerate(self._spec.commands, start=1):
             argv = (
                 sys.executable,
                 "-m",
@@ -228,12 +286,21 @@ class ConfiguredQeeStageHandler:
                 cwd=self._working_directory,
                 timeout_seconds=self._timeout_seconds,
             )
+            receipt_path = self._write_receipt(
+                state=state,
+                stage=stage,
+                stage_attempt=running.attempts,
+                command_index=command_index,
+                command=command,
+                result=result,
+            )
             if result.return_code:
                 prefix = " ".join(command.arguments[:2])
                 raise RuntimeError(
                     f"qee {prefix} failed with exit code {result.return_code} "
-                    f"for trade date {state.trade_date}"
+                    f"for trade date {state.trade_date}; receipt={receipt_path}"
                 )
+            outputs.append(receipt_path)
             outputs.extend(
                 self._artifact_paths_from_stdout(
                     stdout=result.stdout,
@@ -244,6 +311,47 @@ class ConfiguredQeeStageHandler:
         if not unique_outputs:
             raise RuntimeError(f"workflow stage {stage.value} produced no artifact paths")
         return unique_outputs
+
+    def _write_receipt(
+        self,
+        *,
+        state: DailyWorkflowState,
+        stage: WorkflowStage,
+        stage_attempt: int,
+        command_index: int,
+        command: QeeCommandSpec,
+        result: QeeCommandResult,
+    ) -> Path:
+        encoded_arguments = json.dumps(
+            command.arguments,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode()
+        receipt = CommandReceipt(
+            schema_version=1,
+            trade_date=state.trade_date,
+            workflow_state_sha256=state.sha256,
+            stage=stage,
+            stage_attempt=stage_attempt,
+            command_index=command_index,
+            command_prefix=(command.arguments[0], command.arguments[1]),
+            arguments_sha256=hashlib.sha256(encoded_arguments).hexdigest(),
+            return_code=result.return_code,
+            stdout_sha256=hashlib.sha256(result.stdout.encode()).hexdigest(),
+            stderr_sha256=hashlib.sha256(result.stderr.encode()).hexdigest(),
+            duration_ms=result.duration_ms,
+        )
+        path = (
+            self._working_directory
+            / ".qee"
+            / "receipts"
+            / f"trade_date={state.trade_date.isoformat()}"
+            / f"stage={stage.value}"
+            / f"attempt={stage_attempt:03d}"
+            / f"command-{command_index:03d}.json"
+        )
+        receipt.write(path)
+        return path
 
     def _artifact_paths_from_stdout(
         self,

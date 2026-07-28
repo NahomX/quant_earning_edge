@@ -1,0 +1,22 @@
+[Unit]
+Description=quant_earning_edge persistent paper/replay workflow worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qee
+Group=qee
+WorkingDirectory=/opt/quant_earning_edge
+EnvironmentFile=/etc/quant_earning_edge/qee.env
+ExecStart=/opt/quant_earning_edge/.venv/bin/qee workflow worker --inbox /var/lib/quant_earning_edge/workflow-inbox --worker-id %H
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/quant_earning_edge
+
+[Install]
+WantedBy=multi-user.target

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -82,6 +83,7 @@ from quant_earning_edge.orchestration import (
     DailyWorkflowStore,
     StageStatus,
     WorkflowHealthEvaluator,
+    WorkflowInboxWorker,
     WorkflowRunSpec,
     WorkflowTrigger,
 )
@@ -1298,6 +1300,52 @@ def daily_workflow_health(
     )
     if not report.passes_five_session_unattended_gate:
         raise typer.Exit(code=1)
+
+
+@workflow_app.command("worker")
+def run_workflow_worker(
+    inbox: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, help="Directory of immutable run specs."),
+    ],
+    worker_id: Annotated[str, typer.Option(help="Persistent worker identity.")],
+    poll_seconds: Annotated[
+        float,
+        typer.Option(min=1, max=60, help="Inbox polling interval."),
+    ] = 10,
+    once: Annotated[
+        bool,
+        typer.Option(help="Run one scan for verification instead of polling continuously."),
+    ] = False,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Continuously resume every workflow specification in an inbox."""
+    environment = _environment(env_file)
+    try:
+        worker = WorkflowInboxWorker(
+            data_lake_root=environment.data_lake_root,
+            worker_id=worker_id,
+            clock=lambda: datetime.now(UTC),
+        )
+        while True:
+            report, report_path = worker.run_once(inbox)
+            _echo_json(
+                {
+                    "report": str(report_path),
+                    "sha256": report.sha256,
+                    "evaluated_at": report.evaluated_at,
+                    "spec_count": len(report.results),
+                    "complete_count": sum(item.complete for item in report.results),
+                    "all_complete": report.all_complete,
+                }
+            )
+            if once:
+                if not report.all_complete:
+                    raise typer.Exit(code=1)
+                return
+            time.sleep(poll_seconds)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="workflow worker inputs") from error
 
 
 @ingest_app.command("earnings")

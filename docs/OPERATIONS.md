@@ -709,3 +709,26 @@ completions. Manual runs, missing dates, unfinished or failed stages, and
 tampered artifacts never count as uptime. The immutable report records each
 category, excess retry attempts, scheduled uptime, source state hashes, and the
 calendar hash.
+
+Run the continuous inbox worker:
+
+```powershell
+uv run qee workflow worker `
+  --inbox .\workflow-inbox `
+  --worker-id paper-worker-1 `
+  --poll-seconds 10
+```
+
+Use `--once` for a deployment smoke test. Every scan writes a
+content-addressed heartbeat under `manifests/job=workflow-worker/cycles`,
+including empty inboxes and invalid specifications. A bad spec is reported
+without preventing later specs from being inspected.
+
+Every attempted stage command also writes a receipt under `.qee/receipts`.
+Receipts retain the workflow hash, stage/attempt, allowed command prefix,
+argument hash, exit code, duration, and stdout/stderr hashes. Raw command
+streams and credentials are never stored in receipts.
+
+Deployment assets are in `ops/`: a hardened non-root systemd service with a
+restricted writable data path, and a Windows PowerShell launcher using the
+project virtual environment. Provider secrets remain in the external env file.

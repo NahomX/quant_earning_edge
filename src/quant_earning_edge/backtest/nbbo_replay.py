@@ -198,8 +198,15 @@ class ReplayFill:
     unfilled_qty: int
     fill_price: float | None
     fill_rate: float
+    arrival_midpoint: float | None
     slippage_bps_realized: float | None
     slippage_bps_predicted: float
+    modeled_spread_bps: float
+    modeled_market_impact_bps: float
+    realized_execution_slippage_dollars: float
+    modeled_spread_cost_dollars: float
+    modeled_market_impact_cost_dollars: float
+    execution_residual_cost_dollars: float
     market_move_bps: float
     fill_probability_assumption: float
     opening_auction_filled_qty: int
@@ -215,6 +222,7 @@ class ReplayFill:
         _validate_replay_auction(self)
         _validate_replay_timestamps(self)
         _validate_replay_metrics(self)
+        _validate_replay_costs(self)
 
 
 def replay_order(
@@ -436,6 +444,10 @@ def _result(
         else None
     )
     notes = "filled" if filled == order.quantity else "partial fill" if filled else "missed fill"
+    spread_bps = _modeled_spread_bps(order, arrival=arrival)
+    realized_slippage_dollars = (realized or 0.0) / 10_000.0 * arrival_midpoint * filled
+    modeled_spread_cost = spread_bps / 10_000.0 * arrival_midpoint * filled
+    modeled_impact_cost = impact_bps / 10_000.0 * arrival_midpoint * filled
     return ReplayFill(
         order=order,
         decision_snapshot=decision_snapshot,
@@ -443,8 +455,17 @@ def _result(
         unfilled_qty=order.quantity - filled,
         fill_price=fill_price,
         fill_rate=filled / order.quantity,
+        arrival_midpoint=arrival_midpoint,
         slippage_bps_realized=realized,
         slippage_bps_predicted=predicted,
+        modeled_spread_bps=spread_bps,
+        modeled_market_impact_bps=impact_bps,
+        realized_execution_slippage_dollars=realized_slippage_dollars,
+        modeled_spread_cost_dollars=modeled_spread_cost,
+        modeled_market_impact_cost_dollars=modeled_impact_cost,
+        execution_residual_cost_dollars=(
+            realized_slippage_dollars - modeled_spread_cost - modeled_impact_cost
+        ),
         market_move_bps=market_move,
         fill_probability_assumption=probability,
         opening_auction_filled_qty=auction_qty,
@@ -470,8 +491,15 @@ def _missed_fill(
         unfilled_qty=order.quantity,
         fill_price=None,
         fill_rate=0.0,
+        arrival_midpoint=None,
         slippage_bps_realized=None,
         slippage_bps_predicted=0.0,
+        modeled_spread_bps=0.0,
+        modeled_market_impact_bps=0.0,
+        realized_execution_slippage_dollars=0.0,
+        modeled_spread_cost_dollars=0.0,
+        modeled_market_impact_cost_dollars=0.0,
+        execution_residual_cost_dollars=0.0,
         market_move_bps=0.0,
         fill_probability_assumption=probability,
         opening_auction_filled_qty=0,
@@ -525,12 +553,16 @@ def _predicted_slippage_bps(
     arrival: NbboQuote,
     impact_bps: float,
 ) -> float:
+    return _modeled_spread_bps(order, arrival=arrival) + impact_bps
+
+
+def _modeled_spread_bps(order: IntendedOrder, *, arrival: NbboQuote) -> float:
     half_spread_bps = (arrival.ask_price - arrival.bid_price) / (2 * arrival.midpoint) * 10_000
     if order.aggressiveness == "aggressive":
-        return half_spread_bps + impact_bps
+        return half_spread_bps
     if order.aggressiveness == "mid":
-        return impact_bps
-    return -half_spread_bps + impact_bps
+        return 0.0
+    return -half_spread_bps
 
 
 def _require_unique_events(
@@ -639,8 +671,38 @@ def _validate_replay_metrics(result: ReplayFill) -> None:
     numeric = (
         result.fill_rate,
         result.slippage_bps_predicted,
+        result.modeled_spread_bps,
+        result.modeled_market_impact_bps,
+        result.realized_execution_slippage_dollars,
+        result.modeled_spread_cost_dollars,
+        result.modeled_market_impact_cost_dollars,
+        result.execution_residual_cost_dollars,
         result.market_move_bps,
         result.fill_probability_assumption,
     )
     if any(not math.isfinite(value) for value in numeric):
         raise ValueError("replay metrics must be finite")
+
+
+def _validate_replay_costs(result: ReplayFill) -> None:
+    costs = (
+        result.realized_execution_slippage_dollars,
+        result.modeled_spread_cost_dollars,
+        result.modeled_market_impact_cost_dollars,
+        result.execution_residual_cost_dollars,
+    )
+    if result.arrival_midpoint is None:
+        if result.filled_qty or any(not math.isclose(value, 0.0, abs_tol=1e-12) for value in costs):
+            raise ValueError("replay without an arrival quote cannot contain execution costs")
+        return
+    _require_positive_finite(result.arrival_midpoint, field="arrival_midpoint")
+    multiplier = result.arrival_midpoint * result.filled_qty / 10_000.0
+    realized = (result.slippage_bps_realized or 0.0) * multiplier
+    spread = result.modeled_spread_bps * multiplier
+    impact = result.modeled_market_impact_bps * multiplier
+    expected = (realized, spread, impact, realized - spread - impact)
+    if any(
+        not math.isclose(actual, value, rel_tol=1e-12, abs_tol=1e-12)
+        for actual, value in zip(costs, expected, strict=True)
+    ):
+        raise ValueError("replay execution cost dollars do not reconcile")

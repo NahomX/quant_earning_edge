@@ -148,8 +148,15 @@ class ReplayFillSpec(_StrictSpec):
     unfilled_qty: int = Field(ge=0)
     fill_price: float | None = Field(default=None, gt=0)
     fill_rate: float = Field(ge=0, le=1)
+    arrival_midpoint: float | None = Field(default=None, gt=0)
     slippage_bps_realized: float | None = None
     slippage_bps_predicted: float
+    modeled_spread_bps: float
+    modeled_market_impact_bps: float = Field(ge=0)
+    realized_execution_slippage_dollars: float
+    modeled_spread_cost_dollars: float
+    modeled_market_impact_cost_dollars: float = Field(ge=0)
+    execution_residual_cost_dollars: float
     market_move_bps: float
     fill_probability_assumption: float = Field(ge=0, le=1)
     opening_auction_filled_qty: int = Field(ge=0)
@@ -172,7 +179,7 @@ class ReplayFillSpec(_StrictSpec):
 
 
 class NbboReplayEvidenceSpec(_StrictSpec):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     quote_event_count: int = Field(ge=0)
     trade_event_count: int = Field(ge=0)
@@ -201,7 +208,7 @@ class NbboReplayEvidence:
     @classmethod
     def build(cls, *, spec: NbboReplaySpec, result: ReplayFill) -> NbboReplayEvidence:
         return cls(
-            schema_version=1,
+            schema_version=2,
             input_sha256=spec.sha256,
             quote_event_count=len(spec.quotes),
             trade_event_count=len(spec.trades),

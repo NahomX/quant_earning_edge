@@ -58,6 +58,11 @@ class ReplayRoundTripResult:
     unmatched_quantity: int
     entry_fill_price: float | None
     exit_fill_price: float | None
+    arrival_gross_pnl: float
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float
+    execution_residual_cost: float
     gross_pnl: float
     commission: float
     net_pnl_on_matched_quantity: float
@@ -87,6 +92,11 @@ class ReplaySessionReport:
     p90_realized_to_predicted_ratio: float | None
     opening_auction_filled_share_count: int
     reconciliation_break_count: int
+    arrival_gross_pnl: float | None
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float
+    execution_residual_cost: float
     gross_pnl: float | None
     commission: float
     net_pnl: float | None
@@ -169,6 +179,11 @@ class ReplayRoundTripResultSpec(_StrictSpec):
     unmatched_quantity: int = Field(ge=0)
     entry_fill_price: float | None = Field(default=None, gt=0)
     exit_fill_price: float | None = Field(default=None, gt=0)
+    arrival_gross_pnl: float
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float = Field(ge=0)
+    execution_residual_cost: float
     gross_pnl: float
     commission: float = Field(ge=0)
     net_pnl_on_matched_quantity: float
@@ -179,7 +194,7 @@ class ReplayRoundTripResultSpec(_StrictSpec):
 
 
 class ReplaySessionReportSpec(_StrictSpec):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     session_date: date
     initial_cash: float = Field(gt=0)
     evidence_sha256: tuple[str, ...]
@@ -198,6 +213,11 @@ class ReplaySessionReportSpec(_StrictSpec):
     p90_realized_to_predicted_ratio: float | None = Field(default=None, ge=0)
     opening_auction_filled_share_count: int = Field(ge=0)
     reconciliation_break_count: int = Field(ge=0)
+    arrival_gross_pnl: float | None = None
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float = Field(ge=0)
+    execution_residual_cost: float
     gross_pnl: float | None = None
     commission: float = Field(ge=0)
     net_pnl: float | None = None
@@ -284,11 +304,60 @@ class ReplaySessionAggregator:
         exit_notional = (exit_fill.fill_price or 0.0) * exit_fill.filled_qty
         commission = (entry_notional + exit_notional) * commission_bps_per_side / 10_000
         gross_pnl = 0.0
+        arrival_gross_pnl = 0.0
+        realized_execution_cost = 0.0
+        modeled_spread_cost = 0.0
+        modeled_impact_cost = 0.0
+        execution_residual_cost = 0.0
         if matched:
-            if entry.fill_price is None or exit_fill.fill_price is None:
-                raise ValueError("matched replay quantities require both fill prices")
+            if (
+                entry.fill_price is None
+                or exit_fill.fill_price is None
+                or entry.arrival_midpoint is None
+                or exit_fill.arrival_midpoint is None
+            ):
+                raise ValueError("matched replay quantities require fill and arrival prices")
             direction = 1.0 if trade.side == "long" else -1.0
             gross_pnl = direction * (exit_fill.fill_price - entry.fill_price) * matched
+            arrival_gross_pnl = (
+                direction * (exit_fill.arrival_midpoint - entry.arrival_midpoint) * matched
+            )
+            realized_execution_cost = _matched_cost(
+                entry.realized_execution_slippage_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.realized_execution_slippage_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+            modeled_spread_cost = _matched_cost(
+                entry.modeled_spread_cost_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.modeled_spread_cost_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+            modeled_impact_cost = _matched_cost(
+                entry.modeled_market_impact_cost_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.modeled_market_impact_cost_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+            execution_residual_cost = _matched_cost(
+                entry.execution_residual_cost_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.execution_residual_cost_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
         return ReplayRoundTripResult(
             trade_id=trade.trade_id,
             symbol=entry.order.ticker,
@@ -300,6 +369,11 @@ class ReplaySessionAggregator:
             unmatched_quantity=unmatched,
             entry_fill_price=entry.fill_price,
             exit_fill_price=exit_fill.fill_price,
+            arrival_gross_pnl=arrival_gross_pnl,
+            realized_execution_slippage_cost=realized_execution_cost,
+            modeled_spread_cost=modeled_spread_cost,
+            modeled_market_impact_cost=modeled_impact_cost,
+            execution_residual_cost=execution_residual_cost,
             gross_pnl=gross_pnl,
             commission=commission,
             net_pnl_on_matched_quantity=gross_pnl - commission,
@@ -337,10 +411,17 @@ class ReplaySessionAggregator:
         )
         break_count = sum(not item.reconciled for item in results)
         commission = sum(item.commission for item in results)
+        realized_execution_cost = sum(item.realized_execution_slippage_cost for item in results)
+        modeled_spread_cost = sum(item.modeled_spread_cost for item in results)
+        modeled_impact_cost = sum(item.modeled_market_impact_cost for item in results)
+        execution_residual_cost = sum(item.execution_residual_cost for item in results)
+        arrival_gross_pnl = (
+            sum(item.arrival_gross_pnl for item in results) if break_count == 0 else None
+        )
         gross_pnl = sum(item.gross_pnl for item in results) if break_count == 0 else None
         net_pnl = gross_pnl - commission if gross_pnl is not None else None
         return ReplaySessionReport(
-            schema_version=1,
+            schema_version=2,
             session_date=session_date,
             initial_cash=initial_cash,
             evidence_sha256=tuple(sorted(item.sha256 for item in evidence)),
@@ -361,6 +442,11 @@ class ReplaySessionAggregator:
                 item.result.opening_auction_filled_qty for item in evidence
             ),
             reconciliation_break_count=break_count,
+            arrival_gross_pnl=arrival_gross_pnl,
+            realized_execution_slippage_cost=realized_execution_cost,
+            modeled_spread_cost=modeled_spread_cost,
+            modeled_market_impact_cost=modeled_impact_cost,
+            execution_residual_cost=execution_residual_cost,
             gross_pnl=gross_pnl,
             commission=commission,
             net_pnl=net_pnl,
@@ -396,7 +482,7 @@ def _percentile(values: Sequence[float], probability: float) -> float | None:
 
 
 def _validate_session_counts(report: ReplaySessionReport) -> None:
-    if report.schema_version != 1:
+    if report.schema_version != 2:
         raise ValueError("unsupported replay-session schema version")
     if not math.isfinite(report.initial_cash) or report.initial_cash <= 0:
         raise ValueError("session initial cash must be finite and positive")
@@ -449,20 +535,48 @@ def _validate_session_reconciliation(report: ReplaySessionReport) -> None:
         _validate_round_trip_result(item)
     break_count = sum(not item.reconciled for item in report.round_trips)
     commission = sum(item.commission for item in report.round_trips)
+    realized_execution_cost = sum(
+        item.realized_execution_slippage_cost for item in report.round_trips
+    )
+    modeled_spread_cost = sum(item.modeled_spread_cost for item in report.round_trips)
+    modeled_impact_cost = sum(item.modeled_market_impact_cost for item in report.round_trips)
+    execution_residual_cost = sum(item.execution_residual_cost for item in report.round_trips)
     if break_count != report.reconciliation_break_count:
         raise ValueError("session reconciliation-break count is inconsistent")
     if not math.isclose(report.commission, commission, rel_tol=1e-12, abs_tol=1e-12):
         raise ValueError("session commission does not reconcile")
+    component_pairs = (
+        (report.realized_execution_slippage_cost, realized_execution_cost),
+        (report.modeled_spread_cost, modeled_spread_cost),
+        (report.modeled_market_impact_cost, modeled_impact_cost),
+        (report.execution_residual_cost, execution_residual_cost),
+    )
+    if any(
+        not math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-12)
+        for actual, expected in component_pairs
+    ):
+        raise ValueError("session execution cost components do not reconcile")
     if break_count:
         if (
-            report.gross_pnl is not None
+            report.arrival_gross_pnl is not None
+            or report.gross_pnl is not None
             or report.net_pnl is not None
             or report.net_return is not None
         ):
             raise ValueError("session with a reconciliation break must not report P&L")
         return
+    arrival_gross = sum(item.arrival_gross_pnl for item in report.round_trips)
     gross = sum(item.gross_pnl for item in report.round_trips)
     net = gross - commission
+    if not _optional_close(report.arrival_gross_pnl, arrival_gross):
+        raise ValueError("session arrival gross P&L does not reconcile")
+    if not math.isclose(
+        arrival_gross - realized_execution_cost,
+        gross,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("session arrival-to-fill P&L does not reconcile")
     if not _optional_close(report.gross_pnl, gross):
         raise ValueError("session gross P&L does not reconcile")
     if not _optional_close(report.net_pnl, net):
@@ -495,6 +609,20 @@ def _validate_round_trip_result(item: ReplayRoundTripResult) -> None:
         abs_tol=1e-12,
     ):
         raise ValueError("round-trip gross P&L does not reconcile")
+    if not math.isclose(
+        item.modeled_spread_cost + item.modeled_market_impact_cost + item.execution_residual_cost,
+        item.realized_execution_slippage_cost,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip execution components do not reconcile")
+    if not math.isclose(
+        item.arrival_gross_pnl - item.realized_execution_slippage_cost,
+        item.gross_pnl,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip arrival-to-fill P&L does not reconcile")
     if not math.isclose(
         item.net_pnl_on_matched_quantity,
         item.gross_pnl - item.commission,
@@ -556,12 +684,17 @@ def _validate_session_metrics(report: ReplaySessionReport) -> None:
         raise ValueError("session slippage ratio does not reconcile")
     numeric = (
         report.commission,
+        report.realized_execution_slippage_cost,
+        report.modeled_spread_cost,
+        report.modeled_market_impact_cost,
+        report.execution_residual_cost,
         *(item for item in slippage if item is not None),
         *(
             item
             for item in (
                 report.predicted_adverse_slippage_bps_p90,
                 report.p90_realized_to_predicted_ratio,
+                report.arrival_gross_pnl,
                 report.gross_pnl,
                 report.net_pnl,
                 report.net_return,
@@ -577,3 +710,14 @@ def _optional_close(actual: float | None, expected: float | None) -> bool:
     if actual is None or expected is None:
         return actual is expected
     return math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-12)
+
+
+def _matched_cost(
+    total_cost: float,
+    *,
+    filled_quantity: int,
+    matched_quantity: int,
+) -> float:
+    if filled_quantity <= 0:
+        raise ValueError("matched execution cost requires a positive filled quantity")
+    return total_cost / filled_quantity * matched_quantity

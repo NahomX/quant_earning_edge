@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from quant_earning_edge.evaluation.report import ConfidenceInterval
+from quant_earning_edge.evaluation.report import ConfidenceInterval, CostAttribution
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -77,9 +77,14 @@ class Phase6GateReport:
     predicted_adverse_slippage_bps_p90: float | None
     p90_realized_to_predicted_ratio: float | None
     reconciliation_break_dates: tuple[date, ...]
-    gross_pnl: float | None
+    arrival_gross_pnl: float | None
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float
+    execution_residual_cost: float
+    fill_gross_pnl: float | None
     commission: float
     net_pnl: float | None
+    cost_attribution: tuple[CostAttribution, ...]
     passes_session_count_gate: bool
     passes_net_sharpe_gate: bool
     passes_fill_rate_gate: bool
@@ -261,6 +266,14 @@ class Phase6GateEvaluator:
         breaks = tuple(
             report.session_date for report in reports if report.reconciliation_break_count
         )
+        arrival_gross_pnl = (
+            sum(item.arrival_gross_pnl or 0.0 for item in reports) if not breaks else None
+        )
+        fill_gross_pnl = sum(item.gross_pnl or 0.0 for item in reports) if not breaks else None
+        modeled_spread_cost = sum(item.modeled_spread_cost for item in reports)
+        modeled_impact_cost = sum(item.modeled_market_impact_cost for item in reports)
+        execution_residual_cost = sum(item.execution_residual_cost for item in reports)
+        commission = sum(item.commission for item in reports)
         session_count_gate = len(session_dates) >= 90
         sharpe_gate = (
             net_sharpe is not None
@@ -289,7 +302,7 @@ class Phase6GateEvaluator:
             )
         )
         return Phase6GateReport(
-            schema_version=1,
+            schema_version=2,
             calendar_sha256=calendar.sha256,
             proof_start=proof_start,
             proof_end=proof_end,
@@ -315,9 +328,22 @@ class Phase6GateEvaluator:
             predicted_adverse_slippage_bps_p90=predicted_p90,
             p90_realized_to_predicted_ratio=ratio,
             reconciliation_break_dates=breaks,
-            gross_pnl=(sum(item.gross_pnl or 0.0 for item in reports) if not breaks else None),
-            commission=sum(item.commission for item in reports),
+            arrival_gross_pnl=arrival_gross_pnl,
+            modeled_spread_cost=modeled_spread_cost,
+            modeled_market_impact_cost=modeled_impact_cost,
+            execution_residual_cost=execution_residual_cost,
+            fill_gross_pnl=fill_gross_pnl,
+            commission=commission,
             net_pnl=(final_equity - initial_cash if final_equity is not None else None),
+            cost_attribution=(
+                _cost_attribution(
+                    session_dates=session_dates,
+                    reports=reports,
+                    initial_cash=initial_cash,
+                )
+                if not breaks
+                else ()
+            ),
             passes_session_count_gate=session_count_gate,
             passes_net_sharpe_gate=sharpe_gate,
             passes_fill_rate_gate=fill_gate,
@@ -377,6 +403,58 @@ def _max_drawdown(equity: np.ndarray, *, initial_cash: float) -> float:
     full_path = np.concatenate(([initial_cash], equity))
     running_high = np.maximum.accumulate(full_path)
     return float(abs(np.min(full_path / running_high - 1.0)))
+
+
+def _cost_attribution(
+    *,
+    session_dates: tuple[date, ...],
+    reports: tuple[ReplaySessionReport, ...],
+    initial_cash: float,
+) -> tuple[CostAttribution, ...]:
+    by_date = {item.session_date: item for item in reports}
+    arrival_pnl = np.asarray(
+        [
+            (by_date[item].arrival_gross_pnl or 0.0) if item in by_date else 0.0
+            for item in session_dates
+        ],
+        dtype=float,
+    )
+    component_values = (
+        ("modeled_spread", "modeled_spread_cost"),
+        ("modeled_market_impact", "modeled_market_impact_cost"),
+        ("execution_residual", "execution_residual_cost"),
+        ("commission", "commission"),
+    )
+    running_pnl = arrival_pnl
+    before_sharpe = _sharpe(_returns_from_pnl(running_pnl, initial_cash=initial_cash))
+    output: list[CostAttribution] = []
+    for component, field in component_values:
+        costs = np.asarray(
+            [
+                float(getattr(by_date[item], field)) if item in by_date else 0.0
+                for item in session_dates
+            ],
+            dtype=float,
+        )
+        after_pnl = running_pnl - costs
+        after_sharpe = _sharpe(_returns_from_pnl(after_pnl, initial_cash=initial_cash))
+        output.append(
+            CostAttribution(
+                component=component,
+                dollars=float(np.sum(costs)),
+                marginal_sharpe_loss=before_sharpe - after_sharpe,
+            )
+        )
+        running_pnl = after_pnl
+        before_sharpe = after_sharpe
+    return tuple(output)
+
+
+def _returns_from_pnl(pnl: np.ndarray, *, initial_cash: float) -> np.ndarray:
+    equity_before = initial_cash + np.concatenate(([0.0], np.cumsum(pnl)[:-1]))
+    if np.any(equity_before <= 0):
+        raise ValueError("cost attribution requires positive prior equity")
+    return pnl / equity_before
 
 
 def _percentile(values: Sequence[float], probability: float) -> float | None:

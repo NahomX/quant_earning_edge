@@ -55,9 +55,16 @@ def _daily_report(
     return_rate: float,
     index: int,
 ) -> ReplaySessionReport:
-    pnl = initial_cash * return_rate
+    net_pnl = initial_cash * return_rate
+    modeled_spread_cost = 1.0
+    modeled_impact_cost = 0.5
+    execution_residual_cost = 0.25
+    execution_cost = modeled_spread_cost + modeled_impact_cost + execution_residual_cost
+    commission = 0.25
+    fill_gross_pnl = net_pnl + commission
+    arrival_gross_pnl = fill_gross_pnl + execution_cost
     entry_price = 100.0
-    exit_price = entry_price + pnl / 100
+    exit_price = entry_price + fill_gross_pnl / 100
     trip = ReplayRoundTripResult(
         trade_id=f"trade-{index}",
         symbol="AAA",
@@ -69,9 +76,14 @@ def _daily_report(
         unmatched_quantity=0,
         entry_fill_price=entry_price,
         exit_fill_price=exit_price,
-        gross_pnl=pnl,
-        commission=0.0,
-        net_pnl_on_matched_quantity=pnl,
+        arrival_gross_pnl=arrival_gross_pnl,
+        realized_execution_slippage_cost=execution_cost,
+        modeled_spread_cost=modeled_spread_cost,
+        modeled_market_impact_cost=modeled_impact_cost,
+        execution_residual_cost=execution_residual_cost,
+        gross_pnl=fill_gross_pnl,
+        commission=commission,
+        net_pnl_on_matched_quantity=net_pnl,
         reconciled=True,
     )
     hashes = tuple(
@@ -81,7 +93,7 @@ def _daily_report(
         )
     )
     return ReplaySessionReport(
-        schema_version=1,
+        schema_version=2,
         session_date=session_date,
         initial_cash=initial_cash,
         evidence_sha256=hashes,
@@ -100,9 +112,14 @@ def _daily_report(
         p90_realized_to_predicted_ratio=1.0,
         opening_auction_filled_share_count=0,
         reconciliation_break_count=0,
-        gross_pnl=pnl,
-        commission=0.0,
-        net_pnl=pnl,
+        arrival_gross_pnl=arrival_gross_pnl,
+        realized_execution_slippage_cost=execution_cost,
+        modeled_spread_cost=modeled_spread_cost,
+        modeled_market_impact_cost=modeled_impact_cost,
+        execution_residual_cost=execution_residual_cost,
+        gross_pnl=fill_gross_pnl,
+        commission=commission,
+        net_pnl=net_pnl,
         net_return=return_rate,
         round_trips=(trip,),
     )
@@ -144,6 +161,25 @@ def test_phase6_gate_passes_only_with_all_locked_thresholds(tmp_path: Path) -> N
     assert result.bootstrap_sharpe.lower > 0.3
     assert result.fully_filled_order_rate == 1
     assert result.p90_realized_to_predicted_ratio == 1
+    assert result.fill_gross_pnl == pytest.approx(
+        (result.arrival_gross_pnl or 0.0)
+        - result.modeled_spread_cost
+        - result.modeled_market_impact_cost
+        - result.execution_residual_cost
+    )
+    assert result.net_pnl == pytest.approx(
+        (result.arrival_gross_pnl or 0.0)
+        - result.modeled_spread_cost
+        - result.modeled_market_impact_cost
+        - result.execution_residual_cost
+        - result.commission
+    )
+    assert [item.component for item in result.cost_attribution] == [
+        "modeled_spread",
+        "modeled_market_impact",
+        "execution_residual",
+        "commission",
+    ]
     assert result.passes_phase6_gate
     assert result.verdict == "pass"
 

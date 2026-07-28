@@ -70,6 +70,7 @@ reproducible through `uv.lock`.
 | Immutable daily Phase 6 report and CLI | Complete | evidence hashes, fill/slippage percentiles, collision-safe JSON |
 | No-trade operational session evidence | Complete | explicit zero return, no invented orders or fill-rate denominator |
 | Locked 90-session Phase 6 hard gate | Complete | Sharpe CI, fills, global slippage, uptime, reconciliation, CLI |
+| Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 
 ## Phase 1 exit gate
 
@@ -100,9 +101,9 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Complete execution-cost attribution for replay fills, then add paper-broker
-submission/reconciliation and circuit-breaker operational records. After
-credentialed historical/strategy gates pass, begin the real 90-session run.
+Add paper-broker submission/reconciliation and circuit-breaker operational
+records. After credentialed historical/strategy gates pass, begin the real
+90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

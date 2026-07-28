@@ -394,6 +394,13 @@ adverse slippage below twice modeled, uptime above 95%, at least 90
 authoritative sessions, and no reconciliation breaks. Paper-broker P&L is not
 an input.
 
+Cost attribution begins at gross P&L between entry/exit arrival midpoints. It
+then subtracts modeled spread, modeled square-root impact, the realized
+execution residual (queue/auction effects beyond those models), and commission.
+Every daily report reconciles those dollar components to replay fill-price P&L
+and net P&L. The 90-session report also records each component's sequential
+marginal Sharpe loss.
+
 ## Fetch authoritative market sessions
 
 The Alpaca calendar reports real trading dates and session-specific open/close

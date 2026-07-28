@@ -111,6 +111,15 @@ def test_reconciled_session_computes_fill_slippage_and_net_pnl() -> None:
     assert report.share_fill_rate == 1
     assert report.reconciliation_break_count == 0
     assert report.gross_pnl is not None and report.gross_pnl > 0
+    assert report.arrival_gross_pnl is not None
+    assert report.arrival_gross_pnl - report.realized_execution_slippage_cost == pytest.approx(
+        report.gross_pnl
+    )
+    assert report.realized_execution_slippage_cost == pytest.approx(
+        report.modeled_spread_cost
+        + report.modeled_market_impact_cost
+        + report.execution_residual_cost
+    )
     assert report.net_pnl is not None
     assert report.net_pnl == pytest.approx(report.gross_pnl - report.commission)
     assert report.net_return == pytest.approx(report.net_pnl / 100_000)
@@ -218,7 +227,7 @@ def test_session_report_is_immutable_and_cli_reloads_evidence(tmp_path: Path) ->
     report = json.loads(output.read_bytes())
     assert command_result["sha256"]
     assert command_result["reconciliation_break_count"] == 0
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["evidence_sha256"] == sorted((entry.sha256, exit_fill.sha256))
     assert ReplaySessionReport.load(output).sha256 == command_result["sha256"]
 

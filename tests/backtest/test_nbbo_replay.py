@@ -80,6 +80,14 @@ def test_aggressive_order_consumes_displayed_size_and_records_partial_fill(
     assert result.fill_price > 100.1
     assert result.slippage_bps_realized is not None
     assert result.slippage_bps_predicted > 0
+    assert result.arrival_midpoint == 100.0
+    assert result.modeled_spread_cost_dollars > 0
+    assert result.modeled_market_impact_cost_dollars > 0
+    assert result.realized_execution_slippage_dollars == pytest.approx(
+        result.modeled_spread_cost_dollars
+        + result.modeled_market_impact_cost_dollars
+        + result.execution_residual_cost_dollars
+    )
 
 
 def test_sell_replay_uses_adverse_direction_for_slippage(

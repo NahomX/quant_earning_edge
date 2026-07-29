@@ -15,7 +15,10 @@ from quant_earning_edge.orchestration.commands import (
     WorkflowStageCommandSpec,
     execute_qee_command,
 )
-from quant_earning_edge.orchestration.generator import DailyWorkflowSpecGenerator
+from quant_earning_edge.orchestration.generator import (
+    AutomatedPlanningInputs,
+    DailyWorkflowSpecGenerator,
+)
 from quant_earning_edge.orchestration.health import (
     WorkflowHealthEvaluator,
     WorkflowHealthReport,
@@ -49,6 +52,7 @@ from quant_earning_edge.orchestration.workflow import (
 __all__ = [
     "ArtifactArgumentBinding",
     "ArtifactReference",
+    "AutomatedPlanningInputs",
     "CommandReceipt",
     "ConfiguredQeeStageHandler",
     "DailyWorkflowController",

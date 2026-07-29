@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from quant_earning_edge.orchestration.commands import (
@@ -19,16 +20,31 @@ if TYPE_CHECKING:
     from quant_earning_edge.orchestration.workflow import WorkflowTrigger
 
 
+@dataclass(frozen=True)
+class AutomatedPlanningInputs:
+    """Immutable inputs needed for worker-time provider capture and model scoring."""
+
+    candidate_file: Path
+    session_file: Path
+    model_evidence: Path
+    model_file: Path
+    feature_files: tuple[Path, ...]
+    prior_replay_files: tuple[Path, ...]
+    initial_cash: float
+    capture_not_before: datetime
+    minimum_probability: float = 0.5
+
+
 class DailyWorkflowSpecGenerator:
     """Bind fixed daily inputs and dynamic content-addressed outputs."""
 
-    def generate(
+    def generate(  # noqa: PLR0915 - one complete immutable workflow boundary.
         self,
         *,
         trade_date: date,
         trigger: WorkflowTrigger,
         worker_id: str,
-        planning_spec: Path,
+        planning_spec: Path | None,
         strategy_config: Path,
         breaker_spec: Path | None,
         phase6_spec: Path,
@@ -40,11 +56,18 @@ class DailyWorkflowSpecGenerator:
         freshness_symbol: str = "SPY",
         lease_seconds: int = 900,
         command_timeout_seconds: float = 1800,
+        automated_planning: AutomatedPlanningInputs | None = None,
     ) -> WorkflowRunSpec:
-        planning = planning_spec.resolve()
+        if (planning_spec is None) == (automated_planning is None):
+            raise ValueError("workflow requires exactly one existing or automated planning input")
         strategy = strategy_config.resolve()
         phase6 = phase6_spec.resolve()
         root = artifact_root.resolve() / f"trade_date={trade_date.isoformat()}"
+        planning = (
+            planning_spec.resolve()
+            if planning_spec is not None
+            else root / "scored-live-planning.json"
+        )
         if (breaker_spec is None) == (breaker_session_file is None):
             raise ValueError(
                 "workflow requires exactly one of a fixed breaker spec "
@@ -66,7 +89,11 @@ class DailyWorkflowSpecGenerator:
         evidence_index = evidence_directory / "index.json"
         session_report = root / "replay-session.json"
         phase6_report = root / "phase6-progress.json"
+        live_source = root / "live-source.json"
+        live_source_evidence = root / "live-source-evidence.json"
+        scored_planning_evidence = root / "scored-live-planning-evidence.json"
 
+        freeze_outputs: tuple[Path, ...]
         if breaker_sessions is None:
             assert breakers is not None
             freeze_commands = (
@@ -136,10 +163,136 @@ class DailyWorkflowSpecGenerator:
                 ),
             )
 
+        evaluate_breaker_commands: tuple[QeeCommandSpec, ...] = (evaluate_breaker_command,)
+        generate_order_commands: tuple[QeeCommandSpec, ...] = (
+            QeeCommandSpec(
+                arguments=(
+                    "model",
+                    "plan-live-orders",
+                    "--planning-spec",
+                    str(planning),
+                    "--strategy-config",
+                    str(strategy),
+                    "--output",
+                    str(frozen),
+                    "--paper-batch-output",
+                    str(paper_batch),
+                ),
+            ),
+        )
+        generate_order_outputs: tuple[Path, ...] = (frozen, paper_batch)
+        freeze_not_before = order_controls_not_before
+        if automated_planning is not None:
+            automatic = automated_planning
+            if not automatic.feature_files:
+                raise ValueError("automated planning requires live feature files")
+            capture_arguments = [
+                "model",
+                "capture-live-source",
+                "--trade-date",
+                trade_date.isoformat(),
+                "--candidate-file",
+                str(automatic.candidate_file.resolve()),
+                "--session-file",
+                str(automatic.session_file.resolve()),
+                "--initial-cash",
+                str(automatic.initial_cash),
+                "--minimum-probability",
+                str(automatic.minimum_probability),
+                "--source-output",
+                str(live_source),
+                "--evidence-output",
+                str(live_source_evidence),
+            ]
+            for replay_file in automatic.prior_replay_files:
+                capture_arguments.extend(("--prior-replay-file", str(replay_file.resolve())))
+            freeze_commands = (QeeCommandSpec(arguments=tuple(capture_arguments)),)
+            freeze_outputs = (
+                automatic.candidate_file.resolve(),
+                automatic.session_file.resolve(),
+                automatic.model_evidence.resolve(),
+                automatic.model_file.resolve(),
+                *(path.resolve() for path in automatic.feature_files),
+                *(path.resolve() for path in automatic.prior_replay_files),
+                strategy,
+                phase6,
+                live_source,
+                live_source_evidence,
+            )
+            score_arguments = [
+                "model",
+                "score-live-planning",
+                "--source-spec",
+                str(live_source),
+                "--model-evidence",
+                str(automatic.model_evidence.resolve()),
+                "--model-file",
+                str(automatic.model_file.resolve()),
+                "--planning-output",
+                str(planning),
+                "--evidence-output",
+                str(scored_planning_evidence),
+            ]
+            for feature_file in automatic.feature_files:
+                score_arguments.extend(("--feature-file", str(feature_file.resolve())))
+            generate_order_commands = (
+                QeeCommandSpec(arguments=tuple(score_arguments)),
+                *generate_order_commands,
+            )
+            generate_order_outputs = (
+                planning,
+                scored_planning_evidence,
+                frozen,
+                paper_batch,
+            )
+            freeze_not_before = automatic.capture_not_before
+            if breaker_sessions is not None:
+                prepare_breakers = QeeCommandSpec(
+                    arguments=(
+                        "monitoring",
+                        "prepare-breaker-bundle",
+                        "--control-date",
+                        trade_date.isoformat(),
+                        "--session-file",
+                        str(breaker_sessions),
+                        "--artifact-root",
+                        str(artifact_root.resolve()),
+                        "--output-directory",
+                        str(control_evidence),
+                        "--symbol",
+                        freshness_symbol,
+                    ),
+                    artifact_json_keys=(
+                        "freshness_path",
+                        "reconciliation_age_path",
+                        "breaker_spec_path",
+                    ),
+                )
+                evaluate_breaker_commands = (
+                    prepare_breakers,
+                    QeeCommandSpec(
+                        arguments=(
+                            "monitoring",
+                            "circuit-breakers",
+                            "--output",
+                            str(breaker_decision),
+                        ),
+                        artifact_bindings=(
+                            ArtifactArgumentBinding(
+                                source_stage=WorkflowStage.EVALUATE_BREAKERS,
+                                option="--spec-file",
+                                file_glob="breaker-controls-*.json",
+                                path_contains=("control-evidence",),
+                                maximum_matches=1,
+                            ),
+                        ),
+                    ),
+                )
+
         stages = (
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.FREEZE_INPUTS,
-                not_before=order_controls_not_before,
+                not_before=freeze_not_before,
                 not_after=order_submission_not_after,
                 maximum_attempts=6,
                 retry_delay_seconds=10,
@@ -153,31 +306,17 @@ class DailyWorkflowSpecGenerator:
                 maximum_attempts=3,
                 retry_delay_seconds=5,
                 maximum_retry_delay_seconds=30,
-                commands=(
-                    QeeCommandSpec(
-                        arguments=(
-                            "model",
-                            "plan-live-orders",
-                            "--planning-spec",
-                            str(planning),
-                            "--strategy-config",
-                            str(strategy),
-                            "--output",
-                            str(frozen),
-                            "--paper-batch-output",
-                            str(paper_batch),
-                        ),
-                    ),
-                ),
-                output_files=(frozen, paper_batch),
+                commands=generate_order_commands,
+                output_files=generate_order_outputs,
             ),
             WorkflowStageCommandSpec(
                 stage=WorkflowStage.EVALUATE_BREAKERS,
+                not_before=order_controls_not_before,
                 not_after=order_submission_not_after,
                 maximum_attempts=6,
                 retry_delay_seconds=10,
                 maximum_retry_delay_seconds=60,
-                commands=(evaluate_breaker_command,),
+                commands=evaluate_breaker_commands,
                 output_files=(breaker_decision,),
             ),
             WorkflowStageCommandSpec(

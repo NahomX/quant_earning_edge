@@ -825,10 +825,11 @@ self-refreshing workflow:
 ```powershell
 uv run qee workflow prepare `
   --trade-date 2026-07-29 `
-  --planning-source .\live-market-observations.json `
+  --candidate-file .\data\gold\event-candidates\for_trade_date=2026-07-29\candidates-<hash>.parquet `
   --model-evidence .\data\models\earnings-v1-production\production-<hash>.json `
   --model-file .\data\models\earnings-v1-production\production-<hash>.txt `
   --feature-file .\data\gold\feature_group=earnings-v1\month=2026-07\part-<hash>.parquet `
+  --prior-replay-file .\workflow-artifacts\trade_date=2026-07-28\replay-session.json `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
   --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
   --proof-start 2026-07-28 `
@@ -842,15 +843,15 @@ uv run qee workflow prepare `
 This writes immutable pre-run workflow-health and Phase 6 aggregation controls
 under the current trade-date artifact directory, includes the deterministic
 future daily report path, and emits the complete inbox specification in one
-idempotent command. The live-safe causal planning input remains an explicit
-upstream artifact; the command does not fabricate signals or performance.
-In automatic mode, the source contains schedule and market observations but
-no probability. The command strictly reloads the content-linked booster,
-requires its exact feature order to match the strategy, selects the requested
-as-of rows from the long-form feature schema, rejects values computed after
-the decision timestamp or mixed input lineage, scores each exact symbol vector,
-and writes both the generated planning JSON and its model/feature lineage.
-`--planning-spec` remains available as an exclusive compatibility mode.
+idempotent command. In worker-time automatic mode, the first stage waits until
+5.5 hours after the authoritative prior close (21:30 ET on a regular session),
+captures paper-account and Polygon decision evidence, and freezes causal
+source lineage. The next stage scores exact feature vectors and freezes linked
+paper/replay orders. The breaker stage independently waits until ten minutes
+before entry, then obtains fresh provider and reconciliation controls before
+submission. Thus an early model decision never weakens pre-open safety
+freshness. `--planning-source` and `--planning-spec` remain exclusive
+compatibility modes.
 
 ```powershell
 uv run qee workflow generate `

@@ -112,6 +112,7 @@ reproducible through `uv.lock`.
 | Phase 4 model-promotion binding | Complete | independently recomputed passing pre-paper gate hash is mandatory in every production model artifact |
 | Automatic live planning scores | Complete | strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities and planning evidence |
 | Provider-backed live source capture | Complete | SIC exposure buckets, frozen prior-close price/ADV, paper-account audit, Polygon NBBO/trade snapshots, replay-chained equity/outcomes |
+| Worker-time capture and scoring | Complete | T-1 decision stage captures providers and freezes scores/orders; pre-open stage independently refreshes breaker controls |
 | Fail-closed proof-start admission | Complete | fresh passing readiness + prior isolated smoke + scheduled spec required before first inbox publication |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
@@ -144,11 +145,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Bind provider-backed live source capture and model scoring directly into the
-restart-safe daily workflow so the worker produces these artifacts at the
-decision boundary. After the credentialed historical/strategy gates pass,
-train the gate-bound production model, use proof-start admission, and begin
-the real 90-session run.
+Close the remaining upstream daily candidate/feature preparation boundary and
+make the persistent worker queue the next authoritative session without an
+operator-authored inbox file. After the credentialed historical/strategy gates
+pass, train the gate-bound production model, use proof-start admission, and
+begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

@@ -100,6 +100,7 @@ from quant_earning_edge.monitoring import (
     write_circuit_breaker_controls,
 )
 from quant_earning_edge.orchestration import (
+    AutomatedPlanningInputs,
     DailyWorkflowRunner,
     DailyWorkflowSpecGenerator,
     DailyWorkflowState,
@@ -2562,7 +2563,7 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
 
 
 @workflow_app.command("prepare")
-def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation boundary.
+def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary.
     trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
     strategy_config: Annotated[
         Path,
@@ -2620,6 +2621,23 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
             help="Live feature artifact; repeat for multiple partitions.",
         ),
     ] = None,
+    candidate_file: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Event candidates for worker-time provider capture and scoring.",
+        ),
+    ] = None,
+    prior_replay_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--prior-replay-file",
+            exists=True,
+            dir_okay=False,
+            help="Clean prior replay report; repeat for the proof history.",
+        ),
+    ] = None,
     freshness_symbol: Annotated[
         str,
         typer.Option(help="Liquid Polygon symbol used by pre-open controls."),
@@ -2662,13 +2680,23 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
                 "--stage-for-admission is only valid for the first scheduled proof session"
             )
         strategy = load_strategy_config(strategy_config)
+        calendar = SessionFileStore.load(session_file)
         artifact_root.mkdir(parents=True, exist_ok=True)
         control_root = (
             artifact_root.resolve()
             / f"trade_date={selected_date.isoformat()}"
             / "control-preparation"
         )
-        scored_inputs = (planning_source, model_evidence, model_file, feature_files)
+        scored_inputs = (
+            planning_source,
+            candidate_file,
+            model_evidence,
+            model_file,
+            feature_files,
+            prior_replay_files,
+        )
+        automated_planning: AutomatedPlanningInputs | None = None
+        selected_session: MarketSession | None = None
         if planning_spec is not None:
             if any(item is not None for item in scored_inputs):
                 raise ValueError(
@@ -2677,7 +2705,7 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
             resolved_planning = planning_spec
             planning = DailyOrderPlanningSpec.model_validate_json(resolved_planning.read_bytes())
             planning_evidence_output: Path | None = None
-        else:
+        elif candidate_file is None:
             if (
                 planning_source is None
                 or model_evidence is None
@@ -2712,9 +2740,74 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
                 evidence_output=planning_evidence_output,
             )
             planning = scored.planning
-        if planning.trade_date != selected_date:
+        else:
+            if planning_source is not None:
+                raise ValueError(
+                    "--candidate-file and --planning-source are exclusive planning modes"
+                )
+            if model_evidence is None or model_file is None or not feature_files:
+                raise ValueError(
+                    "worker-time planning requires --candidate-file, --model-evidence, "
+                    "--model-file, and --feature-file"
+                )
+            model = ProductionModelArtifact.load(
+                evidence_path=model_evidence,
+                model_path=model_file,
+            )
+            if model.feature_names != strategy.features:
+                raise ValueError(
+                    "production model features differ from the workflow strategy config"
+                )
+            LiveSourceCaptureAssembler.candidate_symbols(candidate_file)
+            earlier_sessions = tuple(
+                item for item in calendar.sessions if item.session_date < selected_date
+            )
+            selected_session = next(
+                (item for item in calendar.sessions if item.session_date == selected_date),
+                None,
+            )
+            if selected_session is None or not earlier_sessions:
+                raise ValueError(
+                    "worker-time planning requires the trade and prior authoritative sessions"
+                )
+            capture_not_before = earlier_sessions[-1].close_at + timedelta(
+                hours=5,
+                minutes=30,
+            )
+            if capture_not_before >= selected_session.open_at:
+                raise ValueError("worker-time decision boundary is not before market open")
+            resolved_planning = (
+                artifact_root.resolve()
+                / f"trade_date={selected_date.isoformat()}"
+                / "scored-live-planning.json"
+            )
+            planning_evidence_output = (
+                artifact_root.resolve()
+                / f"trade_date={selected_date.isoformat()}"
+                / "scored-live-planning-evidence.json"
+            )
+            automated_planning = AutomatedPlanningInputs(
+                candidate_file=candidate_file,
+                session_file=session_file,
+                model_evidence=model_evidence,
+                model_file=model_file,
+                feature_files=tuple(feature_files),
+                prior_replay_files=tuple(prior_replay_files or ()),
+                initial_cash=initial_cash,
+                capture_not_before=capture_not_before,
+            )
+            planning = None
+        if planning is not None and planning.trade_date != selected_date:
             raise ValueError("planning spec trade date differs from workflow trade date")
-        calendar = SessionFileStore.load(session_file)
+        if planning is not None:
+            order_controls_at = planning.entry_submitted_at - timedelta(minutes=10)
+            order_submission_expires_at = planning.entry_expires_at
+            market_events_at = planning.exit_expires_at + timedelta(minutes=5)
+        else:
+            assert selected_session is not None
+            order_controls_at = selected_session.open_at - timedelta(minutes=10)
+            order_submission_expires_at = selected_session.open_at + timedelta(minutes=5)
+            market_events_at = selected_session.close_at + timedelta(minutes=6)
         environment = _environment(env_file)
         health_output = control_root / "workflow-health.json"
         phase6_output = control_root / "phase6-controls.json"
@@ -2734,18 +2827,19 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
             trade_date=selected_date,
             trigger=trigger,
             worker_id=worker_id,
-            planning_spec=resolved_planning,
+            planning_spec=(resolved_planning if automated_planning is None else None),
             strategy_config=strategy_config,
             breaker_spec=None,
             phase6_spec=phase6_output,
             artifact_root=artifact_root,
-            order_controls_not_before=(planning.entry_submitted_at - timedelta(minutes=10)),
-            order_submission_not_after=planning.entry_expires_at,
-            market_events_not_before=(planning.exit_expires_at + timedelta(minutes=5)),
+            order_controls_not_before=order_controls_at,
+            order_submission_not_after=order_submission_expires_at,
+            market_events_not_before=market_events_at,
             breaker_session_file=session_file,
             freshness_symbol=freshness_symbol,
             lease_seconds=lease_seconds,
             command_timeout_seconds=command_timeout_seconds,
+            automated_planning=automated_planning,
         )
         spec.write(output)
     except (

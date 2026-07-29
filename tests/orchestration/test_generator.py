@@ -13,8 +13,15 @@ from typer.testing import CliRunner
 from quant_earning_edge.cli import app
 from quant_earning_edge.evaluation import Phase6AggregationSpec
 from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
-from quant_earning_edge.orchestration import WorkflowRunSpec, WorkflowStage
+from quant_earning_edge.orchestration import (
+    AutomatedPlanningInputs,
+    DailyWorkflowSpecGenerator,
+    WorkflowRunSpec,
+    WorkflowStage,
+    WorkflowTrigger,
+)
 from quant_earning_edge.signals import ProductionModelTrainer, load_strategy_config
+from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
 
 
 def _strategy_path() -> Path:
@@ -271,10 +278,15 @@ def test_prepare_cli_builds_phase6_controls_and_self_refreshing_workflow(
                 "provider": "alpaca",
                 "sessions": [
                     {
+                        "session_date": "2026-07-27",
+                        "open_at": "2026-07-27T13:30:00Z",
+                        "close_at": "2026-07-27T20:00:00Z",
+                    },
+                    {
                         "session_date": "2026-07-28",
                         "open_at": "2026-07-28T13:30:00Z",
                         "close_at": "2026-07-28T20:00:00Z",
-                    }
+                    },
                 ],
             }
         ),
@@ -329,6 +341,57 @@ def test_prepare_cli_builds_phase6_controls_and_self_refreshing_workflow(
     phase6 = Phase6AggregationSpec.model_validate_json(Path(payload["phase6_output"]).read_bytes())
     expected_report = artifact_root.resolve() / "trade_date=2026-07-28" / "replay-session.json"
     assert phase6.session_report_files == (expected_report,)
+
+
+def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
+    tmp_path: Path,
+) -> None:
+    _, _, phase6, artifact_root = _inputs(tmp_path)
+    decision_at = datetime(2026, 7, 28, 1, 30, tzinfo=UTC)
+    controls_at = datetime(2026, 7, 28, 13, 20, tzinfo=UTC)
+    session_file = tmp_path / "sessions.json"
+    automated = AutomatedPlanningInputs(
+        candidate_file=tmp_path / "candidates.parquet",
+        session_file=session_file,
+        model_evidence=tmp_path / "production.json",
+        model_file=tmp_path / "production.txt",
+        feature_files=(tmp_path / "features.parquet",),
+        prior_replay_files=(tmp_path / "prior-replay.json",),
+        initial_cash=100_000,
+        capture_not_before=decision_at,
+    )
+
+    spec = DailyWorkflowSpecGenerator().generate(
+        trade_date=date(2026, 7, 28),
+        trigger=WorkflowTrigger.SCHEDULED,
+        worker_id="worker",
+        planning_spec=None,
+        strategy_config=_strategy_path(),
+        breaker_spec=None,
+        phase6_spec=phase6,
+        artifact_root=artifact_root,
+        order_controls_not_before=controls_at,
+        order_submission_not_after=datetime(2026, 7, 28, 13, 35, tzinfo=UTC),
+        market_events_not_before=datetime(2026, 7, 28, 20, 6, tzinfo=UTC),
+        breaker_session_file=session_file,
+        automated_planning=automated,
+    )
+
+    freeze = spec.stages[0]
+    generation = spec.stages[1]
+    breakers = spec.stages[2]
+    assert freeze.not_before == decision_at
+    assert freeze.commands[0].arguments[:2] == ("model", "capture-live-source")
+    assert [command.arguments[:2] for command in generation.commands] == [
+        ("model", "score-live-planning"),
+        ("model", "plan-live-orders"),
+    ]
+    assert breakers.not_before == controls_at
+    assert [command.arguments[:2] for command in breakers.commands] == [
+        ("monitoring", "prepare-breaker-bundle"),
+        ("monitoring", "circuit-breakers"),
+    ]
+    assert breakers.commands[1].artifact_bindings[0].source_stage is breakers.stage
 
 
 def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
@@ -405,10 +468,15 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
                 "provider": "alpaca",
                 "sessions": [
                     {
+                        "session_date": "2026-07-27",
+                        "open_at": "2026-07-27T13:30:00Z",
+                        "close_at": "2026-07-27T20:00:00Z",
+                    },
+                    {
                         "session_date": "2026-07-28",
                         "open_at": "2026-07-28T13:30:00Z",
                         "close_at": "2026-07-28T20:00:00Z",
-                    }
+                    },
                 ],
             }
         ),
@@ -461,3 +529,54 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
     assert Path(payload["planning_evidence_output"]).exists()
     workflow = WorkflowRunSpec.model_validate_json(output.read_bytes())
     assert Path(payload["planning_output"]).resolve() in workflow.stages[0].output_files
+
+    candidates = tmp_path / "candidates.parquet"
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
+        candidates,
+    )
+    automated_output = tmp_path / "staging" / "automated-2026-07-28.json"
+    automated_result = CliRunner().invoke(
+        app,
+        [
+            "workflow",
+            "prepare",
+            "--trade-date",
+            "2026-07-28",
+            "--candidate-file",
+            str(candidates),
+            "--model-evidence",
+            str(model_evidence),
+            "--model-file",
+            str(model_file),
+            "--feature-file",
+            str(features),
+            "--strategy-config",
+            str(_strategy_path()),
+            "--session-file",
+            str(session_file),
+            "--proof-start",
+            "2026-07-28",
+            "--proof-end",
+            "2026-07-28",
+            "--initial-cash",
+            "100000",
+            "--artifact-root",
+            str(artifact_root),
+            "--output",
+            str(automated_output),
+            "--worker-id",
+            "paper-worker-1",
+            "--stage-for-admission",
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert automated_result.exit_code == 0
+    automated_workflow = WorkflowRunSpec.model_validate_json(automated_output.read_bytes())
+    assert automated_workflow.stages[0].commands[0].arguments[:2] == (
+        "model",
+        "capture-live-source",
+    )
+    assert automated_workflow.stages[0].not_before == datetime(2026, 7, 28, 1, 30, tzinfo=UTC)

@@ -40,6 +40,7 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
             ("universe", "build"),
             ("universe", "events"),
             ("features", "compute"),
+            ("model", "capture-live-source"),
             ("monitoring", "prepare-breaker-bundle"),
         }
     ),
@@ -47,9 +48,15 @@ _ALLOWED_PREFIXES: dict[WorkflowStage, frozenset[tuple[str, str]]] = {
         {
             ("model", "plan-event-backtest"),
             ("model", "plan-live-orders"),
+            ("model", "score-live-planning"),
         }
     ),
-    WorkflowStage.EVALUATE_BREAKERS: frozenset({("monitoring", "circuit-breakers")}),
+    WorkflowStage.EVALUATE_BREAKERS: frozenset(
+        {
+            ("monitoring", "circuit-breakers"),
+            ("monitoring", "prepare-breaker-bundle"),
+        }
+    ),
     WorkflowStage.SUBMIT_PAPER_ORDERS: frozenset(
         {
             ("paper", "submit-batch"),

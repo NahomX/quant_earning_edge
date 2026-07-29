@@ -195,3 +195,44 @@ def test_queue_stages_zero_candidate_proof_start_without_fake_features(
     assert "--feature-file" not in calls[0]
     assert repeated.status is WorkflowQueueStatus.ADMISSION_REQUIRED
     assert len(calls) == 1
+
+
+def test_queue_invokes_provider_input_preparation_before_staging(
+    tmp_path: Path,
+) -> None:
+    lake, loop_spec, inbox = _deployment(tmp_path)
+    raw = json.loads(loop_spec.read_bytes())
+    raw["universe_config"] = str(_strategy_path().parents[1] / "universe" / "default.yaml")
+    halt_directory = tmp_path / "halts"
+    halt_directory.mkdir()
+    raw["halt_snapshot_directory"] = str(halt_directory)
+    loop_spec.write_text(json.dumps(raw), encoding="utf-8")
+    (halt_directory / "halt-2026-07-27.json").write_text("{}", encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def execute(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        timeout_seconds: float,
+    ) -> QeeCommandResult:
+        if "prepare-session-inputs" in argv:
+            calls.append(argv)
+            root = lake / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
+            root.mkdir(parents=True)
+            pq.write_table(  # type: ignore[no-untyped-call]
+                pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
+                root / "candidates-empty.parquet",
+            )
+            return QeeCommandResult(return_code=0, stdout="{}")
+        return _executor(calls)(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    result = NextWorkflowQueuer(
+        data_lake_root=lake,
+        clock=lambda: datetime(2026, 7, 28, 1, 30, tzinfo=UTC),
+        executor=execute,
+    ).run_once(loop_spec=loop_spec, inbox=inbox)
+
+    assert result.status is WorkflowQueueStatus.ADMISSION_REQUIRED
+    assert "prepare-session-inputs" in calls[0]
+    assert "--stage-for-admission" in calls[1]

@@ -81,6 +81,7 @@ class EarningsIngestor:
         artifacts = self._silver_writer.write_earnings(
             events,
             ingested_at=ingested_at,
+            empty_partition_date=end_date,
         )
         return EarningsIngestionResult(
             start_date=start_date,
@@ -142,10 +143,15 @@ class CorporateActionsIngestor:
         """Ingest both corporate-action datasets for one inclusive interval."""
         splits = self._client.stock_splits(start_date=start_date, end_date=end_date)
         dividends = self._client.cash_dividends(start_date=start_date, end_date=end_date)
-        split_artifacts = self._silver_writer.write_splits(splits, ingested_at=ingested_at)
+        split_artifacts = self._silver_writer.write_splits(
+            splits,
+            ingested_at=ingested_at,
+            empty_partition_date=end_date,
+        )
         dividend_artifacts = self._silver_writer.write_dividends(
             dividends,
             ingested_at=ingested_at,
+            empty_partition_date=end_date,
         )
         return CorporateActionsIngestionResult(
             start_date=start_date,

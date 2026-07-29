@@ -1,8 +1,10 @@
 {
   "artifact_root": "../../workflow-artifacts",
+  "bar_lookback_calendar_days": 450,
   "command_timeout_seconds": 1800,
   "feature_group": "earnings-v1",
   "freshness_symbol": "SPY",
+  "halt_snapshot_directory": "../../data/control-inputs/halts",
   "initial_cash": 100000,
   "lease_seconds": 900,
   "model_evidence": "../../data/models/earnings-v1-production/production-<hash>.json",
@@ -13,5 +15,6 @@
   "session_file": "../../data/manifests/market-calendar/sessions-<hash>.json",
   "staging_directory": "../../workflow-staging",
   "strategy_config": "../strategies/earnings_v1.yaml",
+  "universe_config": "../universe/default.yaml",
   "worker_id": "paper-worker-1"
 }

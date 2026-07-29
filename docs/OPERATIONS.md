@@ -843,15 +843,15 @@ uv run qee workflow prepare `
 This writes immutable pre-run workflow-health and Phase 6 aggregation controls
 under the current trade-date artifact directory, includes the deterministic
 future daily report path, and emits the complete inbox specification in one
-idempotent command. In worker-time automatic mode, the first stage waits until
-5.5 hours after the authoritative prior close (21:30 ET on a regular session),
-captures paper-account and Polygon decision evidence, and freezes causal
-source lineage. The next stage scores exact feature vectors and freezes linked
-paper/replay orders. The breaker stage independently waits until ten minutes
-before entry, then obtains fresh provider and reconciliation controls before
-submission. Thus an early model decision never weakens pre-open safety
-freshness. `--planning-source` and `--planning-spec` remain exclusive
-compatibility modes.
+idempotent command. In worker-time automatic mode, the upstream loop freezes
+the universe and earnings candidates after 21:00 ET, then waits until 09:10 ET
+to capture completed pre-market observations and compute the final feature
+vector. The first workflow stage then captures paper-account and Polygon
+decision evidence and freezes causal source lineage; the next stage scores
+exact feature vectors and freezes linked paper/replay orders. The breaker
+stage independently waits until ten minutes before entry, then obtains fresh
+provider and reconciliation controls before submission. `--planning-source`
+and `--planning-spec` remain exclusive compatibility modes.
 
 ```powershell
 uv run qee workflow generate `
@@ -1010,6 +1010,18 @@ outside the inbox for `admit-proof-start`; after admission, later sessions are
 queued automatically. Missing inputs produce a visible `waiting_for_inputs`
 heartbeat and no synthetic substitute. A valid zero-candidate earnings day is
 queued without a fake feature artifact.
+
+When `universe_config` and `halt_snapshot_directory` are present in the loop
+spec, the same cycle also runs `workflow prepare-session-inputs`. The halt
+directory must contain the retained authoritative file
+`halt-YYYY-MM-DD.json` for the prior session. After 21:00 ET the command ingests
+the current Finnhub earnings interval and Polygon corporate actions, writes
+explicit empty silver partitions when a provider validly reports no events,
+builds the scheduled universe and event candidates, and persists all lineage.
+For non-empty candidates it waits until 20 minutes before the authoritative
+open, fetches adjusted daily history and completed pre-market minutes, and
+writes the exact strategy feature vector. It fails after the ten-minute
+pre-open safety boundary rather than submitting from a late model decision.
 
 Before starting a real unattended proof, run the fail-closed deployment audit:
 

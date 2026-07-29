@@ -101,6 +101,7 @@ from quant_earning_edge.monitoring import (
 )
 from quant_earning_edge.orchestration import (
     AutomatedPlanningInputs,
+    DailyInputPreparer,
     DailyWorkflowRunner,
     DailyWorkflowSpecGenerator,
     DailyWorkflowState,
@@ -2384,6 +2385,105 @@ def _frozen_paper_reconciliation(
             session_date=frozen.trade_date,
             evaluated_at=evaluated_at,
         )
+
+
+@workflow_app.command("prepare-session-inputs")
+def prepare_session_inputs(  # noqa: PLR0917 - explicit causal input contract.
+    trade_date: Annotated[str, typer.Option(help="Target proof session (YYYY-MM-DD).")],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative proof sessions."),
+    ],
+    halt_snapshot_file: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Authoritative prior-close halt snapshot.",
+        ),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated strategy YAML."),
+    ],
+    universe_config: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Validated daily-universe YAML.",
+        ),
+    ] = Path("configs/universe/default.yaml"),
+    feature_group: Annotated[
+        str,
+        typer.Option(help="Gold feature-group partition for live vectors."),
+    ] = "earnings-v1",
+    bar_lookback_calendar_days: Annotated[
+        int,
+        typer.Option(min=365, max=730, help="Daily-bar history fetched per candidate."),
+    ] = 450,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Advance provider-backed T-1 candidates and pre-open live features."""
+    environment = _environment(env_file)
+    selected_date = _parse_date(trade_date, option="--trade-date")
+    try:
+        strategy = load_strategy_config(strategy_config)
+        layout = LakehouseLayout(environment.data_lake_root)
+        polygon_key = environment.require_polygon_api_key()
+        finnhub_key = environment.require_finnhub_api_key()
+        with (
+            httpx.Client(
+                base_url=environment.polygon_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as polygon_http,
+            httpx.Client(
+                base_url=environment.finnhub_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as finnhub_http,
+        ):
+            result = DailyInputPreparer(
+                layout=layout,
+                polygon=PolygonClient(
+                    api_key=polygon_key,
+                    http_client=polygon_http,
+                    bronze_writer=BronzeWriter(layout),
+                ),
+                finnhub=FinnhubClient(
+                    api_key=finnhub_key,
+                    http_client=finnhub_http,
+                    bronze_writer=BronzeWriter(layout),
+                ),
+                clock=lambda: datetime.now(UTC),
+            ).run(
+                trade_date=selected_date,
+                session_file=session_file,
+                halt_snapshot_file=halt_snapshot_file,
+                universe_config_file=universe_config,
+                feature_names=strategy.features,
+                feature_group=feature_group,
+                bar_lookback_calendar_days=bar_lookback_calendar_days,
+            )
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="daily session inputs") from error
+    _echo_json(
+        {
+            "status": result.status,
+            "trade_date": result.trade_date,
+            "candidate_file": (
+                str(result.candidate_file) if result.candidate_file is not None else None
+            ),
+            "feature_file": (str(result.feature_file) if result.feature_file is not None else None),
+            "candidate_count": result.candidate_count,
+            "detail": result.detail,
+        }
+    )
 
 
 @workflow_app.command("run")

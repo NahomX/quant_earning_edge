@@ -108,6 +108,38 @@ def test_ingestion_writes_bronze_and_partitioned_silver(tmp_path: Path) -> None:
     assert dividend_row == ("MSFT", 0.75)
 
 
+def test_empty_corporate_action_responses_write_both_audit_partitions(
+    tmp_path: Path,
+) -> None:
+    layout = LakehouseLayout(tmp_path)
+    with httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"status": "OK", "results": []})
+        ),
+    ) as http_client:
+        result = CorporateActionsIngestor(
+            client=PolygonClient(
+                api_key="secret",
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ),
+            silver_writer=SilverWriter(layout),
+        ).ingest(
+            start_date=date(2026, 7, 28),
+            end_date=date(2026, 7, 28),
+            ingested_at=datetime(2026, 7, 27, 22, tzinfo=UTC),
+        )
+
+    assert result.split_count == result.dividend_count == 0
+    assert len(result.silver_artifacts) == 2
+    assert {item.schema for item in result.silver_artifacts} == {
+        SPLITS_SCHEMA,
+        DIVIDENDS_SCHEMA,
+    }
+    assert all(item.row_count == 0 for item in result.silver_artifacts)
+
+
 def test_silver_views_fail_when_required_dataset_is_missing(tmp_path: Path) -> None:
     with DuckDBStore() as store, pytest.raises(FileNotFoundError, match="earnings_events"):
         store.register_silver_views(

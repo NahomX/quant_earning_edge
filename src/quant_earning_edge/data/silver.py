@@ -172,8 +172,9 @@ class SilverWriter:
         events: tuple[EarningsEvent, ...],
         *,
         ingested_at: datetime | None = None,
+        empty_partition_date: date | None = None,
     ) -> tuple[SilverArtifact, ...]:
-        """Write one immutable file per event-date partition."""
+        """Write event partitions or one explicit empty-observation partition."""
         observed_at = ingested_at or datetime.now(UTC)
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("ingested_at must be timezone-aware")
@@ -182,6 +183,8 @@ class SilverWriter:
         grouped: dict[date, list[EarningsEvent]] = defaultdict(list)
         for event in events:
             grouped[event.event_date].append(event)
+        if not grouped and empty_partition_date is not None:
+            grouped[empty_partition_date] = []
 
         artifacts = [
             self._write_earnings_partition(
@@ -226,12 +229,15 @@ class SilverWriter:
         events: tuple[StockSplit, ...],
         *,
         ingested_at: datetime | None = None,
+        empty_partition_date: date | None = None,
     ) -> tuple[SilverArtifact, ...]:
-        """Write one immutable split file per execution-date partition."""
+        """Write split partitions or one explicit empty-observation partition."""
         observed_at = self._observed_at(ingested_at)
         grouped: dict[date, list[StockSplit]] = defaultdict(list)
         for event in events:
             grouped[event.execution_date].append(event)
+        if not grouped and empty_partition_date is not None:
+            grouped[empty_partition_date] = []
         return tuple(
             self._write_split_partition(
                 execution_date=execution_date,
@@ -285,12 +291,15 @@ class SilverWriter:
         events: tuple[CashDividend, ...],
         *,
         ingested_at: datetime | None = None,
+        empty_partition_date: date | None = None,
     ) -> tuple[SilverArtifact, ...]:
-        """Write one immutable dividend file per ex-date partition."""
+        """Write dividend partitions or one explicit empty-observation partition."""
         observed_at = self._observed_at(ingested_at)
         grouped: dict[date, list[CashDividend]] = defaultdict(list)
         for event in events:
             grouped[event.ex_dividend_date].append(event)
+        if not grouped and empty_partition_date is not None:
+            grouped[empty_partition_date] = []
         return tuple(
             self._write_dividend_partition(
                 ex_dividend_date=ex_dividend_date,

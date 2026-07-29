@@ -72,8 +72,8 @@ paper/replay reconciliation, and fail-closed circuit breakers are implemented;
 the real 90-session proof has not started. The credentialed historical
 backfill, real-data strategy evaluation, and unattended operational gates
 remain pending observation, while the persistent restart-safe worker and its
-non-secret health evidence, state-driven next-session proof queue, complete
-eight-stage run-spec generator, and post-close pending/resume boundary are
-implemented. See
+non-secret health evidence, provider-backed daily candidate/feature builder,
+state-driven next-session proof queue, complete eight-stage run-spec generator,
+and post-close pending/resume boundary are implemented. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

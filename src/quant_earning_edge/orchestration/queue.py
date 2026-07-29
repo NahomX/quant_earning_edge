@@ -71,7 +71,10 @@ class WorkflowLoopSpec(BaseModel):
     artifact_root: Path
     staging_directory: Path
     worker_id: str = Field(min_length=1)
+    universe_config: Path | None = None
+    halt_snapshot_directory: Path | None = None
     feature_group: str = Field(default="earnings-v1", min_length=1)
+    bar_lookback_calendar_days: int = Field(default=450, ge=365, le=730)
     freshness_symbol: str = Field(default="SPY", min_length=1)
     lease_seconds: int = Field(default=900, ge=1, le=3600)
     command_timeout_seconds: float = Field(default=1800, gt=0, le=7200)
@@ -84,6 +87,10 @@ class WorkflowLoopSpec(BaseModel):
             raise ValueError("workflow loop proof_end precedes proof_start")
         if not self.worker_id.strip():
             raise ValueError("workflow loop worker_id must not be blank")
+        if (self.universe_config is None) != (self.halt_snapshot_directory is None):
+            raise ValueError(
+                "workflow loop universe_config and halt_snapshot_directory are required together"
+            )
         return self
 
     @classmethod
@@ -91,17 +98,20 @@ class WorkflowLoopSpec(BaseModel):
         """Load a loop spec and resolve deployment paths against its directory."""
         spec = cls.model_validate_json(path.read_bytes())
         base = path.resolve().parent
-        updates = {
-            field: _resolve(getattr(spec, field), relative_to=base)
-            for field in (
-                "session_file",
-                "strategy_config",
-                "model_evidence",
-                "model_file",
-                "artifact_root",
-                "staging_directory",
-            )
-        }
+        updates = {}
+        for field in (
+            "session_file",
+            "strategy_config",
+            "model_evidence",
+            "model_file",
+            "artifact_root",
+            "staging_directory",
+            "universe_config",
+            "halt_snapshot_directory",
+        ):
+            value = getattr(spec, field)
+            if value is not None:
+                updates[field] = _resolve(value, relative_to=base)
         return spec.model_copy(update=updates)
 
 
@@ -120,7 +130,7 @@ class NextWorkflowQueuer:
         self._clock = clock
         self._executor = executor
 
-    def run_once(  # noqa: PLR0911 - each status is a distinct fail-closed boundary.
+    def run_once(  # noqa: PLR0911,PLR0912 - distinct fail-closed queue boundaries.
         self,
         *,
         loop_spec: Path,
@@ -196,6 +206,25 @@ class NextWorkflowQueuer:
                     detail="the authoritative prior session has not closed",
                 )
             candidate_file = self._candidate_file(trade_date)
+            if candidate_file is None and deployment.universe_config is not None:
+                halt_file = self._halt_file(
+                    deployment,
+                    prior_date=prior_session.session_date,
+                )
+                if halt_file is None:
+                    return WorkflowQueueResult(
+                        status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
+                        trade_date=trade_date,
+                        workflow_spec=None,
+                        detail="the authoritative prior-close halt snapshot is not available",
+                    )
+                self._advance_upstream(
+                    deployment=deployment,
+                    trade_date=trade_date,
+                    halt_snapshot_file=halt_file,
+                    working_directory=loop_spec.resolve().parent,
+                )
+                candidate_file = self._candidate_file(trade_date)
             if candidate_file is None:
                 return WorkflowQueueResult(
                     status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
@@ -212,6 +241,32 @@ class NextWorkflowQueuer:
                 observed_at=now,
                 target_open=session.open_at,
             )
+            if symbols and not feature_files and deployment.universe_config is not None:
+                halt_file = self._halt_file(
+                    deployment,
+                    prior_date=prior_session.session_date,
+                )
+                if halt_file is None:
+                    return WorkflowQueueResult(
+                        status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
+                        trade_date=trade_date,
+                        workflow_spec=None,
+                        detail="the retained prior-close halt snapshot is not available",
+                    )
+                self._advance_upstream(
+                    deployment=deployment,
+                    trade_date=trade_date,
+                    halt_snapshot_file=halt_file,
+                    working_directory=loop_spec.resolve().parent,
+                )
+                feature_files = self._feature_files(
+                    feature_group=deployment.feature_group,
+                    asof_date=prior_session.session_date,
+                    symbols=symbols,
+                    feature_names=model.feature_names,
+                    observed_at=self._aware_now(),
+                    target_open=session.open_at,
+                )
             if symbols and not feature_files:
                 return WorkflowQueueResult(
                     status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
@@ -439,6 +494,56 @@ class NextWorkflowQueuer:
         if result.return_code:
             detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
             raise RuntimeError(f"workflow prepare exited {result.return_code}: {detail[:1000]}")
+
+    def _advance_upstream(
+        self,
+        *,
+        deployment: WorkflowLoopSpec,
+        trade_date: date,
+        halt_snapshot_file: Path,
+        working_directory: Path,
+    ) -> None:
+        assert deployment.universe_config is not None
+        result = self._executor(
+            (
+                sys.executable,
+                "-m",
+                "quant_earning_edge.cli",
+                "workflow",
+                "prepare-session-inputs",
+                "--trade-date",
+                trade_date.isoformat(),
+                "--session-file",
+                str(deployment.session_file),
+                "--halt-snapshot-file",
+                str(halt_snapshot_file),
+                "--strategy-config",
+                str(deployment.strategy_config),
+                "--universe-config",
+                str(deployment.universe_config),
+                "--feature-group",
+                deployment.feature_group,
+                "--bar-lookback-calendar-days",
+                str(deployment.bar_lookback_calendar_days),
+            ),
+            cwd=working_directory,
+            timeout_seconds=deployment.command_timeout_seconds,
+        )
+        if result.return_code:
+            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(
+                f"daily input preparation exited {result.return_code}: {detail[:1000]}"
+            )
+
+    @staticmethod
+    def _halt_file(
+        deployment: WorkflowLoopSpec,
+        *,
+        prior_date: date,
+    ) -> Path | None:
+        assert deployment.halt_snapshot_directory is not None
+        path = deployment.halt_snapshot_directory.resolve() / f"halt-{prior_date.isoformat()}.json"
+        return path if path.is_file() else None
 
     @staticmethod
     def _validate_daily_spec(path: Path, *, trade_date: date) -> None:

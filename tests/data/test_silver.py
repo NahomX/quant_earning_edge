@@ -157,6 +157,33 @@ def test_earnings_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> 
     assert silver.column("symbol").to_pylist() == ["AAPL"]
 
 
+def test_empty_earnings_response_writes_explicit_audit_partition(tmp_path: Path) -> None:
+    http_client = httpx.Client(
+        base_url="https://finnhub.io/api/v1",
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"earningsCalendar": []})),
+    )
+    layout = LakehouseLayout(tmp_path)
+    with http_client:
+        result = EarningsIngestor(
+            client=FinnhubClient(
+                api_key="test-key",
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            ),
+            silver_writer=SilverWriter(layout),
+        ).ingest(
+            start_date=date(2026, 7, 27),
+            end_date=date(2026, 7, 28),
+            ingested_at=datetime(2026, 7, 27, 22, tzinfo=UTC),
+        )
+
+    assert result.event_count == 0
+    assert len(result.silver_artifacts) == 1
+    assert result.silver_artifacts[0].row_count == 0
+    assert "date=2026-07-28" in result.silver_artifacts[0].path.as_posix()
+    assert pq.read_schema(result.silver_artifacts[0].path) == EARNINGS_SCHEMA  # type: ignore[no-untyped-call]
+
+
 def test_daily_bars_writer_uses_schema_partitions_and_is_idempotent(tmp_path: Path) -> None:
     writer = SilverWriter(LakehouseLayout(tmp_path))
     ingested_at = datetime(2026, 7, 27, 18, tzinfo=UTC)

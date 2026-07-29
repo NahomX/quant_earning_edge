@@ -269,27 +269,49 @@ Integer-share rounding is always downward. The resulting plan enforces at most
 5% per position, 20% per sector, and 50% gross exposure. The effective weights
 can therefore be slightly below caps but never above them.
 
-## Train purged LightGBM folds
+## Tune and train purged LightGBM folds
 
 After assembling training partitions and writing the matching split plan:
 
 ```powershell
+uv run qee model tune-walkforward `
+  --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
+  --split-plan .\data\manifests\backtest\walk-forward.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --study-database .\data\models\earnings-v1\optuna.sqlite3 `
+  --output .\data\models\earnings-v1\optuna-study.json
+
 uv run qee model train-walkforward `
   --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
   --split-plan .\data\manifests\backtest\walk-forward.json `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --hyperparameter-study .\data\models\earnings-v1\optuna-study.json `
   --output-dir .\data\models\earnings-v1
 ```
 
-The command hashes every dataset before parsing and requires exact agreement
-with the split plan. Each fold reserves the latest 20% of its training sessions
-for early stopping and purges an additional five sessions plus overlapping
-label horizons before that validation block. The declared test indices are
-used only for OOS probabilities and realized-label evidence.
+The tuning command runs the strategy-configured Optuna trial count (capped at
+200) with a seeded TPE sampler and median pruner. It can resume the exact study
+from SQLite. Each objective evaluation fits only the purged inner-training
+rows, ranks the inner-validation candidates by probability, takes at most the
+configured top-K candidates above 0.5, and maximizes mean annualized validation
+Sharpe across folds. Outer test indices never participate in parameter
+selection.
+
+Both commands hash every dataset before parsing and require exact agreement
+with the split plan. The immutable study artifact records every completed or
+pruned trial, package versions, complete training contract, winner, selected
+parameters, and their hashes. Training rejects a study from different data,
+plan, feature order, label, threshold, seed, top-K, or trial count.
+
+Each fold reserves the latest 20% of its training sessions for early stopping
+and purges an additional five sessions plus overlapping label horizons before
+that validation block. The declared outer test indices are used only for OOS
+probabilities and realized-label evidence.
 
 Every booster is stored separately under its model hash. Canonical run JSON
 records the plan and dataset hashes, exact feature order, threshold, seed,
-LightGBM version, best iterations, partition counts, and OOS row keys.
+Optuna study and parameter hashes, LightGBM version, best iterations, partition
+counts, and OOS row keys.
 Each fold also records mean absolute SHAP contribution per feature, calculated
 only from that fold's OOS rows. The expected feature-plus-bias contribution
 shape is validated before evidence is written.
@@ -304,6 +326,8 @@ uv run qee model train-production `
   --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
   --training-cutoff 2026-07-28 `
   --phase4-gate .\data\evaluation\phase4-gate.json `
+  --split-plan .\data\manifests\backtest\walk-forward.json `
+  --hyperparameter-study .\data\models\earnings-v1\optuna-study.json `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
   --output-dir .\data\models\earnings-v1-production
 ```
@@ -314,6 +338,10 @@ stopping, with five sessions and overlapping label horizons purged before
 that block. The command writes a content-addressed booster and canonical
 evidence containing the source hashes, exact feature order, causal date
 boundaries, partition counts, seed, LightGBM version, and model hash.
+The exact Optuna-selected parameters and immutable study SHA-256 are embedded
+as well. Production refitting rejects any study that does not match the
+dataset, split plan, and current strategy configuration. The continuous proof
+queue rejects production artifacts without this study binding.
 The command independently recomputes the documented Phase 4 research and
 pre-paper thresholds from canonical report metrics. A false or inconsistent
 verdict is rejected; the passing report SHA-256 is embedded in the model

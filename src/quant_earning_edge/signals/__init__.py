@@ -7,6 +7,12 @@ from quant_earning_edge.signals.event_trades import (
     EventTradePlanningSpec,
     PlannedEventTrades,
 )
+from quant_earning_edge.signals.hyperparameter_search import (
+    OptunaLightgbmSearch,
+    OptunaStudyArtifact,
+    OptunaTrialEvidence,
+)
+from quant_earning_edge.signals.lgbm_hyperparameters import LightgbmHyperparameters
 from quant_earning_edge.signals.lgbm_model import (
     FeatureAttribution,
     FoldModelResult,
@@ -52,6 +58,7 @@ __all__ = [
     "FeatureAttribution",
     "FoldModelResult",
     "FrozenDailyOrders",
+    "LightgbmHyperparameters",
     "LightgbmWalkForwardTrainer",
     "LiveCandidateSpec",
     "LiveMarketObservationSpec",
@@ -63,6 +70,9 @@ __all__ = [
     "MomentumPrice",
     "MomentumSignal",
     "OosPrediction",
+    "OptunaLightgbmSearch",
+    "OptunaStudyArtifact",
+    "OptunaTrialEvidence",
     "PlannedEventTrades",
     "ProductionModelArtifact",
     "ProductionModelTrainer",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -13,10 +13,7 @@ from typer.testing import CliRunner
 from quant_earning_edge.backtest import WalkForwardConfig, WalkForwardPlanner
 from quant_earning_edge.cli import app
 from quant_earning_edge.features import FEATURE_REGISTRY
-from quant_earning_edge.signals import LightgbmWalkForwardTrainer
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from quant_earning_edge.signals import LightgbmHyperparameters, LightgbmWalkForwardTrainer
 
 
 def _dataset(path: Path) -> None:
@@ -90,6 +87,34 @@ def test_walk_forward_models_and_oos_predictions_are_deterministic(tmp_path: Pat
     assert len(evidence) == 1
     assert len(models) == len(first.folds)
     assert json.loads(evidence[0].read_text(encoding="utf-8"))["seed"] == 20260427
+    assert first.hyperparameters_sha256 == first.hyperparameters.sha256
+
+
+def test_walk_forward_run_binds_custom_hyperparameters(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    _dataset(dataset)
+    plan = WalkForwardPlanner().build(
+        (dataset,),
+        config=WalkForwardConfig(40, 10, 5),
+    )
+    hyperparameters = LightgbmHyperparameters(
+        n_estimators=300,
+        learning_rate=0.05,
+        num_leaves=7,
+        min_child_samples=10,
+        reg_alpha=0.25,
+        reg_lambda=2.0,
+        colsample_bytree=0.75,
+    )
+    run = LightgbmWalkForwardTrainer(
+        feature_names=tuple(item.name for item in FEATURE_REGISTRY.values()),
+        early_stopping_rounds=10,
+        hyperparameters=hyperparameters,
+    ).run(dataset_files=(dataset,), plan=plan)
+
+    assert run.hyperparameters == hyperparameters
+    assert run.hyperparameters_sha256 == hyperparameters.sha256
+    assert json.loads(run.evidence_json_bytes())["hyperparameters"]["num_leaves"] == 7
 
 
 def test_dataset_hash_mismatch_is_rejected(tmp_path: Path) -> None:
@@ -117,10 +142,39 @@ def test_walk_forward_training_cli_persists_models(tmp_path: Path) -> None:
     dataset = tmp_path / "training.parquet"
     plan_path = tmp_path / "plan.json"
     output = tmp_path / "models"
+    strategy_config = tmp_path / "strategy.yaml"
+    study_database = tmp_path / "study.sqlite3"
+    study_output = tmp_path / "study.json"
     _dataset(dataset)
     planner = WalkForwardPlanner()
     plan = planner.build((dataset,), config=WalkForwardConfig(40, 10, 5))
     planner.write(plan, plan_path)
+    strategy_config.write_text(
+        (
+            Path("configs/strategies/earnings_v1.yaml")
+            .read_text(encoding="utf-8")
+            .replace("n_trials: 200", "n_trials: 1")
+        ),
+        encoding="utf-8",
+    )
+
+    tune_result = CliRunner().invoke(
+        app,
+        [
+            "model",
+            "tune-walkforward",
+            "--dataset-file",
+            str(dataset),
+            "--split-plan",
+            str(plan_path),
+            "--strategy-config",
+            str(strategy_config),
+            "--study-database",
+            str(study_database),
+            "--output",
+            str(study_output),
+        ],
+    )
 
     result = CliRunner().invoke(
         app,
@@ -132,14 +186,20 @@ def test_walk_forward_training_cli_persists_models(tmp_path: Path) -> None:
             "--split-plan",
             str(plan_path),
             "--strategy-config",
-            "configs/strategies/earnings_v1.yaml",
+            str(strategy_config),
+            "--hyperparameter-study",
+            str(study_output),
             "--output-dir",
             str(output),
         ],
     )
 
+    assert tune_result.exit_code == 0, tune_result.stdout
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["fold_count"] == 2
     assert payload["prediction_count"] == 40
+    assert (
+        payload["hyperparameter_study_sha256"] == json.loads(tune_result.stdout)["artifact_sha256"]
+    )
     assert len(tuple(output.glob("fold-*.txt"))) == 2

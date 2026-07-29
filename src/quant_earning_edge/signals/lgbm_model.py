@@ -12,6 +12,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from quant_earning_edge.signals.lgbm_hyperparameters import LightgbmHyperparameters
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import date
@@ -63,6 +65,9 @@ class WalkForwardModelRun:
     label_name: str
     threshold: float
     seed: int
+    hyperparameter_study_sha256: str | None
+    hyperparameters: LightgbmHyperparameters
+    hyperparameters_sha256: str
     lightgbm_version: str
     folds: tuple[FoldModelResult, ...]
 
@@ -94,6 +99,8 @@ class LightgbmWalkForwardTrainer:
         threshold: float = 0.0,
         seed: int = 20260427,
         early_stopping_rounds: int = 50,
+        hyperparameters: LightgbmHyperparameters | None = None,
+        hyperparameter_study_sha256: str | None = None,
     ) -> None:
         names = tuple(feature_names)
         if not names or len(names) > 20 or len(set(names)) != len(names):
@@ -111,6 +118,10 @@ class LightgbmWalkForwardTrainer:
         self._threshold = threshold
         self._seed = seed
         self._early_stopping_rounds = early_stopping_rounds
+        self._hyperparameters = hyperparameters or LightgbmHyperparameters()
+        if hyperparameter_study_sha256 is not None and not _is_sha256(hyperparameter_study_sha256):
+            raise ValueError("hyperparameter study SHA-256 is invalid")
+        self._hyperparameter_study_sha256 = hyperparameter_study_sha256
 
     def run(
         self,
@@ -153,6 +164,9 @@ class LightgbmWalkForwardTrainer:
             label_name=self._label_name,
             threshold=self._threshold,
             seed=self._seed,
+            hyperparameter_study_sha256=self._hyperparameter_study_sha256,
+            hyperparameters=self._hyperparameters,
+            hyperparameters_sha256=self._hyperparameters.sha256,
             lightgbm_version=str(_import_lightgbm().__version__),
             folds=folds,
         )
@@ -179,12 +193,8 @@ class LightgbmWalkForwardTrainer:
         lgb = _import_lightgbm()
         model = lgb.LGBMClassifier(
             objective="binary",
-            n_estimators=1_000,
-            learning_rate=0.03,
-            num_leaves=15,
-            reg_lambda=1.0,
+            **self._hyperparameters.classifier_kwargs(),
             subsample=1.0,
-            colsample_bytree=1.0,
             random_state=self._seed,
             deterministic=True,
             force_col_wise=True,
@@ -314,3 +324,7 @@ def _import_lightgbm() -> Any:
             "LightGBM is required; install the project with the 'ml' extra"
         ) from error
     return lgb
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

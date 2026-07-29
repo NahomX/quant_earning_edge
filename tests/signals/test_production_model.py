@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from quant_earning_edge.signals import ProductionModelTrainer
+from quant_earning_edge.signals import LightgbmHyperparameters, ProductionModelTrainer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -40,12 +40,19 @@ def test_production_refit_is_deterministic_and_scores_exact_features(tmp_path: P
     _dataset(dataset)
     trainer = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10)
     cutoff = date(2025, 3, 3)
+    study_sha256 = "e" * 64
 
     first = trainer.run(
-        dataset_files=(dataset,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+        dataset_files=(dataset,),
+        training_cutoff=cutoff,
+        phase4_gate_sha256="f" * 64,
+        hyperparameter_study_sha256=study_sha256,
     )
     second = trainer.run(
-        dataset_files=(dataset,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+        dataset_files=(dataset,),
+        training_cutoff=cutoff,
+        phase4_gate_sha256="f" * 64,
+        hyperparameter_study_sha256=study_sha256,
     )
     paths = trainer.write(first, output)
     trainer.write(first, output)
@@ -58,6 +65,35 @@ def test_production_refit_is_deterministic_and_scores_exact_features(tmp_path: P
     assert 0 <= first.predict_probability({"signal": 1.0}) <= 1
     assert all(path.exists() for path in paths)
     assert json.loads(paths[1].read_text(encoding="utf-8"))["training_cutoff"] == cutoff.isoformat()
+    assert first.hyperparameters_sha256 == first.hyperparameters.sha256
+    assert loaded.hyperparameter_study_sha256 == study_sha256
+
+
+def test_production_refit_binds_custom_hyperparameters(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    _dataset(dataset)
+    hyperparameters = LightgbmHyperparameters(
+        n_estimators=250,
+        learning_rate=0.04,
+        num_leaves=9,
+        min_child_samples=10,
+        reg_alpha=0.5,
+        reg_lambda=2.5,
+        colsample_bytree=0.8,
+    )
+    artifact = ProductionModelTrainer(
+        feature_names=("signal",),
+        early_stopping_rounds=10,
+        hyperparameters=hyperparameters,
+    ).run(
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
+    )
+
+    assert artifact.hyperparameters == hyperparameters
+    assert artifact.hyperparameters_sha256 == hyperparameters.sha256
+    assert json.loads(artifact.evidence_json_bytes())["hyperparameters"]["num_leaves"] == 9
 
 
 def test_rows_whose_labels_close_after_cutoff_cannot_change_model(tmp_path: Path) -> None:

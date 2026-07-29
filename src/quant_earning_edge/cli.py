@@ -150,6 +150,8 @@ from quant_earning_edge.signals import (
     LivePlanningAssembler,
     LivePlanningSourceSpec,
     LiveSourceCaptureAssembler,
+    OptunaLightgbmSearch,
+    OptunaStudyArtifact,
     ProductionModelArtifact,
     ProductionModelTrainer,
     load_strategy_config,
@@ -1064,6 +1066,68 @@ def replay_nbbo(
     )
 
 
+@model_app.command("tune-walkforward")
+def tune_walkforward_model(
+    dataset_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--dataset-file",
+            exists=True,
+            dir_okay=False,
+            help="Assembled training Parquet; repeat in the split-plan file set.",
+        ),
+    ],
+    split_plan: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical walk-forward JSON plan."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
+    ],
+    study_database: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Resumable Optuna SQLite study database."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable canonical Optuna selection evidence."),
+    ],
+) -> None:
+    """Tune on purged inner folds while preserving outer OOS test rows."""
+    try:
+        config = load_strategy_config(strategy_config)
+        plan = WalkForwardPlanner.load(split_plan)
+        search = OptunaLightgbmSearch(
+            feature_names=config.features,
+            label_name="forward_1d_close",
+            threshold=config.label.threshold,
+            seed=config.seed,
+            early_stopping_rounds=config.model.early_stopping_rounds,
+            top_k=config.portfolio.top_k,
+            requested_trials=config.model.hyperparam_search.n_trials,
+        )
+        artifact = search.run(
+            dataset_files=dataset_files,
+            plan=plan,
+            storage_path=study_database,
+        )
+        artifact.write(output)
+    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="model inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "study_database": str(study_database.resolve()),
+            "artifact_sha256": artifact.sha256,
+            "requested_trials": artifact.requested_trials,
+            "best_trial_number": artifact.best_trial_number,
+            "best_value": artifact.best_value,
+            "selected_hyperparameters_sha256": artifact.selected_hyperparameters_sha256,
+        }
+    )
+
+
 @model_app.command("train-walkforward")
 def train_walkforward_model(
     dataset_files: Annotated[
@@ -1083,6 +1147,14 @@ def train_walkforward_model(
         Path,
         typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
     ],
+    hyperparameter_study: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical Optuna study artifact matching this exact training contract.",
+        ),
+    ],
     output_dir: Annotated[
         Path,
         typer.Option(file_okay=False, help="Immutable model artifact directory."),
@@ -1092,12 +1164,25 @@ def train_walkforward_model(
     try:
         config = load_strategy_config(strategy_config)
         plan = WalkForwardPlanner.load(split_plan)
+        study = OptunaStudyArtifact.load(hyperparameter_study)
+        study.validate_training_contract(
+            dataset_files=dataset_files,
+            plan=plan,
+            feature_names=config.features,
+            label_name="forward_1d_close",
+            threshold=config.label.threshold,
+            seed=config.seed,
+            top_k=config.portfolio.top_k,
+            requested_trials=config.model.hyperparam_search.n_trials,
+        )
         trainer = LightgbmWalkForwardTrainer(
             feature_names=config.features,
             label_name="forward_1d_close",
             threshold=config.label.threshold,
             seed=config.seed,
             early_stopping_rounds=config.model.early_stopping_rounds,
+            hyperparameters=study.selected_hyperparameters,
+            hyperparameter_study_sha256=study.sha256,
         )
         run = trainer.run(dataset_files=dataset_files, plan=plan)
         trainer.write(run, output_dir)
@@ -1108,6 +1193,8 @@ def train_walkforward_model(
             "output_dir": str(output_dir.resolve()),
             "run_sha256": run.sha256,
             "plan_sha256": run.plan_sha256,
+            "hyperparameter_study_sha256": run.hyperparameter_study_sha256,
+            "hyperparameters_sha256": run.hyperparameters_sha256,
             "fold_count": len(run.folds),
             "prediction_count": sum(len(item.predictions) for item in run.folds),
         }
@@ -1115,7 +1202,7 @@ def train_walkforward_model(
 
 
 @model_app.command("train-production")
-def train_production_model(
+def train_production_model(  # noqa: PLR0917 - explicit immutable training inputs.
     dataset_files: Annotated[
         list[Path],
         typer.Option(
@@ -1140,6 +1227,22 @@ def train_production_model(
             help="Passing canonical Phase 4 pre-paper gate report.",
         ),
     ],
+    split_plan: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical walk-forward plan used by the matching Optuna study.",
+        ),
+    ],
+    hyperparameter_study: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical Optuna study artifact matching this exact training contract.",
+        ),
+    ],
     strategy_config: Annotated[
         Path,
         typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
@@ -1154,17 +1257,31 @@ def train_production_model(
         cutoff = date.fromisoformat(training_cutoff)
         promotion = Phase4PromotionEvidence.load(phase4_gate)
         config = load_strategy_config(strategy_config)
+        plan = WalkForwardPlanner.load(split_plan)
+        study = OptunaStudyArtifact.load(hyperparameter_study)
+        study.validate_training_contract(
+            dataset_files=dataset_files,
+            plan=plan,
+            feature_names=config.features,
+            label_name="forward_1d_close",
+            threshold=config.label.threshold,
+            seed=config.seed,
+            top_k=config.portfolio.top_k,
+            requested_trials=config.model.hyperparam_search.n_trials,
+        )
         trainer = ProductionModelTrainer(
             feature_names=config.features,
             label_name="forward_1d_close",
             threshold=config.label.threshold,
             seed=config.seed,
             early_stopping_rounds=config.model.early_stopping_rounds,
+            hyperparameters=study.selected_hyperparameters,
         )
         artifact = trainer.run(
             dataset_files=dataset_files,
             training_cutoff=cutoff,
             phase4_gate_sha256=promotion.report_sha256,
+            hyperparameter_study_sha256=study.sha256,
         )
         model_path, evidence_path = trainer.write(artifact, output_dir)
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
@@ -1177,6 +1294,8 @@ def train_production_model(
             "model_sha256": artifact.model_sha256,
             "training_cutoff": artifact.training_cutoff,
             "phase4_gate_sha256": artifact.phase4_gate_sha256,
+            "hyperparameter_study_sha256": artifact.hyperparameter_study_sha256,
+            "hyperparameters_sha256": artifact.hyperparameters_sha256,
             "fit_count": artifact.fit_count,
             "validation_count": artifact.validation_count,
         }

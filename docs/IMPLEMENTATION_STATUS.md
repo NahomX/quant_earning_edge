@@ -56,6 +56,8 @@ reproducible through `uv.lock`.
 | Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
 | Fractional-Kelly portfolio constructor | Complete | causal 60-trade history, integer shares, all hard caps |
 | Strict earnings-v1 strategy configuration | Complete | registry feature match and cross-field risk/cost validation |
+| Deterministic nested Optuna search | Complete | seeded TPE, median pruning, resumable SQLite, mean purged-validation Sharpe, 200-trial cap |
+| Immutable hyperparameter-selection evidence | Complete | full trial ledger, exact data/plan/config binding, canonical winner and parameter hashes |
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
@@ -115,6 +117,7 @@ reproducible through `uv.lock`.
 | Cutoff-safe production model refit | Complete | closed-label cutoff, purged final validation, deterministic immutable booster/evidence, exact-feature inference |
 | Phase 4 model-promotion binding | Complete | independently recomputed passing pre-paper gate hash is mandatory in every production model artifact |
 | Phase 6 deployment-promotion binding | Complete | loop requires the actual passing Phase 4 report, exact model digest match, causal cutoff, and proof-end model-age limit |
+| Phase 6 hyperparameter-study binding | Complete | production refit requires the matching Optuna artifact; proof loop rejects unbound models |
 | Automatic live planning scores | Complete | strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities and planning evidence |
 | Provider-backed live source capture | Complete | SIC exposure buckets, frozen prior-close price/ADV, paper-account audit, Polygon NBBO/trade snapshots, replay-chained equity/outcomes |
 | Worker-time capture and scoring | Complete | T-1 decision stage captures providers and freezes scores/orders; pre-open stage independently refreshes breaker controls |
@@ -150,10 +153,11 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Run the remaining credentialed gates: historical coverage, real-data Phase 4
-evaluation, gate-bound production refit, deployment readiness, isolated
-no-trade smoke, and proof-start admission. The loop then prepares and queues
-each authoritative session until the real 90-session Phase 6 verdict exists.
+Run the remaining credentialed gates: historical coverage, the source-bound
+momentum benchmark, the real 200-trial Optuna study, real-data Phase 4
+evaluation, gate-and-study-bound production refit, deployment readiness,
+isolated no-trade smoke, and proof-start admission. The loop then prepares and
+queues each authoritative session until the real 90-session Phase 6 verdict exists.
 It deliberately waits rather than inventing provider, halt, candidate, feature,
 or replay evidence.
 

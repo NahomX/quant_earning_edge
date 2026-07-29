@@ -13,6 +13,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from quant_earning_edge.signals.lgbm_hyperparameters import LightgbmHyperparameters
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
@@ -30,6 +32,9 @@ class ProductionModelArtifact:
     label_name: str
     threshold: float
     seed: int
+    hyperparameter_study_sha256: str | None
+    hyperparameters: LightgbmHyperparameters
+    hyperparameters_sha256: str
     lightgbm_version: str
     fit_start_date: date
     fit_end_date: date
@@ -42,7 +47,7 @@ class ProductionModelArtifact:
     model_text: str = field(repr=False, compare=True)
 
     def __post_init__(self) -> None:
-        if self.schema_version != 1:
+        if self.schema_version != 2:
             raise ValueError("unsupported production model schema version")
         if not self.feature_names or len(set(self.feature_names)) != len(self.feature_names):
             raise ValueError("production model feature names must be unique and nonempty")
@@ -58,6 +63,12 @@ class ProductionModelArtifact:
             raise ValueError("production model partition counts must be positive")
         if not _is_sha256(self.phase4_gate_sha256):
             raise ValueError("production model Phase 4 gate digest is invalid")
+        if self.hyperparameter_study_sha256 is not None and not _is_sha256(
+            self.hyperparameter_study_sha256
+        ):
+            raise ValueError("production model hyperparameter study digest is invalid")
+        if self.hyperparameters.sha256 != self.hyperparameters_sha256:
+            raise ValueError("production model hyperparameters do not match their SHA-256")
         if hashlib.sha256(self.model_text.encode()).hexdigest() != self.model_sha256:
             raise ValueError("production model content does not match its SHA-256")
 
@@ -99,6 +110,9 @@ class ProductionModelArtifact:
             "label_name",
             "threshold",
             "seed",
+            "hyperparameter_study_sha256",
+            "hyperparameters",
+            "hyperparameters_sha256",
             "lightgbm_version",
             "fit_start_date",
             "fit_end_date",
@@ -121,6 +135,13 @@ class ProductionModelArtifact:
                 label_name=str(raw["label_name"]),
                 threshold=float(raw["threshold"]),
                 seed=int(raw["seed"]),
+                hyperparameter_study_sha256=(
+                    None
+                    if raw["hyperparameter_study_sha256"] is None
+                    else str(raw["hyperparameter_study_sha256"])
+                ),
+                hyperparameters=LightgbmHyperparameters.from_dict(raw["hyperparameters"]),
+                hyperparameters_sha256=str(raw["hyperparameters_sha256"]),
                 lightgbm_version=str(raw["lightgbm_version"]),
                 fit_start_date=date.fromisoformat(str(raw["fit_start_date"])),
                 fit_end_date=date.fromisoformat(str(raw["fit_end_date"])),
@@ -150,6 +171,7 @@ class ProductionModelTrainer:
         threshold: float = 0.0,
         seed: int = 20260427,
         early_stopping_rounds: int = 50,
+        hyperparameters: LightgbmHyperparameters | None = None,
     ) -> None:
         names = tuple(feature_names)
         if not names or len(names) > 20 or len(set(names)) != len(names):
@@ -167,6 +189,7 @@ class ProductionModelTrainer:
         self._threshold = threshold
         self._seed = seed
         self._early_stopping_rounds = early_stopping_rounds
+        self._hyperparameters = hyperparameters or LightgbmHyperparameters()
 
     def run(
         self,
@@ -174,6 +197,7 @@ class ProductionModelTrainer:
         dataset_files: Sequence[Path],
         training_cutoff: date,
         phase4_gate_sha256: str,
+        hyperparameter_study_sha256: str | None = None,
     ) -> ProductionModelArtifact:
         """Fit on closed labels before cutoff and retain a purged final validation."""
         hashes = _dataset_hashes(dataset_files)
@@ -212,12 +236,8 @@ class ProductionModelTrainer:
         lgb = _import_lightgbm()
         model = lgb.LGBMClassifier(
             objective="binary",
-            n_estimators=1_000,
-            learning_rate=0.03,
-            num_leaves=15,
-            reg_lambda=1.0,
+            **self._hyperparameters.classifier_kwargs(),
             subsample=1.0,
-            colsample_bytree=1.0,
             random_state=self._seed,
             deterministic=True,
             force_col_wise=True,
@@ -233,7 +253,7 @@ class ProductionModelTrainer:
         )
         model_text = str(model.booster_.model_to_string(num_iteration=model.best_iteration_))
         return ProductionModelArtifact(
-            schema_version=1,
+            schema_version=2,
             training_cutoff=training_cutoff,
             phase4_gate_sha256=phase4_gate_sha256,
             dataset_sha256=hashes,
@@ -241,6 +261,9 @@ class ProductionModelTrainer:
             label_name=self._label_name,
             threshold=self._threshold,
             seed=self._seed,
+            hyperparameter_study_sha256=hyperparameter_study_sha256,
+            hyperparameters=self._hyperparameters,
+            hyperparameters_sha256=self._hyperparameters.sha256,
             lightgbm_version=str(lgb.__version__),
             fit_start_date=min(row["asof_date"] for row in fit_rows),
             fit_end_date=max(row["asof_date"] for row in fit_rows),

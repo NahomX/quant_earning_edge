@@ -77,7 +77,7 @@ reproducible through `uv.lock`.
 | Daily replay lifecycle reconciliation | Complete | exact entry/exit mapping, partial-fill breaks, commission/net P&L |
 | Immutable daily Phase 6 report and CLI | Complete | evidence hashes, fill/slippage percentiles, stable no-trade canonicalization, collision-safe JSON |
 | No-trade operational session evidence | Complete | explicit zero return, no invented orders or fill-rate denominator |
-| Locked 90-session Phase 6 hard gate | Complete | independent frozen-order, order-replay, and daily-report reconstruction; required clean paper-reconciliation stage; Sharpe CI/config, fills, global slippage, uptime, ordered daily-report hashes, CLI |
+| Locked 90-session Phase 6 hard gate | Complete | independent model-scored planning, frozen-order, order-replay, and daily-report reconstruction; required clean paper-reconciliation stage; Sharpe CI/config, fills, global slippage, uptime, ordered daily-report hashes, CLI |
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 | Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
 | Immutable paper submission/reconciliation evidence | Complete | frozen requests and breaker-bound submission plus reconciliation independently checked against workflow-captured raw Alpaca observations; paper divergence remains non-gating |
@@ -122,7 +122,7 @@ reproducible through `uv.lock`.
 | Phase 4 model-promotion binding | Complete | independently recomputed passing pre-paper gate binds the strategy, source assembly, OOS run, and Optuna study; exact report hash is mandatory in production artifacts |
 | Phase 6 deployment-promotion binding | Complete | loop requires the actual passing Phase 4 report, exact strategy/model digest matches, causal cutoff, and proof-end model-age limit |
 | Phase 6 hyperparameter-study binding | Complete | production refit requires the matching Optuna artifact; proof loop rejects unbound models |
-| Automatic live planning scores | Complete | strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities and planning evidence |
+| Automatic live planning scores | Complete | schema-v2 source/model/feature hashes, strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities, canonical evidence loader, and independent Phase 6 rescoring |
 | Provider-backed live source capture | Complete | SIC exposure buckets, frozen prior-close price/ADV, paper-account audit, Polygon NBBO/trade snapshots, replay-chained equity/outcomes |
 | Worker-time capture and scoring | Complete | T-1 decision stage captures providers and freezes scores/orders; pre-open stage independently refreshes breaker controls |
 | Fail-closed proof-start admission | Complete | fresh passing readiness + prior isolated smoke + scheduled spec required before first inbox publication |

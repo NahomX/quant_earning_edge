@@ -41,7 +41,10 @@ if TYPE_CHECKING:
         StageRecord,
     )
     from quant_earning_edge.signals.config import EarningsStrategyConfig
-    from quant_earning_edge.signals.live_orders import FrozenDailyOrders
+    from quant_earning_edge.signals.live_orders import (
+        DailyOrderPlanningSpec,
+        FrozenDailyOrders,
+    )
 
 
 class Phase6DailyReportVerifier:
@@ -156,12 +159,79 @@ class Phase6DailyReportVerifier:
         planning = DailyOrderPlanningSpec.model_validate_json(encoded)
         if planning.canonical_bytes != encoded:
             raise ValueError("captured daily planning input is not canonical")
+        Phase6DailyReportVerifier._verify_scored_planning(
+            state=state,
+            planning=planning,
+        )
         reproduced = LiveOrderPlanner(
             load_strategy_config(strategy_path),
             strategy_sha256=strategy_file_sha256(strategy_path),
         ).plan(planning)
         if reproduced.canonical_bytes != frozen.canonical_bytes:
             raise ValueError("frozen daily orders differ from captured planning input")
+
+    @staticmethod
+    def _verify_scored_planning(
+        *,
+        state: DailyWorkflowState,
+        planning: DailyOrderPlanningSpec,
+    ) -> None:
+        from quant_earning_edge.signals.live_planning import (  # noqa: PLC0415
+            LivePlanningAssembler,
+            LivePlanningSourceSpec,
+            ScoredPlanningArtifact,
+        )
+        from quant_earning_edge.signals.production_model import (  # noqa: PLC0415
+            ProductionModelArtifact,
+        )
+
+        evidence = []
+        for stage in state.stages:
+            for artifact in stage.output_artifacts:
+                candidate = Path(artifact.path).resolve()
+                if candidate.suffix != ".json":
+                    continue
+                try:
+                    scored = ScoredPlanningArtifact.load(candidate)
+                except (OSError, ValueError):
+                    continue
+                if scored.planning.canonical_bytes == planning.canonical_bytes:
+                    evidence.append(scored)
+        if len(evidence) != 1:
+            raise ValueError(
+                "planning input must bind to exactly one captured scored-planning evidence"
+            )
+        scored = evidence[0]
+        paths_by_sha = Phase6DailyReportVerifier._artifact_paths_by_sha(state)
+        source_paths = paths_by_sha.get(scored.source_sha256, [])
+        model_evidence_paths = paths_by_sha.get(scored.model_artifact_sha256, [])
+        model_paths = paths_by_sha.get(scored.model_sha256, [])
+        feature_matches = tuple(
+            paths_by_sha.get(digest, []) for digest in scored.feature_file_sha256
+        )
+        if (
+            len(source_paths) != 1
+            or len(model_evidence_paths) != 1
+            or len(model_paths) != 1
+            or any(len(paths) != 1 for paths in feature_matches)
+        ):
+            raise ValueError("scored planning lacks exact captured source/model/features")
+        source_encoded = source_paths[0].read_bytes()
+        source = LivePlanningSourceSpec.model_validate_json(source_encoded)
+        if source.canonical_bytes != source_encoded:
+            raise ValueError("captured live planning source is not canonical")
+        model = ProductionModelArtifact.load(
+            evidence_path=model_evidence_paths[0],
+            model_path=model_paths[0],
+        )
+        feature_paths = tuple(sorted((paths[0] for paths in feature_matches), key=str))
+        reproduced = LivePlanningAssembler().assemble(
+            source=source,
+            model=model,
+            feature_files=feature_paths,
+        )
+        if reproduced.canonical_bytes != scored.canonical_bytes:
+            raise ValueError("scored planning differs from captured source/model/features")
 
     @staticmethod
     def _stage(

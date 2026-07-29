@@ -5,8 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
+from functools import cache
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from typer.testing import CliRunner
 
@@ -32,6 +36,7 @@ from quant_earning_edge.evaluation import (
     Phase6DailyReportVerifier,
     ReplaySessionAggregator,
 )
+from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
 from quant_earning_edge.live import (
     BrokerOrder,
     PaperBatchSubmission,
@@ -57,11 +62,74 @@ from quant_earning_edge.orchestration import (
 )
 from quant_earning_edge.signals import (
     DailyOrderPlanningSpec,
-    LiveCandidateSpec,
+    LiveMarketObservationSpec,
     LiveOrderPlanner,
+    LivePlanningAssembler,
+    LivePlanningSourceSpec,
+    ProductionModelArtifact,
+    ProductionModelTrainer,
     load_strategy_config,
     strategy_file_sha256,
 )
+
+_MODEL_TEMP = TemporaryDirectory(prefix="qee-phase6-model-")
+
+
+@cache
+def _production_model() -> ProductionModelArtifact:
+    dataset = Path(_MODEL_TEMP.name) / "training.parquet"
+    first = date(2025, 1, 2)
+    rows = [
+        {
+            "asof_date": first + timedelta(days=index),
+            "horizon_end_date": first + timedelta(days=index + 2),
+            "signal": 1.0 if index % 2 == 0 else -1.0,
+            "forward_1d_close": 0.01 if index % 2 == 0 else -0.01,
+        }
+        for index in range(70)
+    ]
+    pq.write_table(pa.Table.from_pylist(rows), dataset)  # type: ignore[no-untyped-call]
+    return ProductionModelTrainer(
+        feature_names=("signal",),
+        early_stopping_rounds=10,
+    ).run(
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 20),
+        phase4_gate_sha256="f" * 64,
+    )
+
+
+def _write_scored_planning(
+    daily: Path,
+    *,
+    source: LivePlanningSourceSpec,
+    feature_files: tuple[Path, ...] = (),
+) -> tuple[DailyOrderPlanningSpec, tuple[Path, ...], Path]:
+    model = _production_model()
+    model_path, model_evidence_path = ProductionModelTrainer.write(
+        model,
+        daily / "production-model",
+    )
+    source_path = daily / "live-source.json"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(source.canonical_bytes)
+    scored = LivePlanningAssembler().assemble(
+        source=source,
+        model=model,
+        feature_files=feature_files,
+    )
+    planning_path = daily / "daily-order-planning.json"
+    scored_path = daily / "scored-live-planning-evidence.json"
+    LivePlanningAssembler.write(
+        scored,
+        planning_output=planning_path,
+        evidence_output=scored_path,
+    )
+    return (
+        scored.planning,
+        (source_path, model_evidence_path, model_path, *feature_files),
+        scored_path,
+    )
 
 
 def _write_breaker_auxiliary_evidence(
@@ -191,10 +259,10 @@ def _no_trade_replay_sources(
 ) -> dict[str, Path]:
     strategy = Path("configs/strategies/earnings_v1.yaml").resolve()
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
-    planning_path = daily / "daily-order-planning.json"
     frozen_path = daily / "frozen-daily-orders.json"
-    planning = DailyOrderPlanningSpec(
+    planning_source = LivePlanningSourceSpec(
         trade_date=session_date,
+        feature_asof_date=session_date - timedelta(days=1),
         decision_at=datetime(
             session_date.year,
             session_date.month,
@@ -203,7 +271,7 @@ def _no_trade_replay_sources(
             tzinfo=UTC,
         ),
         equity=100_000,
-        candidates=(),
+        observations=(),
         outcomes=(),
         entry_submitted_at=datetime(
             session_date.year,
@@ -237,8 +305,12 @@ def _no_trade_replay_sources(
             tzinfo=UTC,
         ),
     )
-    planning_path.parent.mkdir(parents=True, exist_ok=True)
-    planning_path.write_bytes(planning.canonical_bytes)
+    planning, planning_sources, planning_evidence_path = _write_scored_planning(
+        daily,
+        source=planning_source,
+    )
+    source_path, model_evidence_path, model_path = planning_sources
+    planning_path = daily / "daily-order-planning.json"
     frozen = LiveOrderPlanner(
         load_strategy_config(strategy),
         strategy_sha256=strategy_file_sha256(strategy),
@@ -322,6 +394,10 @@ def _no_trade_replay_sources(
     return {
         "strategy": strategy,
         "planning": planning_path,
+        "planning_source": source_path,
+        "model_evidence": model_evidence_path,
+        "model_file": model_path,
+        "planning_evidence": planning_evidence_path,
         "frozen": frozen_path,
         "breaker": breaker_path,
         "breaker_spec": breaker_spec_path,
@@ -352,9 +428,18 @@ def _complete_source_workflow(
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
         if stage is WorkflowStage.FREEZE_INPUTS:
-            return (sources["strategy"], sources["planning"])
+            return (
+                sources["strategy"],
+                sources["planning_source"],
+                sources["model_evidence"],
+                sources["model_file"],
+            )
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
-            return (sources["frozen"],)
+            return (
+                sources["planning"],
+                sources["planning_evidence"],
+                sources["frozen"],
+            )
         if stage is WorkflowStage.EVALUATE_BREAKERS:
             return (
                 sources["freshness"],
@@ -400,6 +485,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_freshness_payloads: bool = True,
     capture_reconciliation_age_sources: bool = True,
     capture_planning_input: bool = True,
+    capture_scored_planning_evidence: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -416,15 +502,15 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         last_trade_price=100,
         last_trade_at=decision_at - timedelta(seconds=1),
     )
-    planning = DailyOrderPlanningSpec(
+    planning_source = LivePlanningSourceSpec(
         trade_date=session_date,
+        feature_asof_date=session_date - timedelta(days=1),
         decision_at=decision_at,
         equity=100_000,
-        candidates=(
-            LiveCandidateSpec(
+        observations=(
+            LiveMarketObservationSpec(
                 symbol="AAA",
                 sector="Technology",
-                probability_up=0.75,
                 sizing_price=100,
                 sizing_price_observed_at=decision_at,
                 frozen_average_daily_volume_shares=1_000_000,
@@ -437,14 +523,37 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         exit_submitted_at=exit_at,
         exit_expires_at=exit_at + timedelta(minutes=1),
     )
+    daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
+    feature_path = daily / "live-features.parquet"
+    feature_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(
+            [
+                {
+                    "symbol": "AAA",
+                    "asof_date": planning_source.feature_asof_date,
+                    "feature_name": "signal",
+                    "value": 1.0,
+                    "feature_code_hash": "e" * 64,
+                    "input_sha256": "d" * 64,
+                    "computed_at": decision_at,
+                }
+            ],
+            schema=FEATURE_VALUE_SCHEMA,
+        ),
+        feature_path,
+    )
+    planning, planning_sources, planning_evidence_path = _write_scored_planning(
+        daily,
+        source=planning_source,
+        feature_files=(feature_path,),
+    )
+    source_path, model_evidence_path, model_path, captured_feature_path = planning_sources
     frozen = LiveOrderPlanner(
         strategy,
         strategy_sha256=strategy_file_sha256(strategy_path),
     ).plan(planning)
-    daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
     planning_path = daily / "daily-order-planning.json"
-    planning_path.parent.mkdir(parents=True, exist_ok=True)
-    planning_path.write_bytes(planning.canonical_bytes)
     frozen_path = daily / "frozen-daily-orders.json"
     frozen.write(frozen_path)
     breaker_observation = CircuitBreakerObservation(
@@ -614,9 +723,27 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
         if stage is WorkflowStage.FREEZE_INPUTS:
-            return (strategy_path, planning_path) if capture_planning_input else (strategy_path,)
+            return (
+                (
+                    strategy_path,
+                    source_path,
+                    model_evidence_path,
+                    model_path,
+                    captured_feature_path,
+                )
+                if capture_planning_input
+                else (strategy_path,)
+            )
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
-            return (frozen_path,)
+            return (
+                (
+                    planning_path,
+                    *((planning_evidence_path,) if capture_scored_planning_evidence else ()),
+                    frozen_path,
+                )
+                if capture_planning_input
+                else (frozen_path,)
+            )
         if stage is WorkflowStage.EVALUATE_BREAKERS:
             return (
                 *((freshness_path, age_path) if capture_breaker_auxiliary else ()),
@@ -1044,6 +1171,25 @@ def test_daily_report_verifier_requires_captured_planning_input(
     )
 
     with pytest.raises(ValueError, match="exactly one captured planning input"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_rejects_unscored_compatibility_planning(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_scored_planning_evidence=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly one captured scored-planning"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

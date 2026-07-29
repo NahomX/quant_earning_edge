@@ -81,22 +81,44 @@ class LivePlanningSourceSpec(_StrictSpec):
             raise ValueError("feature_asof_date must precede trade_date")
         return self
 
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
 
 @dataclass(frozen=True)
 class ScoredPlanningArtifact:
     """Lineage wrapper around the generated legacy-compatible planning spec."""
 
     schema_version: int
+    source_sha256: str
     model_artifact_sha256: str
     model_sha256: str
     feature_file_sha256: tuple[str, ...]
     planning: DailyOrderPlanningSpec
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 2:
+            raise ValueError("unsupported scored planning schema version")
+        for digest in (
+            self.source_sha256,
+            self.model_artifact_sha256,
+            self.model_sha256,
+            *self.feature_file_sha256,
+        ):
+            if len(digest) != 64 or any(item not in "0123456789abcdef" for item in digest):
+                raise ValueError("scored planning digest must be SHA-256")
 
     @property
     def canonical_bytes(self) -> bytes:
         return json.dumps(
             {
                 "schema_version": self.schema_version,
+                "source_sha256": self.source_sha256,
                 "model_artifact_sha256": self.model_artifact_sha256,
                 "model_sha256": self.model_sha256,
                 "feature_file_sha256": self.feature_file_sha256,
@@ -109,6 +131,24 @@ class ScoredPlanningArtifact:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    @classmethod
+    def load(cls, path: Path) -> ScoredPlanningArtifact:
+        try:
+            raw = json.loads(path.read_bytes())
+            artifact = cls(
+                schema_version=int(raw["schema_version"]),
+                source_sha256=str(raw["source_sha256"]),
+                model_artifact_sha256=str(raw["model_artifact_sha256"]),
+                model_sha256=str(raw["model_sha256"]),
+                feature_file_sha256=tuple(str(item) for item in raw["feature_file_sha256"]),
+                planning=DailyOrderPlanningSpec.model_validate(raw["planning"]),
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid scored planning evidence: {path}") from error
+        if artifact.canonical_bytes != path.read_bytes():
+            raise ValueError("scored planning evidence is not canonical")
+        return artifact
 
 
 class LivePlanningAssembler:
@@ -162,7 +202,8 @@ class LivePlanningAssembler:
             minimum_probability=source.minimum_probability,
         )
         return ScoredPlanningArtifact(
-            schema_version=1,
+            schema_version=2,
+            source_sha256=hashlib.sha256(source.canonical_bytes).hexdigest(),
             model_artifact_sha256=model.sha256,
             model_sha256=model.model_sha256,
             feature_file_sha256=hashes,

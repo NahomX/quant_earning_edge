@@ -17,6 +17,7 @@ from quant_earning_edge.signals import (
     LivePlanningAssembler,
     LivePlanningSourceSpec,
     ProductionModelTrainer,
+    ScoredPlanningArtifact,
 )
 
 if TYPE_CHECKING:
@@ -123,6 +124,7 @@ def test_live_planning_scores_features_without_manual_probability(tmp_path: Path
     assert b"probability_up" not in _source(decision).model_dump_json().encode()
     assert planning_path.read_bytes() == artifact.planning.canonical_bytes
     assert evidence_path.read_bytes() == artifact.canonical_bytes
+    assert ScoredPlanningArtifact.load(evidence_path) == artifact
 
 
 def test_live_planning_rejects_features_computed_after_decision(tmp_path: Path) -> None:

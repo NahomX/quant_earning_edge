@@ -28,6 +28,7 @@ class TrainingDatasetArtifact:
 
     path: Path
     manifest_path: Path
+    source_manifest_path: Path
     sha256: str
     row_count: int
     feature_names: tuple[str, ...]
@@ -162,9 +163,21 @@ class TrainingDatasetAssembler:
         except FileExistsError:
             if manifest_path.read_bytes() != encoded:
                 raise RuntimeError(f"training manifest collision at {manifest_path}") from None
+        from quant_earning_edge.labels.dataset_source import (  # noqa: PLC0415
+            TrainingDatasetSourceCapture,
+        )
+
+        source_manifest = TrainingDatasetSourceCapture.write(
+            dataset_file=path,
+            feature_files=feature_files,
+            label_files=label_files,
+            session_file=session_file,
+            assembled_at=assembled_at,
+        )
         return TrainingDatasetArtifact(
             path=path,
             manifest_path=manifest_path,
+            source_manifest_path=source_manifest.path,
             sha256=digest,
             row_count=table.num_rows,
             feature_names=feature_names,

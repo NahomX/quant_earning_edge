@@ -537,6 +537,7 @@ def assemble_training_dataset(
         {
             "path": str(artifact.path),
             "manifest_path": str(artifact.manifest_path),
+            "source_manifest_path": str(artifact.source_manifest_path),
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
             "feature_names": artifact.feature_names,

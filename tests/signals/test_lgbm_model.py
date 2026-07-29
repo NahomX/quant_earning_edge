@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -15,6 +16,7 @@ from typer.testing import CliRunner
 from quant_earning_edge.backtest import WalkForwardConfig, WalkForwardPlanner
 from quant_earning_edge.cli import app
 from quant_earning_edge.features import FEATURE_REGISTRY
+from quant_earning_edge.labels.dataset_source import TrainingDatasetSourceCapture
 from quant_earning_edge.signals import (
     LightgbmHyperparameters,
     LightgbmWalkForwardTrainer,
@@ -170,7 +172,10 @@ def test_dataset_hash_mismatch_is_rejected(tmp_path: Path) -> None:
         raise AssertionError("tampered dataset was accepted")
 
 
-def test_walk_forward_training_cli_persists_models(tmp_path: Path) -> None:
+def test_walk_forward_training_cli_persists_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dataset = tmp_path / "training.parquet"
     plan_path = tmp_path / "plan.json"
     output = tmp_path / "models"
@@ -178,6 +183,35 @@ def test_walk_forward_training_cli_persists_models(tmp_path: Path) -> None:
     study_database = tmp_path / "study.sqlite3"
     study_output = tmp_path / "study.json"
     _dataset(dataset)
+    source_inputs = []
+    for name in ("features", "labels", "sessions"):
+        path = tmp_path / f"{name}.source"
+        path.write_text(name, encoding="utf-8")
+        source_inputs.append(path)
+
+    def entry(path: Path) -> dict[str, str]:
+        resolved = path.resolve()
+        return {
+            "path": resolved.as_posix(),
+            "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        }
+
+    source_raw = {
+        "schema_version": 1,
+        "assembled_at": "2025-03-20T00:00:00+00:00",
+        "dataset_file": entry(dataset),
+        "feature_files": [entry(source_inputs[0])],
+        "label_files": [entry(source_inputs[1])],
+        "session_file": entry(source_inputs[2]),
+    }
+    (tmp_path / "training-source-fixture.json").write_bytes(
+        json.dumps(source_raw, sort_keys=True, separators=(",", ":")).encode()
+    )
+    monkeypatch.setattr(
+        TrainingDatasetSourceCapture,
+        "reproduce",
+        staticmethod(lambda manifest: manifest.dataset_path()),
+    )
     planner = WalkForwardPlanner()
     plan = planner.build((dataset,), config=WalkForwardConfig(40, 10, 5))
     planner.write(plan, plan_path)

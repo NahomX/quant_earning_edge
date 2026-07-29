@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from quant_earning_edge.backtest import WalkForwardPlanner
+from quant_earning_edge.labels.dataset_source import (
+    TrainingDatasetSourceCapture,
+    TrainingDatasetSourceManifest,
+)
 from quant_earning_edge.signals.config import load_strategy_config
 from quant_earning_edge.signals.hyperparameter_search import (
     OptunaLightgbmSearch,
@@ -39,8 +43,9 @@ class OptunaStudySourceManifest:
             "dataset_files",
             "split_plan",
             "strategy_config",
+            "dataset_source_manifests",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("Optuna source manifest schema mismatch")
         if (
             not isinstance(raw["study_artifact"], dict)
@@ -48,6 +53,8 @@ class OptunaStudySourceManifest:
             or not raw["dataset_files"]
             or not isinstance(raw["split_plan"], dict)
             or not isinstance(raw["strategy_config"], dict)
+            or not isinstance(raw["dataset_source_manifests"], list)
+            or not raw["dataset_source_manifests"]
         ):
             raise ValueError("Optuna source manifest collections are invalid")
         entries = (
@@ -55,6 +62,7 @@ class OptunaStudySourceManifest:
             *raw["dataset_files"],
             raw["split_plan"],
             raw["strategy_config"],
+            *raw["dataset_source_manifests"],
         )
         for entry in entries:
             _validate_entry(entry)
@@ -63,6 +71,8 @@ class OptunaStudySourceManifest:
             raise ValueError("Optuna source manifest paths are duplicated")
         if tuple(raw["dataset_files"]) != tuple(
             sorted(raw["dataset_files"], key=lambda item: item["path"])
+        ) or tuple(raw["dataset_source_manifests"]) != tuple(
+            sorted(raw["dataset_source_manifests"], key=lambda item: item["path"])
         ):
             raise ValueError("Optuna source manifest datasets are not sorted")
         if json.dumps(raw, sort_keys=True, separators=(",", ":")).encode() != encoded:
@@ -81,6 +91,12 @@ class OptunaStudySourceManifest:
     def strategy_path(self) -> Path:
         return _resolve_entry(self.raw["strategy_config"])
 
+    def dataset_sources(self) -> tuple[TrainingDatasetSourceManifest, ...]:
+        return tuple(
+            TrainingDatasetSourceManifest.load(path)
+            for path in _resolve_entries(self.raw["dataset_source_manifests"])
+        )
+
     @property
     def lineage_paths(self) -> tuple[Path, ...]:
         return (
@@ -89,6 +105,7 @@ class OptunaStudySourceManifest:
             *self.dataset_paths(),
             self.split_plan_path(),
             self.strategy_path(),
+            *(path for source in self.dataset_sources() for path in source.lineage_paths),
         )
 
 
@@ -116,12 +133,14 @@ class OptunaStudySourceCapture:
             top_k=strategy.portfolio.top_k,
             requested_trials=strategy.model.hyperparam_search.n_trials,
         )
+        dataset_sources = TrainingDatasetSourceCapture.find_for_datasets(dataset_files)
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "study_artifact": _entry(study_artifact),
             "dataset_files": _entries(dataset_files),
             "split_plan": _entry(split_plan),
             "strategy_config": _entry(strategy_config),
+            "dataset_source_manifests": _entries(source.path for source in dataset_sources),
         }
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
@@ -156,6 +175,11 @@ class OptunaStudySourceCapture:
         strategy = load_strategy_config(manifest.strategy_path())
         plan = WalkForwardPlanner.load(manifest.split_plan_path())
         datasets = manifest.dataset_paths()
+        dataset_sources = manifest.dataset_sources()
+        if tuple(source.dataset_path() for source in dataset_sources) != datasets:
+            raise ValueError("Optuna training-dataset lineage differs")
+        for source in dataset_sources:
+            TrainingDatasetSourceCapture.reproduce(source)
         expected.validate_training_contract(
             dataset_files=datasets,
             plan=plan,

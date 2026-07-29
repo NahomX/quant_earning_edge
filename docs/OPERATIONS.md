@@ -335,6 +335,11 @@ The tuning command emits `optuna-source-<hash>.json` beside its canonical study
 artifact. Walk-forward attestation requires that unique manifest, reruns the
 seeded nested search in fresh in-memory storage, and requires the complete trial
 ledger, winning score, and selected hyperparameters to match exactly.
+Dataset assembly emits `training-source-<hash>.json` beside every monthly wide
+Parquet. The manifest binds the exact feature files, label files, authoritative
+session file, and assembly timestamp. Optuna attestation requires unique
+coverage for every dataset and rebuilds each Parquet byte-for-byte before
+rerunning the search.
 Each fold also records mean absolute SHAP contribution per feature, calculated
 only from that fold's OOS rows. The expected feature-plus-bias contribution
 shape is validated before evidence is written.

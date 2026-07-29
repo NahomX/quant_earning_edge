@@ -19,6 +19,10 @@ from quant_earning_edge.labels import (
     LabelStore,
     TrainingDatasetAssembler,
 )
+from quant_earning_edge.labels.dataset_source import (
+    TrainingDatasetSourceCapture,
+    TrainingDatasetSourceManifest,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -164,6 +168,11 @@ def test_training_assembly_requires_complete_keys_and_preopen_features(
     ]
     assert table.column("return_20d").to_pylist()[0] == pytest.approx(120 / 100 - 1)
     assert artifact.manifest_path.exists()
+    source = TrainingDatasetSourceManifest.load(artifact.source_manifest_path)
+    assert TrainingDatasetSourceCapture.reproduce(source) == artifact.path
+    feature_file.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="missing or differs"):
+        TrainingDatasetSourceCapture.reproduce(source)
 
 
 def test_training_assembly_rejects_features_computed_after_target_open(

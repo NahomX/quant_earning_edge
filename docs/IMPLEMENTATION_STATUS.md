@@ -47,6 +47,7 @@ reproducible through `uv.lock`.
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
 | Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, including next-session open-to-close target and explicit-offset tests |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
+| Source-bound training-dataset reconstruction | Complete | exact feature/label/session/timestamp lineage; byte-exact wide Parquet rebuild required before Optuna selection |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
 | Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
 | Deterministic 60-session momentum baseline | Complete | PIT membership + adjusted-bar builder, causal next-open ledger, immutable source manifest |

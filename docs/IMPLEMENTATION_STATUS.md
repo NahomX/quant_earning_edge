@@ -63,6 +63,7 @@ reproducible through `uv.lock`.
 | Strict earnings-v1 strategy configuration | Complete | registry feature match, next-open-to-next-close target alignment, and cross-field risk/cost validation |
 | Deterministic nested Optuna search | Complete | seeded TPE, median pruning, resumable SQLite, mean purged-validation Sharpe, 200-trial cap |
 | Immutable hyperparameter-selection evidence | Complete | full trial ledger, exact data/plan/config binding, canonical winner and parameter hashes |
+| Source-bound Optuna reconstruction | Complete | content-addressed dataset/split/strategy/study lineage; deterministic nested-search rerun required before walk-forward training evidence is accepted |
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, per-row information cutoffs, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
 | Source-bound walk-forward reconstruction | Complete | content-addressed datasets/split/strategy/study/run/fold lineage; independent exact OOS fold retraining; production refit requires the attested run |

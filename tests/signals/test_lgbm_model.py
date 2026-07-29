@@ -20,6 +20,7 @@ from quant_earning_edge.signals import (
     LightgbmWalkForwardTrainer,
     WalkForwardModelRun,
 )
+from quant_earning_edge.signals.optuna_source import OptunaStudySourceCapture
 from quant_earning_edge.signals.walkforward_source import WalkForwardModelSourceCapture
 
 
@@ -228,10 +229,12 @@ def test_walk_forward_training_cli_persists_models(tmp_path: Path) -> None:
     assert tune_result.exit_code == 0, tune_result.stdout
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
+    tune_payload = json.loads(tune_result.stdout)
     assert payload["fold_count"] == 2
     assert payload["prediction_count"] == 40
-    assert (
-        payload["hyperparameter_study_sha256"] == json.loads(tune_result.stdout)["artifact_sha256"]
+    assert payload["hyperparameter_study_sha256"] == tune_payload["artifact_sha256"]
+    assert OptunaStudySourceCapture.find_for_study(study_output).path == Path(
+        tune_payload["source_manifest"]
     )
     assert len(tuple(output.glob("fold-*.txt"))) == 2
     source_manifest = WalkForwardModelSourceCapture.find_for_run(next(output.glob("run-*.json")))

@@ -15,6 +15,10 @@ from quant_earning_edge.signals.lgbm_model import (
     LightgbmWalkForwardTrainer,
     WalkForwardModelRun,
 )
+from quant_earning_edge.signals.optuna_source import (
+    OptunaStudySourceCapture,
+    OptunaStudySourceManifest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -42,10 +46,17 @@ class WalkForwardModelSourceManifest:
             "split_plan",
             "strategy_config",
             "hyperparameter_study",
+            "optuna_source_manifest",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("walk-forward source manifest schema mismatch")
-        singletons = ("run_evidence", "split_plan", "strategy_config", "hyperparameter_study")
+        singletons = (
+            "run_evidence",
+            "split_plan",
+            "strategy_config",
+            "hyperparameter_study",
+            "optuna_source_manifest",
+        )
         if any(not isinstance(raw[name], dict) for name in singletons) or any(
             not isinstance(raw[name], list) or not raw[name]
             for name in ("fold_models", "dataset_files")
@@ -88,6 +99,9 @@ class WalkForwardModelSourceManifest:
     def study_path(self) -> Path:
         return _resolve_entry(self.raw["hyperparameter_study"])
 
+    def optuna_source(self) -> OptunaStudySourceManifest:
+        return OptunaStudySourceManifest.load(_resolve_entry(self.raw["optuna_source_manifest"]))
+
     @property
     def lineage_paths(self) -> tuple[Path, ...]:
         return (
@@ -98,6 +112,7 @@ class WalkForwardModelSourceManifest:
             self.split_plan_path(),
             self.strategy_path(),
             self.study_path(),
+            *self.optuna_source().lineage_paths,
         )
 
 
@@ -119,14 +134,16 @@ class WalkForwardModelSourceCapture:
             output_directory / f"fold-{fold.fold_index:03d}-{fold.model_sha256[:12]}.txt"
             for fold in run.folds
         )
+        optuna_source = OptunaStudySourceCapture.find_for_study(hyperparameter_study)
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_evidence": _entry(run_path),
             "fold_models": _entries(fold_paths),
             "dataset_files": _entries(dataset_files),
             "split_plan": _entry(split_plan),
             "strategy_config": _entry(strategy_config),
             "hyperparameter_study": _entry(hyperparameter_study),
+            "optuna_source_manifest": _entry(optuna_source.path),
         }
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
@@ -173,7 +190,17 @@ class WalkForwardModelSourceCapture:
         strategy = load_strategy_config(manifest.strategy_path())
         plan = WalkForwardPlanner.load(manifest.split_plan_path())
         study = OptunaStudyArtifact.load(manifest.study_path())
+        optuna_source = manifest.optuna_source()
         datasets = manifest.dataset_paths()
+        if (
+            optuna_source.study_path() != manifest.study_path()
+            or optuna_source.dataset_paths() != datasets
+            or optuna_source.split_plan_path() != manifest.split_plan_path()
+            or optuna_source.strategy_path() != manifest.strategy_path()
+        ):
+            raise ValueError("walk-forward Optuna lineage differs from training inputs")
+        if OptunaStudySourceCapture.reproduce(optuna_source) != study:
+            raise ValueError("walk-forward Optuna study differs from reconstructed search")
         study.validate_training_contract(
             dataset_files=datasets,
             plan=plan,

@@ -331,6 +331,10 @@ Writing the manifest independently retrains all folds and requires exact model,
 probability, attribution, and run-evidence equality. Production refit rejects a
 Phase 4 walk-forward run without exactly one intact adjacent source manifest
 and repeats that reconstruction as part of its own attestation.
+The tuning command emits `optuna-source-<hash>.json` beside its canonical study
+artifact. Walk-forward attestation requires that unique manifest, reruns the
+seeded nested search in fresh in-memory storage, and requires the complete trial
+ledger, winning score, and selected hyperparameters to match exactly.
 Each fold also records mean absolute SHAP contribution per feature, calculated
 only from that fold's OOS rows. The expected feature-plus-bias contribution
 shape is validated before evidence is written.

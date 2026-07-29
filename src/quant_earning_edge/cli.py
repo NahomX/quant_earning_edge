@@ -168,6 +168,7 @@ from quant_earning_edge.signals import (
     run_event_plan,
     strategy_file_sha256,
 )
+from quant_earning_edge.signals.optuna_source import OptunaStudySourceCapture
 from quant_earning_edge.signals.production_source import (
     ProductionModelSourceCapture,
     ProductionModelSourceManifest,
@@ -1138,11 +1139,18 @@ def tune_walkforward_model(
             storage_path=study_database,
         )
         artifact.write(output)
+        source_manifest = OptunaStudySourceCapture.write(
+            study_artifact=output,
+            dataset_files=dataset_files,
+            split_plan=split_plan,
+            strategy_config=strategy_config,
+        )
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="model inputs") from error
     _echo_json(
         {
             "output": str(output.resolve()),
+            "source_manifest": str(source_manifest.path),
             "study_database": str(study_database.resolve()),
             "artifact_sha256": artifact.sha256,
             "requested_trials": artifact.requested_trials,

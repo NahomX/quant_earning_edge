@@ -5,6 +5,8 @@ Production-grade quantitative research platform for an event-driven (earnings) U
 See [`docs/ARCHITECTURE_PLAN.md`](docs/ARCHITECTURE_PLAN.md) for the full design, budget, and phased plan.
 See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for credentialed Phase 1 commands
 and operational gates.
+See [`PROJECT_STATUS.md`](PROJECT_STATUS.md) for the concise executive handoff,
+current blockers, repository locations, and exact next action.
 
 ## Quickstart
 
@@ -44,10 +46,10 @@ src/quant_earning_edge/
   evaluation/   metrics, bootstrap CI, tearsheets
   live/         Alpaca paper executor + reconciliation
   monitoring/   drift detection, circuit breakers
-  orchestration/restart-safe daily workflow loop + append-only state
+  orchestration/ restart-safe daily workflow loop + append-only state
 configs/        YAML strategy/universe configs (pydantic-validated)
 tests/property/ no-lookahead + no-future-read property tests (block PRs)
-ops/            Prefect flows, deploy scripts
+ops/            persistent-worker launch and service deployment
 ```
 
 ## Phases (see ARCHITECTURE_PLAN.md for gates)

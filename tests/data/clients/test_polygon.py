@@ -134,7 +134,7 @@ def test_daily_bars_retries_rate_limit() -> None:
         ),
         (
             {"ticker": "AAPL", "adjusted": False, "status": "OK", "results": []},
-            "not split-adjusted",
+            "mode differed",
         ),
         (
             {"ticker": "AAPL", "adjusted": True, "status": "ERROR", "results": []},
@@ -156,6 +156,35 @@ def test_rejects_invalid_response_metadata(
             start_date=date(2026, 7, 27),
             end_date=date(2026, 7, 27),
         )
+
+
+def test_daily_bars_supports_explicit_unadjusted_history() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["adjusted"] == "false"
+        return httpx.Response(
+            200,
+            json={
+                "ticker": "AAPL",
+                "adjusted": False,
+                "status": "OK",
+                "results": [_aggregate(day=27)],
+            },
+        )
+
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(respond),
+    )
+    with http_client:
+        bars = PolygonClient(api_key="key", http_client=http_client).daily_bars(
+            symbol="AAPL",
+            start_date=date(2026, 7, 27),
+            end_date=date(2026, 7, 27),
+            adjusted=False,
+        )
+
+    assert len(bars) == 1
+    assert not bars[0].adjusted
 
 
 def test_rejects_cross_host_pagination_url() -> None:

@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from quant_earning_edge.data import (
+    DAILY_BAR_SESSION_CLOSE_15M,
     BronzeWriter,
     DailyBarsSourceCapture,
     LakehouseLayout,
     SilverWriter,
+    SplitHistorySourceCapture,
 )
 from quant_earning_edge.data.clients import PolygonClient
 from quant_earning_edge.features import (
@@ -134,3 +136,139 @@ def test_historical_feature_reproduction_rejects_changed_provider_payload(
             manifest,
             data_lake_root=tmp_path / "lake",
         )
+
+
+def test_late_raw_backfill_reconstructs_features_on_causal_split_vintage(
+    tmp_path: Path,
+) -> None:
+    layout = LakehouseLayout(tmp_path / "lake")
+    physical_ingestion = datetime(2026, 7, 29, tzinfo=UTC)
+    historical_cutoff = datetime(2026, 7, 28, 13, tzinfo=UTC)
+    plan_id = "a" * 64
+    bars_raw = {
+        "ticker": "AAPL",
+        "adjusted": False,
+        "status": "OK",
+        "results": [
+            {
+                "o": 99.0 + index,
+                "h": 102.0 + index,
+                "l": 98.0 + index,
+                "c": 100.0 + index,
+                "v": 1_000_000 + index,
+                "vw": 99.5 + index,
+                "n": 50_000,
+                "t": int(
+                    (
+                        datetime.combine(
+                            START_DATE + timedelta(days=index),
+                            datetime.min.time(),
+                            tzinfo=UTC,
+                        )
+                        + timedelta(hours=4)
+                    ).timestamp()
+                    * 1000
+                ),
+            }
+            for index in range(21)
+        ],
+    }
+    bars_observation = BronzeWriter(layout).write_json(
+        bars_raw,
+        source="polygon",
+        dataset="daily-aggregate-bars",
+        event_date=START_DATE,
+        received_at=physical_ingestion,
+    )
+    bars = PolygonClient.daily_bars_from_payload(
+        bars_raw,
+        symbol="AAPL",
+        expected_adjusted=False,
+    )
+    silver = SilverWriter(layout).write_daily_bars(
+        bars,
+        ingested_at=physical_ingestion,
+        availability_policy=DAILY_BAR_SESSION_CLOSE_15M,
+    )
+    DailyBarsSourceCapture(layout).write(
+        symbols=("AAPL",),
+        start_date=START_DATE,
+        end_date=ASOF_DATE,
+        ingested_at=physical_ingestion,
+        silver_files=silver,
+        provider_observations=(bars_observation,),
+        availability_policy=DAILY_BAR_SESSION_CLOSE_15M,
+        adjusted=False,
+        backfill_plan_id=plan_id,
+    )
+    split_raw = {
+        "status": "OK",
+        "results": [
+            {
+                "id": "split-1",
+                "ticker": "AAPL",
+                "execution_date": (START_DATE + timedelta(days=10)).isoformat(),
+                "adjustment_type": "forward_split",
+                "split_from": 1,
+                "split_to": 2,
+            }
+        ],
+    }
+    split_observation = BronzeWriter(layout).write_json(
+        split_raw,
+        source="polygon",
+        dataset="stock-splits",
+        event_date=START_DATE,
+        received_at=physical_ingestion,
+    )
+    splits = PolygonClient.stock_splits_from_payloads(
+        (split_raw,),
+        start_date=START_DATE,
+        end_date=ASOF_DATE,
+    )
+    split_files = SilverWriter(layout).write_splits(
+        splits,
+        ingested_at=physical_ingestion,
+    )
+    split_source = SplitHistorySourceCapture(layout).write(
+        plan_id=plan_id,
+        start_date=START_DATE,
+        end_date=ASOF_DATE,
+        ingested_at=physical_ingestion,
+        split_files=split_files,
+        provider_observations=(split_observation,),
+    )
+    contexts = DailyBarsFeatureLoader().load(
+        tuple(item.path for item in silver),
+        symbols=("AAPL",),
+        asof_date=ASOF_DATE,
+        observed_at=historical_cutoff,
+        split_source_manifest=split_source.path,
+        data_lake_root=layout.root,
+    )
+    names = ("return_1d", "return_20d")
+    artifact = FeatureStore(layout).write(
+        feature_group="price",
+        values=FeatureEngine().compute(contexts, feature_names=names),
+        computed_at=historical_cutoff,
+    )
+    manifest = HistoricalFeatureSourceCapture(layout).write(
+        asof_date=ASOF_DATE,
+        observed_at=historical_cutoff,
+        target_date=None,
+        feature_group="price",
+        symbols=("AAPL",),
+        feature_names=names,
+        feature_file=artifact,
+        daily_bar_files=tuple(item.path for item in silver),
+        split_source_manifest=split_source.path,
+    )
+
+    assert manifest.raw["schema_version"] == 2
+    assert (
+        HistoricalFeatureSourceCapture.reproduce(
+            manifest,
+            data_lake_root=layout.root,
+        )
+        == artifact.path
+    )

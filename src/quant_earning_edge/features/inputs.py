@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import pyarrow.parquet as pq
 
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
+from quant_earning_edge.data.split_vintage import causally_adjust_daily_bar_rows
 from quant_earning_edge.features.registry import (
     EarningsObservation,
     FeatureContext,
@@ -16,7 +21,6 @@ from quant_earning_edge.features.registry import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import date, datetime
     from pathlib import Path
 
 
@@ -29,19 +33,22 @@ class DailyBarsFeatureLoader:
         "close",
         "volume",
         "vwap",
+        "adjusted",
         "available_at",
         "ingested_at",
     }
 
-    def load(
+    def load(  # noqa: PLR0912 - explicit point-in-time validation boundary.
         self,
         paths: Sequence[Path],
         *,
         symbols: Sequence[str],
         asof_date: date,
         observed_at: datetime,
+        split_source_manifest: Path | None = None,
+        data_lake_root: Path | None = None,
     ) -> tuple[FeatureContext, ...]:
-        """Build contexts while excluding future sessions and future ingestion."""
+        """Build contexts at an availability cutoff and causal split vintage."""
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("observed_at must be timezone-aware")
         if not paths:
@@ -64,16 +71,54 @@ class DailyBarsFeatureLoader:
                     or row["available_at"] > cutoff
                 ):
                     continue
+                if row["adjusted"] and row["ingested_at"] > cutoff:
+                    raise ValueError(
+                        "retroactively adjusted daily bars are not valid point-in-time inputs"
+                    )
                 key = (symbol, session_date)
                 previous = latest.get(key)
                 if previous is None or previous["ingested_at"] < row["ingested_at"]:
                     latest[key] = row
                 elif previous["ingested_at"] == row["ingested_at"] and previous != row:
                     raise ValueError(f"conflicting daily-bar revisions for {key}")
+        selected_rows = tuple(latest.values())
+        if any(not row["adjusted"] for row in selected_rows):
+            if split_source_manifest is None or data_lake_root is None:
+                raise ValueError(
+                    "unadjusted historical bars require a retained split-history source"
+                )
+            split_source = SplitHistorySourceManifest.load(split_source_manifest)
+            if (
+                date.fromisoformat(split_source.raw["start_date"])
+                > min(row["session_date"] for row in selected_rows)
+                or date.fromisoformat(split_source.raw["end_date"]) < asof_date
+                or {row["ingested_at"] for row in selected_rows if not row["adjusted"]}
+                != {datetime.fromisoformat(split_source.raw["ingested_at"])}
+            ):
+                raise ValueError("split-history source does not cover the daily-bar vintage")
+            SplitHistorySourceCapture.reproduce(
+                split_source,
+                data_lake_root=data_lake_root,
+            )
+            selected_rows = causally_adjust_daily_bar_rows(
+                selected_rows,
+                splits=split_source.splits(data_lake_root=data_lake_root),
+                basis_date=asof_date,
+            )
+        elif split_source_manifest is not None:
+            raise ValueError("split-history source is only valid with unadjusted daily bars")
+
+        normalized_latest = {
+            (str(row["symbol"]).strip().upper(), row["session_date"]): row for row in selected_rows
+        }
         contexts: list[FeatureContext] = []
         for symbol in normalized_symbols:
             rows = sorted(
-                (row for (row_symbol, _date), row in latest.items() if row_symbol == symbol),
+                (
+                    row
+                    for (row_symbol, _date), row in normalized_latest.items()
+                    if row_symbol == symbol
+                ),
                 key=lambda row: row["session_date"],
             )
             if not rows:

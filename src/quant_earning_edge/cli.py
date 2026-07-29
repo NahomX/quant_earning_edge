@@ -51,7 +51,9 @@ from quant_earning_edge.data import (
     SessionFileStore,
     SilverDataset,
     SilverWriter,
+    SplitHistorySourceCapture,
     replay_sources_from_files,
+    split_history_plan_id,
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
 from quant_earning_edge.evaluation import (
@@ -184,6 +186,7 @@ from quant_earning_edge.universe import (
     EventCandidateManifest,
     EventSourceCapture,
     RunTrigger,
+    SplitNormalizedUniverseMarketData,
     UniverseBuilder,
     UniverseManifestStore,
     UniverseSnapshotWriter,
@@ -342,6 +345,14 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
             help="Registered price feature; repeat as needed.",
         ),
     ],
+    split_source_manifest: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Complete Polygon split-history source for unadjusted backfill bars.",
+        ),
+    ] = None,
     candidate_files: Annotated[
         list[Path] | None,
         typer.Option(
@@ -389,6 +400,8 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
         symbols=symbols,
         asof_date=_parse_date(asof_date, option="--asof-date"),
         observed_at=cutoff,
+        split_source_manifest=split_source_manifest,
+        data_lake_root=environment.data_lake_root,
     )
     if (candidate_files is None) != (earnings_files is None):
         raise typer.BadParameter(
@@ -440,6 +453,7 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
         candidate_files=tuple(candidate_files or ()),
         minute_bar_files=tuple(minute_files or ()),
         earnings_files=tuple(earnings_files or ()),
+        split_source_manifest=split_source_manifest,
     )
     _echo_json(
         {
@@ -4777,9 +4791,30 @@ def build_universe(  # noqa: PLR0917 - CLI options are an explicit operational c
             http_client=http_client,
             bronze_writer=BronzeWriter(layout),
         )
+        split_capture = SplitHistorySourceCapture(layout)
+        split_source = split_capture.ensure(
+            plan_id=split_history_plan_id(
+                scope="universe",
+                start_date=parsed_lookback_start,
+                end_date=parsed_asof_date,
+                discriminator=(
+                    f"{parsed_trade_date.isoformat()}:"
+                    f"{hashlib.sha256(config_file.read_bytes()).hexdigest()}"
+                ),
+            ),
+            start_date=parsed_lookback_start,
+            end_date=parsed_asof_date,
+            ingested_at=datetime.now(UTC),
+            provider=client,
+            silver_writer=SilverWriter(layout),
+        )
         observation_start = len(client.universe_observation_artifacts)
         result = DailyUniverseJob(
-            market_data=client,
+            market_data=SplitNormalizedUniverseMarketData(
+                provider=client,
+                splits=split_source.splits(data_lake_root=layout.root),
+                basis_date=parsed_asof_date,
+            ),
             builder=UniverseBuilder(job_config.eligibility.to_domain()),
             snapshot_writer=UniverseSnapshotWriter(layout),
             manifest_store=UniverseManifestStore(layout),
@@ -4800,6 +4835,7 @@ def build_universe(  # noqa: PLR0917 - CLI options are an explicit operational c
         snapshot=result.snapshot,
         universe_config=config_file,
         halt_snapshot=halt_snapshot_file,
+        split_source_manifest=split_source.path,
         provider_observations=client.universe_observation_artifacts[observation_start:],
     )
     _echo_json(
@@ -4813,6 +4849,7 @@ def build_universe(  # noqa: PLR0917 - CLI options are an explicit operational c
             "snapshot_sha256": result.snapshot.sha256,
             "manifest_path": str(result.manifest_path),
             "source_manifest": str(source.path),
+            "split_source_manifest": str(split_source.path),
         }
     )
 
@@ -5067,7 +5104,7 @@ def backfill_bars(  # noqa: PLR0917 - CLI options are the backfill contract.
     ] = False,
     env_file: EnvFileOption = None,
 ) -> None:
-    """Create/resume a deterministic multi-symbol adjusted-bars backfill."""
+    """Create/resume a deterministic multi-symbol raw-bars backfill."""
     environment = _environment(env_file)
     api_key = _required_key(environment.require_polygon_api_key)
     layout = LakehouseLayout(environment.data_lake_root)
@@ -5077,18 +5114,30 @@ def backfill_bars(  # noqa: PLR0917 - CLI options are the backfill contract.
         start_date=_parse_date(start, option="--start"),
         end_date=_parse_date(end, option="--end"),
         batch_size=batch_size,
+        adjusted=False,
     )
     with httpx.Client(
         base_url=environment.polygon_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
+        writer = SilverWriter(layout)
+        client = PolygonClient(
+            api_key=api_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        )
+        split_capture = SplitHistorySourceCapture(layout)
+        split_source = split_capture.ensure(
+            plan_id=plan.plan_id,
+            start_date=plan.start_date,
+            end_date=plan.end_date,
+            ingested_at=plan.created_at,
+            provider=client,
+            silver_writer=writer,
+        )
         result = BarBackfillJob(
-            provider=PolygonClient(
-                api_key=api_key,
-                http_client=http_client,
-                bronze_writer=BronzeWriter(layout),
-            ),
-            silver_writer=SilverWriter(layout),
+            provider=client,
+            silver_writer=writer,
             store=store,
             source_capture=DailyBarsSourceCapture(layout),
         ).run(plan, continue_on_error=continue_on_error)
@@ -5096,6 +5145,8 @@ def backfill_bars(  # noqa: PLR0917 - CLI options are the backfill contract.
         {
             "plan_id": plan.plan_id,
             "batch_count": len(plan.batches),
+            "adjusted": plan.adjusted,
+            "split_source_manifest": str(split_source.path),
             "completed_batch_indices": result.completed_batch_indices,
             "skipped_batch_indices": result.skipped_batch_indices,
             "failed_batch_indices": result.failed_batch_indices,

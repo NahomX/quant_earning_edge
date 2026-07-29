@@ -54,14 +54,16 @@ before a view is replaced.
 
 ## Compute point-in-time price features
 
-Supply every required silver daily-bar partition explicitly. The loader resolves
-only revisions ingested by `--observed-at`, discards sessions after
-`--asof-date`, and fails on missing history:
+Supply every required silver daily-bar partition explicitly. The loader gates
+rows by causal `available_at`, resolves eligible revisions by physical
+`ingested_at`, discards sessions after `--asof-date`, and fails on missing
+history:
 
 ```powershell
 uv run qee features compute `
   --asof-date 2026-07-27 `
   --observed-at 2026-07-27T21:00:00Z `
+  --split-source-manifest .\data\manifests\split-history-sources\source-<hash>.json `
   --bars-file .\data\silver\asset_class=us-equity\dataset=daily-bars\date=2026-07-27\part-<hash>.parquet `
   --symbol AAPL `
   --feature return_1d `
@@ -77,6 +79,13 @@ keyed by symbol, as-of date, and feature name. Every value records the feature
 implementation hash, a hash of only its allowed PIT inputs, and the computation
 cutoff. Registered feature property tests append arbitrary future observations
 and require exact output and lineage equality.
+
+`--split-source-manifest` is required for provider-unadjusted historical
+backfill files and omitted for current, provider-adjusted live captures. The
+manifest must cover the complete bar interval, match the immutable backfill
+plan and physical ingestion vintage, and reproduce from retained Polygon split
+pages. Raw bars are adjusted only for splits executed by `--asof-date`.
+Provider-adjusted bars downloaded after `--observed-at` fail closed.
 
 The command also emits `historical-source-<hash>.json`. Every daily-bar input
 must have unique retained Polygon source coverage. Minute, earnings, and event
@@ -860,14 +869,23 @@ passed. Every successful batch also emits a raw-Polygon-to-Silver source
 manifest, so later historical feature and label materialization rejects
 unattested backfill partitions.
 
+The command requests `adjusted=false` and prints a
+`split_source_manifest` alongside the plan ID. Before the first symbol batch,
+it captures or reuses one complete Polygon split-history interval for the
+plan, writes any split rows to Silver, and independently verifies that the
+retained raw pages reproduce them. This avoids future splits rewriting old
+prices or share volumes.
+
 Backfilled daily bars retain that fixed, truthful physical observation time in
 `ingested_at`. Their separate `available_at` is derived by the manifest-bound
 `session_close_plus_15m` policy (16:15 America/New_York on each session).
 Historical feature and label cutoffs use `available_at`, while duplicate
-revision resolution uses `ingested_at`. This distinction permits a current
-download to reconstruct past daily-market inputs without backdating the
-download itself. The fixed 15-minute delay is a conservative causal contract,
-not evidence of the provider's exact historical publication time.
+revision resolution uses `ingested_at`. Features then normalize the raw bars
+to each as-of split vintage using the plan-matched split source. This permits a
+current download to reconstruct past daily-market inputs without backdating
+the download or importing later splits. The fixed 15-minute delay is a
+conservative causal contract, not evidence of the provider's exact historical
+publication time.
 
 Coverage requires an authoritative JSON `sessions` list or line-delimited
 market-calendar file:

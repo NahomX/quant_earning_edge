@@ -82,7 +82,9 @@ Historical daily/minute bars, research features, forward labels, and assembled
 training datasets are likewise chained to retained provider observations and
 deeply reconstructed before model selection. Daily bars distinguish their
 truthful physical ingestion time from a manifest-bound causal availability
-time, so current backfills are not falsely timestamped as historical
-downloads. See
+time. Historical backfills retain raw unadjusted OHLCV and a complete
+plan-bound split history, then normalize only through each research as-of
+date; current-basis adjusted revisions cannot silently enter old features or
+universe snapshots. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

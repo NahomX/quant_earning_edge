@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from enum import StrEnum
@@ -17,6 +18,8 @@ from quant_earning_edge.data import (
     EarningsSourceCapture,
     SessionFileStore,
     SilverWriter,
+    SplitHistorySourceCapture,
+    split_history_plan_id,
 )
 from quant_earning_edge.features import (
     FEATURE_VALUE_SCHEMA,
@@ -32,6 +35,7 @@ from quant_earning_edge.universe import (
     EventCandidateJob,
     EventSourceCapture,
     RunTrigger,
+    SplitNormalizedUniverseMarketData,
     UniverseBuilder,
     UniverseManifestStore,
     UniverseSnapshotWriter,
@@ -222,6 +226,23 @@ class DailyInputPreparer:
             end_date=trade_date,
             ingested_at=decision_at,
         )
+        universe_lookback_start = prior_date - timedelta(days=90)
+        split_source = SplitHistorySourceCapture(self._layout).ensure(
+            plan_id=split_history_plan_id(
+                scope="daily-universe",
+                start_date=universe_lookback_start,
+                end_date=prior_date,
+                discriminator=(
+                    f"{trade_date.isoformat()}:"
+                    f"{hashlib.sha256(universe_config_file.read_bytes()).hexdigest()}"
+                ),
+            ),
+            start_date=universe_lookback_start,
+            end_date=prior_date,
+            ingested_at=decision_at,
+            provider=self._polygon,
+            silver_writer=SilverWriter(self._layout),
+        )
         action_observation_start = len(self._polygon.corporate_action_observation_artifacts)
         actions = CorporateActionsIngestor(
             client=self._polygon,
@@ -233,7 +254,11 @@ class DailyInputPreparer:
         )
         observation_start = len(self._polygon.universe_observation_artifacts)
         universe = DailyUniverseJob(
-            market_data=self._polygon,
+            market_data=SplitNormalizedUniverseMarketData(
+                provider=self._polygon,
+                splits=split_source.splits(data_lake_root=self._layout.root),
+                basis_date=prior_date,
+            ),
             builder=UniverseBuilder(config.eligibility.to_domain()),
             snapshot_writer=UniverseSnapshotWriter(self._layout),
             manifest_store=UniverseManifestStore(self._layout),
@@ -242,7 +267,7 @@ class DailyInputPreparer:
         ).run(
             trade_date=trade_date,
             asof_date=prior_date,
-            lookback_start=prior_date - timedelta(days=90),
+            lookback_start=universe_lookback_start,
             halt_snapshot=halt_snapshot,
             trigger=RunTrigger.SCHEDULED,
         )
@@ -250,12 +275,13 @@ class DailyInputPreparer:
         universe_source = UniverseSourceCapture(self._layout).write(
             trade_date=trade_date,
             asof_date=prior_date,
-            lookback_start=prior_date - timedelta(days=90),
+            lookback_start=universe_lookback_start,
             decision_at=decision_at,
             adv_sessions=config.adv_sessions,
             snapshot=universe.snapshot,
             universe_config=universe_config_file,
             halt_snapshot=halt_snapshot_file,
+            split_source_manifest=split_source.path,
             provider_observations=universe_observations,
         )
         split_artifacts = tuple(

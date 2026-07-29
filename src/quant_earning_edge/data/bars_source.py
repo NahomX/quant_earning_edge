@@ -50,10 +50,12 @@ class DailyBarsSourceManifest:
             "end_date",
             "ingested_at",
             "availability_policy",
+            "adjusted",
+            "backfill_plan_id",
             "silver_files",
             "provider_observations",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 4:
             raise ValueError("daily-bars source manifest schema mismatch")
         symbols = raw["symbols"]
         silver = raw["silver_files"]
@@ -93,6 +95,8 @@ class DailyBarsSourceManifest:
             or ingested_at.utcoffset() is None
             or ingested_at.isoformat() != raw["ingested_at"]
             or raw["availability_policy"] not in _AVAILABILITY_POLICIES
+            or not isinstance(raw["adjusted"], bool)
+            or (raw["backfill_plan_id"] is not None and not _is_sha256(raw["backfill_plan_id"]))
         ):
             raise ValueError("daily-bars source manifest metadata is invalid")
         if json.dumps(raw, sort_keys=True, separators=(",", ":")).encode() != encoded:
@@ -130,6 +134,8 @@ class DailyBarsSourceCapture:
         silver_files: Sequence[SilverArtifact],
         provider_observations: Sequence[BronzeArtifact],
         availability_policy: str = DAILY_BAR_ACTUAL_INGESTION,
+        adjusted: bool = True,
+        backfill_plan_id: str | None = None,
     ) -> DailyBarsSourceManifest:
         normalized_symbols = tuple(sorted({item.strip().upper() for item in symbols}))
         if (
@@ -141,6 +147,7 @@ class DailyBarsSourceCapture:
             or not silver_files
             or not provider_observations
             or availability_policy not in _AVAILABILITY_POLICIES
+            or (backfill_plan_id is not None and not _is_sha256(backfill_plan_id))
         ):
             raise ValueError("daily-bars source capture metadata is invalid")
         if any(
@@ -149,13 +156,26 @@ class DailyBarsSourceCapture:
             for item in provider_observations
         ):
             raise ValueError("daily-bars source contains a non-Polygon observation")
+        try:
+            provider_payloads = tuple(
+                json.loads(item.path.read_bytes()) for item in provider_observations
+            )
+        except (OSError, ValueError) as error:
+            raise ValueError("daily-bars source contains an invalid Polygon observation") from error
+        if any(
+            not isinstance(payload, dict) or payload.get("adjusted") is not adjusted
+            for payload in provider_payloads
+        ):
+            raise ValueError("daily-bars source adjustment mode differs from Polygon observations")
         raw = {
-            "schema_version": 2,
+            "schema_version": 4,
             "symbols": list(normalized_symbols),
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "ingested_at": ingested_at.isoformat(),
             "availability_policy": availability_policy,
+            "adjusted": adjusted,
+            "backfill_plan_id": backfill_plan_id,
             "silver_files": self._entries(item.path for item in silver_files),
             "provider_observations": self._entries(item.path for item in provider_observations),
         }
@@ -217,7 +237,11 @@ class DailyBarsSourceCapture:
                 raise ValueError("daily-bars Polygon observation lacks a ticker")
             symbol = raw["ticker"].strip().upper()
             observed_symbols.add(symbol)
-            for bar in PolygonClient.daily_bars_from_payload(raw, symbol=symbol):
+            for bar in PolygonClient.daily_bars_from_payload(
+                raw,
+                symbol=symbol,
+                expected_adjusted=manifest.raw["adjusted"],
+            ):
                 key = (bar.symbol, bar.timestamp)
                 if key in seen:
                     raise ValueError("daily-bars provider observations contain duplicate bars")

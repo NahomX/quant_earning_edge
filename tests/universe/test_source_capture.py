@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from quant_earning_edge.data import BronzeWriter, LakehouseLayout
+from quant_earning_edge.data import (
+    BronzeWriter,
+    LakehouseLayout,
+    SplitHistorySourceCapture,
+)
 from quant_earning_edge.data.clients import PolygonClient
 from quant_earning_edge.universe import (
     DailyUniverseJob,
@@ -106,7 +110,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]
     }
     bars = {
         "ticker": "AAA",
-        "adjusted": True,
+        "adjusted": False,
         "status": "OK",
         "results": [
             {
@@ -187,7 +191,11 @@ def _source_fixture(tmp_path: Path) -> tuple[UniverseSourceCaptureManifest, Path
         symbol="AAA",
         asof_date=ASOF_DATE,
     )
-    bars = PolygonClient.daily_bars_from_payload(bars_raw, symbol="AAA")
+    bars = PolygonClient.daily_bars_from_payload(
+        bars_raw,
+        symbol="AAA",
+        expected_adjusted=False,
+    )
     config = load_universe_job_config(config_path)
     result = DailyUniverseJob(
         market_data=_PayloadMarketData(
@@ -208,6 +216,21 @@ def _source_fixture(tmp_path: Path) -> tuple[UniverseSourceCaptureManifest, Path
         halt_snapshot=load_halt_snapshot(halt_path),
         trigger=RunTrigger.SCHEDULED,
     )
+    split_observation = writer.write_json(
+        {"status": "OK", "results": []},
+        source="polygon",
+        dataset="stock-splits",
+        event_date=ASOF_DATE,
+        received_at=DECISION_AT,
+    )
+    split_source = SplitHistorySourceCapture(layout).write(
+        plan_id="a" * 64,
+        start_date=ASOF_DATE,
+        end_date=ASOF_DATE,
+        ingested_at=DECISION_AT,
+        split_files=(),
+        provider_observations=(split_observation,),
+    )
     manifest = UniverseSourceCapture(layout).write(
         trade_date=TRADE_DATE,
         asof_date=ASOF_DATE,
@@ -217,6 +240,7 @@ def _source_fixture(tmp_path: Path) -> tuple[UniverseSourceCaptureManifest, Path
         snapshot=result.snapshot,
         universe_config=config_path,
         halt_snapshot=halt_path,
+        split_source_manifest=split_source.path,
         provider_observations=observations,
     )
     return manifest, result.snapshot.path
@@ -242,7 +266,7 @@ def test_universe_source_manifest_rejects_changed_provider_payload(
     tmp_path: Path,
 ) -> None:
     manifest, _ = _source_fixture(tmp_path)
-    provider_path = manifest.source_paths(data_lake_root=tmp_path / "lake")[2]
+    provider_path = manifest.source_paths(data_lake_root=tmp_path / "lake")[3]
     provider_path.write_bytes(b"{}")
 
     with pytest.raises(ValueError, match="missing or differs"):

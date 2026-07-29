@@ -32,6 +32,7 @@ from quant_earning_edge.data import (
     ReplaySpecMaterializer,
     SessionFileStore,
     SilverWriter,
+    SplitHistorySourceCapture,
 )
 from quant_earning_edge.data.clients import (
     AlpacaCalendarClient,
@@ -348,7 +349,7 @@ def _write_live_source_capture(  # noqa: PLR0915 - complete source fixture.
     }
     bars_raw = {
         "ticker": "AAA",
-        "adjusted": True,
+        "adjusted": False,
         "status": "OK",
         "results": [
             {
@@ -382,6 +383,22 @@ def _write_live_source_capture(  # noqa: PLR0915 - complete source fixture.
             ("daily-aggregate-bars", bars_raw),
         )
     )
+    writer = SilverWriter(candidate_layout)
+    split_observation = bronze.write_json(
+        {"status": "OK", "results": []},
+        source="polygon",
+        dataset="stock-splits",
+        event_date=prior_date,
+        received_at=captured_at,
+    )
+    split_source = SplitHistorySourceCapture(candidate_layout).write(
+        plan_id="a" * 64,
+        start_date=prior_date,
+        end_date=prior_date,
+        ingested_at=captured_at,
+        split_files=(),
+        provider_observations=(split_observation,),
+    )
     universe_source = UniverseSourceCapture(candidate_layout).write(
         trade_date=trade_date,
         asof_date=prior_date,
@@ -391,10 +408,10 @@ def _write_live_source_capture(  # noqa: PLR0915 - complete source fixture.
         snapshot=universe_snapshot,
         universe_config=config_path,
         halt_snapshot=halt_path,
+        split_source_manifest=split_source.path,
         provider_observations=provider_observations,
     )
     universe_path = universe_snapshot.path
-    writer = SilverWriter(candidate_layout)
     earnings_raw = {
         "earningsCalendar": [
             {
@@ -752,9 +769,11 @@ def _no_trade_replay_sources(
         universe_source_manifest_path,
         universe_config_path,
         universe_halt_path,
+        universe_split_source_manifest_path,
         universe_bar_raw_path,
         universe_details_raw_path,
         universe_reference_raw_path,
+        universe_split_raw_path,
         event_source_manifest_path,
         event_earnings_raw_path,
         event_split_raw_path,
@@ -863,9 +882,11 @@ def _no_trade_replay_sources(
         "universe_source_manifest": universe_source_manifest_path,
         "universe_config": universe_config_path,
         "universe_halts": universe_halt_path,
+        "universe_split_source_manifest": universe_split_source_manifest_path,
         "universe_bar_raw": universe_bar_raw_path,
         "universe_details_raw": universe_details_raw_path,
         "universe_reference_raw": universe_reference_raw_path,
+        "universe_split_raw": universe_split_raw_path,
         "event_source_manifest": event_source_manifest_path,
         "event_earnings_raw": event_earnings_raw_path,
         "event_split_raw": event_split_raw_path,
@@ -921,9 +942,11 @@ def _complete_source_workflow(
                 sources["universe_source_manifest"],
                 sources["universe_config"],
                 sources["universe_halts"],
+                sources["universe_split_source_manifest"],
                 sources["universe_bar_raw"],
                 sources["universe_details_raw"],
                 sources["universe_reference_raw"],
+                sources["universe_split_raw"],
                 sources["event_source_manifest"],
                 sources["event_earnings_raw"],
                 sources["event_split_raw"],
@@ -1034,9 +1057,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         universe_source_manifest_path,
         universe_config_path,
         universe_halt_path,
+        universe_split_source_manifest_path,
         universe_bar_raw_path,
         universe_details_raw_path,
         universe_reference_raw_path,
+        universe_split_raw_path,
         event_source_manifest_path,
         event_earnings_raw_path,
         event_split_raw_path,
@@ -1400,9 +1425,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                                 universe_source_manifest_path,
                                 universe_config_path,
                                 universe_halt_path,
+                                universe_split_source_manifest_path,
                                 universe_bar_raw_path,
                                 universe_details_raw_path,
                                 universe_reference_raw_path,
+                                universe_split_raw_path,
                             )
                             if capture_universe_lineage
                             else ()

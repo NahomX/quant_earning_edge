@@ -58,6 +58,15 @@ from quant_earning_edge.data.silver import (
     SilverArtifact,
     SilverWriter,
 )
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+    split_history_plan_id,
+)
+from quant_earning_edge.data.split_vintage import (
+    causally_adjust_daily_bar_rows,
+    causally_adjust_equity_bars,
+)
 from quant_earning_edge.data.store import DuckDBStore, SilverDataset
 
 __all__ = [
@@ -115,5 +124,10 @@ __all__ = [
     "SilverArtifact",
     "SilverDataset",
     "SilverWriter",
+    "SplitHistorySourceCapture",
+    "SplitHistorySourceManifest",
+    "causally_adjust_daily_bar_rows",
+    "causally_adjust_equity_bars",
     "replay_sources_from_files",
+    "split_history_plan_id",
 ]

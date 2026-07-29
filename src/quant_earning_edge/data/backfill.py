@@ -35,6 +35,7 @@ class BarsProvider(Protocol):
         symbol: str,
         start_date: date,
         end_date: date,
+        adjusted: bool = True,
     ) -> tuple[EquityBar, ...]: ...
 
 
@@ -54,6 +55,7 @@ class BarBackfillPlan:
     start_date: date
     end_date: date
     batch_size: int
+    adjusted: bool
     created_at: datetime
 
     @property
@@ -121,6 +123,7 @@ class BarBackfillStore:
         start_date: date,
         end_date: date,
         batch_size: int,
+        adjusted: bool = True,
         created_at: datetime | None = None,
     ) -> BarBackfillPlan:
         """Create or load the deterministic plan for this exact specification."""
@@ -136,6 +139,7 @@ class BarBackfillStore:
             "start_date": start_date,
             "end_date": end_date,
             "batch_size": batch_size,
+            "adjusted": adjusted,
         }
         plan_id = _digest(identity)
         root = self._plan_root(plan_id)
@@ -151,6 +155,7 @@ class BarBackfillStore:
             start_date=start_date,
             end_date=end_date,
             batch_size=batch_size,
+            adjusted=adjusted,
             created_at=observed_at.astimezone(UTC),
         )
         root.mkdir(parents=True, exist_ok=True)
@@ -173,6 +178,7 @@ class BarBackfillStore:
             start_date=date.fromisoformat(str(raw["start_date"])),
             end_date=date.fromisoformat(str(raw["end_date"])),
             batch_size=int(raw["batch_size"]),
+            adjusted=bool(raw["adjusted"]),
             created_at=datetime.fromisoformat(str(raw["created_at"])),
         )
         if plan.plan_id != plan_id:
@@ -313,6 +319,7 @@ class BarBackfillJob:
                     symbol=symbol,
                     start_date=plan.start_date,
                     end_date=plan.end_date,
+                    adjusted=plan.adjusted,
                 )
                 for bar in fetched:
                     if bar.symbol != symbol:
@@ -321,6 +328,10 @@ class BarBackfillJob:
                         )
                     if not plan.start_date <= bar.session_date <= plan.end_date:
                         raise ValueError(f"{symbol} bar {bar.session_date} fell outside the plan")
+                    if bar.adjusted is not plan.adjusted:
+                        raise ValueError(
+                            f"{symbol} bar adjustment mode differed from the backfill plan"
+                        )
                 bars.extend(fetched)
             artifacts = self._silver_writer.write_daily_bars(
                 tuple(bars),
@@ -336,6 +347,8 @@ class BarBackfillJob:
                     silver_files=artifacts,
                     provider_observations=self._provider_observations()[observation_start:],
                     availability_policy=DAILY_BAR_SESSION_CLOSE_15M,
+                    adjusted=plan.adjusted,
+                    backfill_plan_id=plan.plan_id,
                 )
             event = self._success_event(
                 plan=plan,

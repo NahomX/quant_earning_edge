@@ -10,6 +10,11 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from quant_earning_edge.data.clients import PolygonClient
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
+from quant_earning_edge.data.split_vintage import causally_adjust_equity_bars
 from quant_earning_edge.universe.builder import UniverseBuilder
 from quant_earning_edge.universe.config import (
     load_halt_snapshot,
@@ -26,7 +31,12 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from quant_earning_edge.data.bronze import BronzeArtifact
-    from quant_earning_edge.data.clients import EquityBar, TickerDetails, TickerReference
+    from quant_earning_edge.data.clients import (
+        EquityBar,
+        StockSplit,
+        TickerDetails,
+        TickerReference,
+    )
     from quant_earning_edge.data.layout import LakehouseLayout
     from quant_earning_edge.universe.snapshot import UniverseSnapshotArtifact
 
@@ -58,11 +68,12 @@ class UniverseSourceCaptureManifest:
             "snapshot_semantic_sha256",
             "universe_config",
             "halt_snapshot",
+            "split_source_manifest",
             "provider_observations",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("universe source manifest schema mismatch")
-        for name in ("universe_config", "halt_snapshot"):
+        for name in ("universe_config", "halt_snapshot", "split_source_manifest"):
             _validate_source_entry(raw[name])
         observations = raw["provider_observations"]
         if not isinstance(observations, list) or not observations:
@@ -106,6 +117,7 @@ class UniverseSourceCaptureManifest:
         return (
             self.raw["universe_config"],
             self.raw["halt_snapshot"],
+            self.raw["split_source_manifest"],
             *self.raw["provider_observations"],
         )
 
@@ -119,7 +131,12 @@ class UniverseSourceCaptureManifest:
             for path, entry in zip(paths, self.source_entries, strict=True)
         ):
             raise ValueError("universe source file is missing or differs")
-        return paths
+        split_source = SplitHistorySourceManifest.load(paths[2])
+        return (
+            *paths,
+            *split_source.split_paths(data_lake_root=data_lake_root),
+            *split_source.provider_paths(data_lake_root=data_lake_root),
+        )
 
 
 class UniverseSourceCapture:
@@ -139,6 +156,7 @@ class UniverseSourceCapture:
         snapshot: UniverseSnapshotArtifact,
         universe_config: Path,
         halt_snapshot: Path,
+        split_source_manifest: Path,
         provider_observations: Sequence[BronzeArtifact],
     ) -> UniverseSourceCaptureManifest:
         if decision_at.tzinfo is None or decision_at.utcoffset() is None:
@@ -157,8 +175,18 @@ class UniverseSourceCapture:
         )
         if {entry["dataset"] for entry in entries} != _DATASETS:
             raise ValueError("universe source capture lacks required provider observations")
+        split_source = SplitHistorySourceManifest.load(split_source_manifest)
+        if (
+            date.fromisoformat(split_source.raw["start_date"]) > lookback_start
+            or date.fromisoformat(split_source.raw["end_date"]) < asof_date
+        ):
+            raise ValueError("universe split-history source does not cover the bar interval")
+        SplitHistorySourceCapture.reproduce(
+            split_source,
+            data_lake_root=self._layout.root,
+        )
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "trade_date": trade_date.isoformat(),
             "asof_date": asof_date.isoformat(),
             "lookback_start": lookback_start.isoformat(),
@@ -170,6 +198,7 @@ class UniverseSourceCapture:
                 self._retain_input(universe_config, dataset="config")
             ),
             "halt_snapshot": self._source_entry(self._retain_input(halt_snapshot, dataset="halts")),
+            "split_source_manifest": self._source_entry(split_source.path),
             "provider_observations": entries,
         }
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
@@ -211,9 +240,16 @@ class UniverseSourceCapture:
         output_layout: LakehouseLayout,
     ) -> UniverseSnapshotArtifact:
         paths = manifest.source_paths(data_lake_root=data_lake_root)
-        config_path, halt_path, *provider_paths = paths
+        provider_count = len(manifest.raw["provider_observations"])
+        config_path, halt_path, split_source_path = paths[:3]
+        provider_paths = paths[3 : 3 + provider_count]
         config = load_universe_job_config(config_path)
         halt = load_halt_snapshot(halt_path)
+        split_source = SplitHistorySourceManifest.load(split_source_path)
+        SplitHistorySourceCapture.reproduce(
+            split_source,
+            data_lake_root=data_lake_root,
+        )
         market_data = _CapturedUniverseMarketData.from_files(
             tuple(
                 (
@@ -228,6 +264,7 @@ class UniverseSourceCapture:
             ),
             asof_date=date.fromisoformat(manifest.raw["asof_date"]),
             lookback_start=date.fromisoformat(manifest.raw["lookback_start"]),
+            splits=split_source.splits(data_lake_root=data_lake_root),
         )
         decision_at = datetime.fromisoformat(manifest.raw["decision_at"])
         result = DailyUniverseJob(
@@ -280,6 +317,7 @@ class _CapturedUniverseMarketData:
         *,
         asof_date: date,
         lookback_start: date,
+        splits: tuple[StockSplit, ...],
     ) -> _CapturedUniverseMarketData:
         references: list[TickerReference] = []
         details: dict[str, TickerDetails] = {}
@@ -302,7 +340,11 @@ class _CapturedUniverseMarketData:
             elif dataset == "daily-aggregate-bars":
                 symbol = str(raw.get("ticker", "")).strip().upper()
                 bars.setdefault(symbol, []).extend(
-                    PolygonClient.daily_bars_from_payload(raw, symbol=symbol)
+                    PolygonClient.daily_bars_from_payload(
+                        raw,
+                        symbol=symbol,
+                        expected_adjusted=False,
+                    )
                 )
         ordered_references = tuple(sorted(references, key=lambda item: item.symbol))
         symbols = tuple(item.symbol for item in ordered_references)
@@ -318,7 +360,11 @@ class _CapturedUniverseMarketData:
                 not lookback_start <= item <= asof_date for item in dates
             ):
                 raise ValueError(f"retained daily bars are invalid for {symbol}")
-            normalized_bars[symbol] = ordered
+            normalized_bars[symbol] = causally_adjust_equity_bars(
+                ordered,
+                splits=splits,
+                basis_date=asof_date,
+            )
         return cls(
             references=ordered_references,
             details=details,

@@ -20,15 +20,15 @@ reproducible through `uv.lock`.
 | Immutable canonical bronze JSON persistence | Complete | `data/bronze.py`, data tests |
 | DuckDB connection/query boundary | Complete | `data/store.py`, persistence test |
 | Finnhub earnings client and retry/rate-limit handling | Complete | `data/clients/finnhub.py`, contract tests |
-| Polygon aggregate-bars client and pagination | Complete | `data/clients/polygon.py`, contract tests |
+| Polygon aggregate-bars client and pagination | Complete | explicit adjusted/unadjusted requests, pagination, capture, and contract tests |
 | Polygon pre-market minute aggregates | Complete | adjusted minute client/silver schema/cutoff tests |
 | Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
 | Provider-source earnings reconstruction | Complete | every production/CLI Finnhub ingestion emits a strict raw-to-Silver manifest; historical live-feature inputs require unique manifest coverage and byte-exact reproduction |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
 | US-equity bars silver schema and writer | Complete | `data/silver.py`; truthful physical `ingested_at` is separate from explicit causal `available_at`; bars ingestion/backfill tests |
-| Provider-source daily-bar reconstruction | Complete | single-symbol ingestion and resumable backfill emit strict raw-Polygon-to-Silver manifests, including the availability policy; every captured file is byte-exactly replayable |
+| Provider-source daily-bar reconstruction | Complete | single-symbol ingestion and resumable backfill emit strict raw-Polygon-to-Silver manifests, including availability, adjustment mode, and backfill-plan identity; every captured file is byte-exactly replayable |
 | Provider-source minute-bar reconstruction | Complete | minute ingestion emits the exact interval/event-date/ingestion-time manifest and byte-exactly rebuilds Silver from retained Polygon pages |
-| Resumable historical backfill tooling | Complete | `data/backfill.py`; historical bars use a declared 16:15 America/New_York session-availability contract without backdating physical ingestion; resume and historical-cutoff tests |
+| Resumable historical backfill tooling | Complete | immutable plans now default to provider-unadjusted bars plus one complete, independently replayable Polygon split-history interval; 16:15 America/New_York session availability remains separate from physical ingestion |
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
@@ -40,16 +40,16 @@ reproducible through `uv.lock`.
 | Stable schema-validated DuckDB silver views | Complete | `data/store.py`, view query tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
-| Provider-source universe reconstruction | Complete | exact Polygon reference/details/daily-bar Bronze set plus retained config/halt inputs; strict manifest; candidate/workflow capture; byte-exact terminal Phase 6 reproduction |
+| Provider-source universe reconstruction | Complete | exact Polygon reference/details/raw-daily-bar and complete split-history sources plus retained config/halt inputs; bars are normalized only through the as-of date; strict candidate/workflow capture and byte-exact terminal reproduction |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
 | Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
 | Credential-safe CLI and validated universe config | Complete | `cli.py`, `runtime.py`, CLI/config tests |
 | Typed feature registry with code hashes and PIT input boundary | Complete | `features/registry.py`, active property tests |
 | Baseline causal feature set | 16 scalar features complete | price, gap, Kalman volume, momentum, and earnings-event features |
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
-| Source-bound historical feature reconstruction | Complete | price/event/premarket inputs bind daily/minute/earnings/candidate provider chains; exact registered-feature recomputation and Parquet equality are required |
+| Source-bound historical feature reconstruction | Complete | raw daily bars are causally normalized using the plan-matched complete split history; retroactively adjusted late backfills fail closed; price/event/premarket provider chains and exact feature Parquet reproduction are required |
 | Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, including next-session open-to-close target and explicit-offset tests |
-| Source-bound forward-label reconstruction | Complete | raw Polygon adjusted bars and raw Alpaca sessions are independently replayed before exact D+1/D+5 label regeneration |
+| Source-bound forward-label reconstruction | Complete | adjustment-explicit Polygon bars and raw Alpaca sessions are independently replayed before exact same-session D+1/D+5 return-label regeneration |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
 | Source-bound training-dataset reconstruction | Complete | historical feature and forward-label provider manifests are mandatory and deeply replayed before byte-exact wide Parquet rebuild and Optuna selection |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
@@ -178,6 +178,14 @@ backfill usable for historical reconstruction without falsely claiming it was
 physically observed in the past. It is an explicit reconstruction assumption,
 not proof of a provider's historical publication latency or vintage-adjustment
 semantics.
+
+The backfill itself requests `adjusted=false`. A second source manifest freezes
+the complete Polygon split interval for the same immutable plan. Historical
+feature loading moves each raw OHLCV row onto the share basis established only
+by splits executed by that feature's as-of date. The daily universe production
+path uses the same transformation. A provider-adjusted bar physically observed
+after a historical cutoff is rejected, because its current adjustment vintage
+could contain later corporate actions.
 
 ## Next implementation slice
 

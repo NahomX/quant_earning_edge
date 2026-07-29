@@ -26,7 +26,7 @@ _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 class EquityBar(BaseModel):
-    """Validated, split-adjusted US-equity daily aggregate."""
+    """Validated US-equity daily aggregate with an explicit split-adjustment mode."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -585,10 +585,15 @@ class PolygonClient:
         raw: Any,
         *,
         symbol: str,
+        expected_adjusted: bool = True,
     ) -> tuple[EquityBar, ...]:
         """Reconstruct one retained aggregate page without a provider request."""
         normalized = symbol.strip().upper()
-        page = cls._validate_page(raw, expected_symbol=normalized)
+        page = cls._validate_page(
+            raw,
+            expected_symbol=normalized,
+            expected_adjusted=expected_adjusted,
+        )
         bars = tuple(
             cls._to_equity_bar(
                 aggregate=aggregate,
@@ -721,8 +726,9 @@ class PolygonClient:
         symbol: str,
         start_date: date,
         end_date: date,
+        adjusted: bool = True,
     ) -> tuple[EquityBar, ...]:
-        """Fetch split-adjusted daily aggregates over an inclusive interval."""
+        """Fetch daily aggregates in the requested split-adjustment mode."""
         normalized_symbol = symbol.strip().upper()
         if not normalized_symbol:
             raise ValueError("symbol must not be empty")
@@ -734,7 +740,7 @@ class PolygonClient:
             f"{start_date.isoformat()}/{end_date.isoformat()}"
         )
         params: dict[str, str] | None = {
-            "adjusted": "true",
+            "adjusted": str(adjusted).lower(),
             "sort": "asc",
             "limit": "50000",
         }
@@ -753,8 +759,16 @@ class PolygonClient:
                 )
                 self._universe_observation_artifacts.append(artifact)
                 self._feature_observation_artifacts.append(artifact)
-            page = self._validate_page(raw, expected_symbol=normalized_symbol)
-            for bar in self.daily_bars_from_payload(raw, symbol=normalized_symbol):
+            page = self._validate_page(
+                raw,
+                expected_symbol=normalized_symbol,
+                expected_adjusted=adjusted,
+            )
+            for bar in self.daily_bars_from_payload(
+                raw,
+                symbol=normalized_symbol,
+                expected_adjusted=adjusted,
+            ):
                 if bar.timestamp in seen_timestamps:
                     raise ProviderResponseError(
                         "Polygon returned duplicate aggregate timestamp: "
@@ -1391,7 +1405,12 @@ class PolygonClient:
         return next_url
 
     @staticmethod
-    def _validate_page(raw: Any, *, expected_symbol: str) -> _AggregatesResponse:
+    def _validate_page(
+        raw: Any,
+        *,
+        expected_symbol: str,
+        expected_adjusted: bool = True,
+    ) -> _AggregatesResponse:
         try:
             page = _AggregatesResponse.model_validate(raw)
         except ValidationError as error:
@@ -1404,8 +1423,10 @@ class PolygonClient:
             raise ProviderResponseError(
                 f"Polygon response ticker {page.ticker!r} did not match {expected_symbol!r}"
             )
-        if not page.adjusted:
-            raise ProviderResponseError("Polygon response was not split-adjusted")
+        if page.adjusted is not expected_adjusted:
+            raise ProviderResponseError(
+                "Polygon response split-adjustment mode differed from the request"
+            )
         return page
 
     @staticmethod

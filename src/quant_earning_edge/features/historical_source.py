@@ -24,6 +24,10 @@ from quant_earning_edge.data.minute_bars_source import (
     MinuteBarsSourceCapture,
     MinuteBarsSourceManifest,
 )
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
 from quant_earning_edge.features.inputs import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -50,6 +54,9 @@ _GROUPS = (
     "earnings_files",
     "daily_bar_source_manifests",
     "daily_bar_provider_observations",
+    "split_files",
+    "split_source_manifests",
+    "split_provider_observations",
     "minute_bar_source_manifests",
     "minute_bar_provider_observations",
     "earnings_source_manifests",
@@ -84,7 +91,7 @@ class HistoricalFeatureSourceManifest:
             "feature_file",
             "source_files",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("historical-feature source manifest schema mismatch")
         sources = raw["source_files"]
         if (
@@ -113,6 +120,7 @@ class HistoricalFeatureSourceManifest:
             ("earnings_files", "earnings_provider_observations"),
             ("candidate_files", "candidate_manifests"),
             ("candidate_files", "candidate_lineage_files"),
+            ("split_source_manifests", "split_provider_observations"),
         )
         if any(bool(sources[left]) != bool(sources[right]) for left, right in optional_pairs):
             raise ValueError("historical-feature optional lineage is incomplete")
@@ -199,6 +207,7 @@ class HistoricalFeatureSourceCapture:
         candidate_files: Sequence[Path] = (),
         minute_bar_files: Sequence[Path] = (),
         earnings_files: Sequence[Path] = (),
+        split_source_manifest: Path | None = None,
     ) -> HistoricalFeatureSourceManifest:
         normalized_symbols = tuple(sorted({item.strip().upper() for item in symbols}))
         normalized_names = tuple(sorted(set(feature_names)))
@@ -229,6 +238,34 @@ class HistoricalFeatureSourceCapture:
             daily_bar_files,
             data_lake_root=self._layout.root,
         )
+        adjustment_modes = {bool(item.raw["adjusted"]) for item in daily_sources}
+        if len(adjustment_modes) != 1:
+            raise ValueError("historical features cannot mix daily-bar adjustment modes")
+        adjusted = adjustment_modes.pop()
+        if adjusted and any(
+            item.raw["availability_policy"] == "session_close_plus_15m" for item in daily_sources
+        ):
+            raise ValueError(
+                "retroactively adjusted backfill bars are not point-in-time feature inputs"
+            )
+        if adjusted == (split_source_manifest is not None):
+            raise ValueError(
+                "unadjusted daily bars require exactly one split-history source manifest"
+            )
+        split_source = (
+            SplitHistorySourceManifest.load(split_source_manifest)
+            if split_source_manifest is not None
+            else None
+        )
+        if split_source is not None:
+            if {item.raw["backfill_plan_id"] for item in daily_sources} != {
+                split_source.raw["plan_id"]
+            }:
+                raise ValueError("daily bars and split history differ from the backfill plan")
+            SplitHistorySourceCapture.reproduce(
+                split_source,
+                data_lake_root=self._layout.root,
+            )
         minute_sources = (
             MinuteBarsSourceCapture.find_for_files(
                 minute_bar_files,
@@ -253,7 +290,7 @@ class HistoricalFeatureSourceCapture:
             for path in sorted(candidate_files)
         )
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "asof_date": asof_date.isoformat(),
             "observed_at": observed_at.isoformat(),
             "target_date": target_date.isoformat() if target_date is not None else None,
@@ -271,6 +308,19 @@ class HistoricalFeatureSourceCapture:
                     path
                     for item in daily_sources
                     for path in item.provider_paths(data_lake_root=self._layout.root)
+                ),
+                "split_files": self._entries(
+                    split_source.split_paths(data_lake_root=self._layout.root)
+                    if split_source is not None
+                    else ()
+                ),
+                "split_source_manifests": self._entries(
+                    (split_source.path,) if split_source is not None else ()
+                ),
+                "split_provider_observations": self._entries(
+                    split_source.provider_paths(data_lake_root=self._layout.root)
+                    if split_source is not None
+                    else ()
                 ),
                 "minute_bar_source_manifests": self._entries(item.path for item in minute_sources),
                 "minute_bar_provider_observations": self._entries(
@@ -337,6 +387,11 @@ class HistoricalFeatureSourceCapture:
         earnings_sources = tuple(
             EarningsSourceManifest.load(path) for path in groups["earnings_source_manifests"]
         )
+        split_sources = tuple(
+            SplitHistorySourceManifest.load(path) for path in groups["split_source_manifests"]
+        )
+        if len(split_sources) > 1:
+            raise ValueError("historical feature has multiple split-history sources")
         HistoricalFeatureSourceCapture._validate_lineage(
             groups=groups,
             daily_sources=daily_sources,
@@ -344,6 +399,18 @@ class HistoricalFeatureSourceCapture:
             earnings_sources=earnings_sources,
             data_lake_root=data_lake_root,
         )
+        split_source = split_sources[0] if split_sources else None
+        if split_source is not None:
+            if set(groups["split_files"]) != set(
+                split_source.split_paths(data_lake_root=data_lake_root)
+            ) or set(groups["split_provider_observations"]) != set(
+                split_source.provider_paths(data_lake_root=data_lake_root)
+            ):
+                raise ValueError("historical split lineage differs from its source manifest")
+            SplitHistorySourceCapture.reproduce(
+                split_source,
+                data_lake_root=data_lake_root,
+            )
         candidate_manifests = tuple(
             EventCandidateManifest.load(path) for path in groups["candidate_manifests"]
         )
@@ -397,6 +464,8 @@ class HistoricalFeatureSourceCapture:
                 symbols=tuple(manifest.raw["symbols"]),
                 asof_date=asof_date,
                 observed_at=observed_at,
+                split_source_manifest=(split_source.path if split_source is not None else None),
+                data_lake_root=data_lake_root,
             )
             if groups["minute_bar_files"]:
                 assert target_date is not None

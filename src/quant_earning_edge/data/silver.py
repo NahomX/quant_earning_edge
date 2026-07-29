@@ -210,7 +210,7 @@ class SilverWriter:
         ingested_at: datetime | None = None,
         availability_policy: str = DAILY_BAR_ACTUAL_INGESTION,
     ) -> tuple[SilverArtifact, ...]:
-        """Write split-adjusted bars to one immutable file per session."""
+        """Write adjustment-explicit bars to one immutable file per session."""
         observed_at = ingested_at or datetime.now(UTC)
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("ingested_at must be timezone-aware")
@@ -220,8 +220,6 @@ class SilverWriter:
 
         grouped: dict[date, list[EquityBar]] = defaultdict(list)
         for bar in bars:
-            if not bar.adjusted:
-                raise ValueError("silver daily bars must be split-adjusted")
             grouped[bar.session_date].append(bar)
 
         artifacts = [

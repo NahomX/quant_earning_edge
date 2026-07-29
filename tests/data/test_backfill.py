@@ -16,6 +16,7 @@ from quant_earning_edge.data import (
     DailyBarsSourceCapture,
     LakehouseLayout,
     SilverWriter,
+    SplitHistorySourceCapture,
 )
 from quant_earning_edge.data.clients import EquityBar, PolygonClient
 from quant_earning_edge.features import DailyBarsFeatureLoader
@@ -54,12 +55,15 @@ class FakeBarsProvider:
         symbol: str,
         start_date: date,
         end_date: date,
+        adjusted: bool = True,
     ) -> tuple[EquityBar, ...]:
         self.calls.append(symbol)
         if symbol in self.fail_symbols:
             raise RuntimeError(f"intentional failure for {symbol}")
         return tuple(
-            _bar(symbol, session) for session in self.sessions if start_date <= session <= end_date
+            _bar(symbol, session).model_copy(update={"adjusted": adjusted})
+            for session in self.sessions
+            if start_date <= session <= end_date
         )
 
 
@@ -89,10 +93,11 @@ class CapturingBarsProvider:
         symbol: str,
         start_date: date,
         end_date: date,
+        adjusted: bool = True,
     ) -> tuple[EquityBar, ...]:
         raw = {
             "ticker": symbol,
-            "adjusted": True,
+            "adjusted": adjusted,
             "status": "OK",
             "results": [
                 {
@@ -122,7 +127,11 @@ class CapturingBarsProvider:
                 event_date=start_date,
             )
         )
-        return PolygonClient.daily_bars_from_payload(raw, symbol=symbol)
+        return PolygonClient.daily_bars_from_payload(
+            raw,
+            symbol=symbol,
+            expected_adjusted=adjusted,
+        )
 
 
 def test_plan_identity_is_normalized_and_stable_across_resume(tmp_path: Path) -> None:
@@ -143,10 +152,21 @@ def test_plan_identity_is_normalized_and_stable_across_resume(tmp_path: Path) ->
         batch_size=2,
         created_at=created_at + timedelta(days=1),
     )
+    unadjusted = store.prepare_plan(
+        symbols=("AAPL", "MSFT"),
+        start_date=date(2021, 1, 1),
+        end_date=date(2026, 1, 1),
+        batch_size=2,
+        adjusted=False,
+        created_at=created_at,
+    )
 
     assert first == second
+    assert unadjusted.plan_id != first.plan_id
+    assert not unadjusted.adjusted
     assert first.symbols == ("AAPL", "MSFT")
     assert len(first.plan_id) == 64
+    assert first.adjusted
     assert first.created_at == created_at
 
 
@@ -222,14 +242,13 @@ def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> 
 
     assert len(manifests) == 1
     assert manifests[0].raw["availability_policy"] == "session_close_plus_15m"
-    contexts = DailyBarsFeatureLoader().load(
-        silver_files,
-        symbols=("AAPL", "MSFT"),
-        asof_date=sessions[-1],
-        observed_at=datetime(2026, 7, 22, 13, tzinfo=UTC),
-    )
-    assert tuple(context.symbol for context in contexts) == ("AAPL", "MSFT")
-    assert all(len(context.bars) == 2 for context in contexts)
+    with pytest.raises(ValueError, match="retroactively adjusted"):
+        DailyBarsFeatureLoader().load(
+            silver_files,
+            symbols=("AAPL", "MSFT"),
+            asof_date=sessions[-1],
+            observed_at=datetime(2026, 7, 22, 13, tzinfo=UTC),
+        )
     assert all(
         value == datetime(2026, 7, 29, tzinfo=UTC)
         for path in silver_files
@@ -243,6 +262,74 @@ def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> 
     assert tuple(item.path.read_bytes() for item in reproduced) == tuple(
         path.read_bytes() for path in silver_files
     )
+
+
+def test_unadjusted_backfill_is_source_bound_and_rejected_by_feature_loader(
+    tmp_path: Path,
+) -> None:
+    layout = LakehouseLayout(tmp_path)
+    store = BarBackfillStore(layout)
+    session = date(2026, 7, 20)
+    plan = store.prepare_plan(
+        symbols=("AAPL",),
+        start_date=session,
+        end_date=session,
+        batch_size=1,
+        adjusted=False,
+        created_at=datetime(2026, 7, 29, tzinfo=UTC),
+    )
+    BarBackfillJob(
+        provider=CapturingBarsProvider(layout, (session,)),
+        silver_writer=SilverWriter(layout),
+        store=store,
+        source_capture=DailyBarsSourceCapture(layout),
+        clock=Clock(),
+        attempt_id_factory=lambda: "raw-attempt",
+    ).run(plan)
+    silver_files = tuple(sorted((tmp_path / "silver").rglob("*.parquet")))
+    manifest = DailyBarsSourceCapture.find_for_files(
+        silver_files,
+        data_lake_root=tmp_path,
+    )[0]
+
+    assert manifest.raw["adjusted"] is False
+    assert pq.read_table(silver_files[0]).column("adjusted").to_pylist() == [False]  # type: ignore[no-untyped-call]
+    with pytest.raises(ValueError, match="split-history source"):
+        DailyBarsFeatureLoader().load(
+            silver_files,
+            symbols=("AAPL",),
+            asof_date=session,
+            observed_at=datetime(2026, 7, 21, 13, tzinfo=UTC),
+        )
+    split_observation = BronzeWriter(layout).write_json(
+        {"status": "OK", "results": []},
+        source="polygon",
+        dataset="stock-splits",
+        event_date=session,
+    )
+    split_source = SplitHistorySourceCapture(layout).write(
+        plan_id=plan.plan_id,
+        start_date=session,
+        end_date=session,
+        ingested_at=plan.created_at,
+        split_files=(),
+        provider_observations=(split_observation,),
+    )
+    contexts = DailyBarsFeatureLoader().load(
+        silver_files,
+        symbols=("AAPL",),
+        asof_date=session,
+        observed_at=datetime(2026, 7, 21, 13, tzinfo=UTC),
+        split_source_manifest=split_source.path,
+        data_lake_root=tmp_path,
+    )
+    assert contexts[0].bars[0].close == 101
+    reproduced = DailyBarsSourceCapture.reproduce(
+        manifest,
+        data_lake_root=tmp_path,
+        output_layout=LakehouseLayout(tmp_path / "reproduced"),
+    )
+    assert reproduced[0].path.read_bytes() == silver_files[0].read_bytes()
 
 
 def test_coverage_requires_full_batches_five_years_and_1200_sessions(

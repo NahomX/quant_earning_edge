@@ -41,6 +41,7 @@ from quant_earning_edge.universe.source_capture import (
     UniverseSourceCapture,
     UniverseSourceCaptureManifest,
 )
+from quant_earning_edge.universe.vintage_market import SplitNormalizedUniverseMarketData
 
 __all__ = [
     "EVENT_CANDIDATE_SCHEMA",
@@ -60,6 +61,7 @@ __all__ = [
     "RejectionReason",
     "RunStatus",
     "RunTrigger",
+    "SplitNormalizedUniverseMarketData",
     "UniverseBuilder",
     "UniverseConfig",
     "UniverseDecision",

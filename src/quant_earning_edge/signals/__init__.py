@@ -27,6 +27,10 @@ from quant_earning_edge.signals.momentum import (
     MomentumSignal,
     SignalSide,
 )
+from quant_earning_edge.signals.production_model import (
+    ProductionModelArtifact,
+    ProductionModelTrainer,
+)
 
 __all__ = [
     "CrossSectionalMomentum",
@@ -45,6 +49,8 @@ __all__ = [
     "MomentumSignal",
     "OosPrediction",
     "PlannedEventTrades",
+    "ProductionModelArtifact",
+    "ProductionModelTrainer",
     "SignalSide",
     "WalkForwardModelRun",
     "load_strategy_config",

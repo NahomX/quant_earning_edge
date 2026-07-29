@@ -108,6 +108,7 @@ reproducible through `uv.lock`.
 | Durable operator-attention evidence | Complete | invalid specs and expired windows emit idempotent content-addressed attention records |
 | Bounded exponential workflow retries | Complete | per-stage attempt budgets, capped backoff, terminal exhaustion, attention evidence |
 | Isolated credentialed no-trade smoke | Complete | manual zero-order full workflow, live safety controls, separate state/artifacts, no proof credit |
+| Cutoff-safe production model refit | Complete | closed-label cutoff, purged final validation, deterministic immutable booster/evidence, exact-feature inference |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -139,8 +140,9 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Audit the daily planning-input production path and remove any remaining
-hand-authored boundary. Then add a proof-start command that requires both the
+Complete the live feature-vector loader and automatically assemble the daily
+planning artifact from the frozen production booster, causal market observations,
+and prior closed outcomes. Then add a proof-start command that requires both the
 readiness report and isolated smoke evidence to pass before it writes the first
 scheduled inbox specification. After the credentialed historical/strategy
 gates pass, begin the real 90-session run.

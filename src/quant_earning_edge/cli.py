@@ -130,6 +130,7 @@ from quant_earning_edge.signals import (
     FrozenDailyOrders,
     LightgbmWalkForwardTrainer,
     LiveOrderPlanner,
+    ProductionModelTrainer,
     load_strategy_config,
     strategy_file_sha256,
 )
@@ -874,6 +875,64 @@ def train_walkforward_model(
             "plan_sha256": run.plan_sha256,
             "fold_count": len(run.folds),
             "prediction_count": sum(len(item.predictions) for item in run.folds),
+        }
+    )
+
+
+@model_app.command("train-production")
+def train_production_model(
+    dataset_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--dataset-file",
+            exists=True,
+            dir_okay=False,
+            help="Assembled training Parquet; repeat for every source partition.",
+        ),
+    ],
+    training_cutoff: Annotated[
+        str,
+        typer.Option(
+            "--training-cutoff",
+            help="Exclusive ISO date boundary; labels must close before this date.",
+        ),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Immutable production-model artifact directory."),
+    ],
+) -> None:
+    """Refit a cutoff-safe model for later decision-time inference."""
+    try:
+        cutoff = date.fromisoformat(training_cutoff)
+        config = load_strategy_config(strategy_config)
+        trainer = ProductionModelTrainer(
+            feature_names=config.features,
+            label_name="forward_1d_close",
+            threshold=config.label.threshold,
+            seed=config.seed,
+            early_stopping_rounds=config.model.early_stopping_rounds,
+        )
+        artifact = trainer.run(
+            dataset_files=dataset_files,
+            training_cutoff=cutoff,
+        )
+        model_path, evidence_path = trainer.write(artifact, output_dir)
+    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="model inputs") from error
+    _echo_json(
+        {
+            "model": str(model_path.resolve()),
+            "evidence": str(evidence_path.resolve()),
+            "artifact_sha256": artifact.sha256,
+            "model_sha256": artifact.model_sha256,
+            "training_cutoff": artifact.training_cutoff,
+            "fit_count": artifact.fit_count,
+            "validation_count": artifact.validation_count,
         }
     )
 

@@ -221,6 +221,26 @@ Each fold also records mean absolute SHAP contribution per feature, calculated
 only from that fold's OOS rows. The expected feature-plus-bias contribution
 shape is validated before evidence is written.
 
+## Refit a cutoff-safe production model
+
+After the OOS strategy gate has passed, refit the future-scoring booster with
+an exclusive label-closure cutoff:
+
+```powershell
+uv run qee model train-production `
+  --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
+  --training-cutoff 2026-07-28 `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --output-dir .\data\models\earnings-v1-production
+```
+
+Rows are eligible only when both `asof_date` and `horizon_end_date` precede
+the cutoff. The latest 20% of eligible sessions are held out for early
+stopping, with five sessions and overlapping label horizons purged before
+that block. The command writes a content-addressed booster and canonical
+evidence containing the source hashes, exact feature order, causal date
+boundaries, partition counts, seed, LightGBM version, and model hash.
+
 ## Plan and evaluate one OOS event session
 
 Prepare a strict JSON object containing `equity`, the session's OOS

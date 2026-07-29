@@ -119,12 +119,16 @@ def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Pat
     event_manifest_path.write_bytes(b"event-source")
     event_raw_path = lake_root / "event-provider.json"
     event_raw_path.write_bytes(b"event-provider")
+    calendar_manifest_path = lake_root / "calendar-source.json"
+    calendar_manifest_path.write_bytes(b"calendar-source")
+    calendar_raw_path = lake_root / "calendar-provider.json"
+    calendar_raw_path.write_bytes(b"calendar-provider")
     session = entry(session_file)
     earnings_hash = hashlib.sha256(earnings["sha256"].encode()).hexdigest()
     split_hash = hashlib.sha256(splits["sha256"].encode()).hexdigest()
     dividend_hash = hashlib.sha256(dividends["sha256"].encode()).hexdigest()
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "trade_date": "2026-07-28",
         "decision_at": "2026-07-28T01:30:00+00:00",
         "records": [],
@@ -143,6 +147,8 @@ def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Pat
             "universe_source_files": [entry(universe_raw_path)],
             "event_source_manifest": entry(event_manifest_path),
             "event_provider_files": [entry(event_raw_path)],
+            "calendar_source_manifest": entry(calendar_manifest_path),
+            "calendar_provider_files": [entry(calendar_raw_path)],
             "universe_snapshot": universe,
             "session_file": session,
             "earnings_files": [earnings],

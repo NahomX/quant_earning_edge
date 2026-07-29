@@ -187,6 +187,10 @@ def _write_empty_candidate(lake: Path) -> Path:
     event_manifest_path.write_bytes(b"queue-event-source")
     event_raw_path = lake / "queue-event-provider.json"
     event_raw_path.write_bytes(b"queue-event-provider")
+    calendar_manifest_path = lake / "queue-calendar-source.json"
+    calendar_manifest_path.write_bytes(b"queue-calendar-source")
+    calendar_raw_path = lake / "queue-calendar-provider.json"
+    calendar_raw_path.write_bytes(b"queue-calendar-provider")
     session_entry = entry(session)
     earnings_entry = entry(upstream[1])
     split_entry = entry(upstream[2])
@@ -195,7 +199,7 @@ def _write_empty_candidate(lake: Path) -> Path:
     split_hash = hashlib.sha256(split_entry["sha256"].encode()).hexdigest()
     dividend_hash = hashlib.sha256(dividend_entry["sha256"].encode()).hexdigest()
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "trade_date": "2026-07-28",
         "decision_at": "2026-07-28T01:30:00+00:00",
         "records": [],
@@ -214,6 +218,8 @@ def _write_empty_candidate(lake: Path) -> Path:
             "universe_source_files": [entry(universe_raw_path)],
             "event_source_manifest": entry(event_manifest_path),
             "event_provider_files": [entry(event_raw_path)],
+            "calendar_source_manifest": entry(calendar_manifest_path),
+            "calendar_provider_files": [entry(calendar_raw_path)],
             "universe_snapshot": universe_entry,
             "session_file": session_entry,
             "earnings_files": [earnings_entry],

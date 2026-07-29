@@ -3624,9 +3624,10 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
             )
             candidate_manifest = EventCandidateManifest.load(candidate_manifest_path)
             if (
-                candidate_manifest.raw["schema_version"] != 4
+                candidate_manifest.raw["schema_version"] != 5
                 or not candidate_manifest.universe_lineage_entries
                 or not candidate_manifest.event_lineage_entries
+                or not candidate_manifest.calendar_lineage_entries
                 or candidate_manifest.raw["trade_date"] != selected_date.isoformat()
                 or candidate_manifest.raw["candidate_file_sha256"]
                 != hashlib.sha256(candidate_file.read_bytes()).hexdigest()

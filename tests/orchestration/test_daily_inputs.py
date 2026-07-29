@@ -94,6 +94,8 @@ def test_zero_candidate_day_is_feature_ready_without_provider_calls(
             "universe-provider",
             "event-manifest",
             "event-provider",
+            "calendar-manifest",
+            "calendar-provider",
         )
     )
     for index, path in enumerate(source_paths):
@@ -114,12 +116,14 @@ def test_zero_candidate_day_is_feature_ready_without_provider_calls(
         universe_provider,
         event_manifest,
         event_provider,
+        calendar_manifest,
+        calendar_provider,
     ) = (entry(path) for path in source_paths)
     session = entry(session_file)
     split_hash = hashlib.sha256(splits["sha256"].encode()).hexdigest()
     dividend_hash = hashlib.sha256(dividends["sha256"].encode()).hexdigest()
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "trade_date": "2026-07-28",
         "decision_at": "2026-07-28T01:30:00+00:00",
         "records": [],
@@ -138,6 +142,8 @@ def test_zero_candidate_day_is_feature_ready_without_provider_calls(
             "universe_source_files": [universe_provider],
             "event_source_manifest": event_manifest,
             "event_provider_files": [event_provider],
+            "calendar_source_manifest": calendar_manifest,
+            "calendar_provider_files": [calendar_provider],
             "universe_snapshot": universe,
             "session_file": session,
             "earnings_files": [earnings],

@@ -22,6 +22,7 @@ from quant_earning_edge.backtest import (
 from quant_earning_edge.cli import app
 from quant_earning_edge.data import (
     BronzeWriter,
+    CalendarSourceCapture,
     LakehouseLayout,
     ReplayEvidenceIndex,
     ReplayManifestRunner,
@@ -31,6 +32,7 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import (
+    AlpacaCalendarClient,
     FinnhubClient,
     MarketSession,
     PolygonClient,
@@ -159,45 +161,30 @@ def _write_live_source_capture(
     prior_date = trade_date - timedelta(days=1)
     candidate_root = daily / "candidate-lake"
     candidate_layout = LakehouseLayout(candidate_root)
+    bronze = BronzeWriter(candidate_layout)
+    calendar_raw = [
+        {"date": prior_date.isoformat(), "open": "09:30", "close": "16:00"},
+        {"date": trade_date.isoformat(), "open": "09:30", "close": "16:00"},
+    ]
+    calendar_observation = bronze.write_json(
+        calendar_raw,
+        source="alpaca",
+        dataset="market-calendar",
+        event_date=prior_date,
+        received_at=captured_at,
+    )
     calendar = SessionFileStore(candidate_layout).write(
-        (
-            MarketSession(
-                session_date=prior_date,
-                open_at=datetime(
-                    prior_date.year,
-                    prior_date.month,
-                    prior_date.day,
-                    13,
-                    30,
-                    tzinfo=UTC,
-                ),
-                close_at=datetime(
-                    prior_date.year,
-                    prior_date.month,
-                    prior_date.day,
-                    20,
-                    tzinfo=UTC,
-                ),
-            ),
-            MarketSession(
-                session_date=trade_date,
-                open_at=datetime(
-                    trade_date.year,
-                    trade_date.month,
-                    trade_date.day,
-                    13,
-                    30,
-                    tzinfo=UTC,
-                ),
-                close_at=datetime(
-                    trade_date.year,
-                    trade_date.month,
-                    trade_date.day,
-                    20,
-                    tzinfo=UTC,
-                ),
-            ),
+        AlpacaCalendarClient.sessions_from_payload(
+            calendar_raw,
+            start_date=prior_date,
+            end_date=trade_date,
         )
+    )
+    calendar_source = CalendarSourceCapture(candidate_layout).write(
+        start_date=prior_date,
+        end_date=trade_date,
+        session_file=calendar,
+        provider_observations=(calendar_observation,),
     )
     universe_config = UniverseConfig(
         min_price=5.0,
@@ -300,7 +287,6 @@ def _write_live_source_capture(
             }
         ],
     }
-    bronze = BronzeWriter(candidate_layout)
     provider_observations = tuple(
         bronze.write_json(
             payload,
@@ -430,6 +416,7 @@ def _write_live_source_capture(
         dividend_files=tuple(item.path for item in dividends),
         universe_source_manifest=universe_source.path,
         event_source_manifest=event_source.path,
+        calendar_source_manifest=calendar_source.path,
     )
 
     def write_raw(path: Path, payload: object) -> Path:
@@ -517,6 +504,8 @@ def _write_live_source_capture(
             *universe_source.source_paths(data_lake_root=candidate_root),
             event_source.path,
             *event_source.provider_paths(data_lake_root=candidate_root),
+            calendar_source.path,
+            *calendar_source.provider_paths(data_lake_root=candidate_root),
             universe_path,
             *(item.path for item in earnings),
             *(item.path for item in splits),
@@ -682,6 +671,8 @@ def _no_trade_replay_sources(
         event_earnings_raw_path,
         event_split_raw_path,
         event_dividend_raw_path,
+        calendar_source_manifest_path,
+        calendar_raw_path,
         universe_path,
         earnings_path,
         split_path,
@@ -789,6 +780,8 @@ def _no_trade_replay_sources(
         "event_earnings_raw": event_earnings_raw_path,
         "event_split_raw": event_split_raw_path,
         "event_dividend_raw": event_dividend_raw_path,
+        "calendar_source_manifest": calendar_source_manifest_path,
+        "calendar_raw": calendar_raw_path,
         "candidate_universe": universe_path,
         "candidate_earnings": earnings_path,
         "candidate_splits": split_path,
@@ -844,6 +837,8 @@ def _complete_source_workflow(
                 sources["event_earnings_raw"],
                 sources["event_split_raw"],
                 sources["event_dividend_raw"],
+                sources["calendar_source_manifest"],
+                sources["calendar_raw"],
                 sources["candidate_universe"],
                 sources["candidate_earnings"],
                 sources["candidate_splits"],
@@ -911,6 +906,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_candidate_lineage: bool = True,
     capture_universe_lineage: bool = True,
     capture_event_lineage: bool = True,
+    capture_calendar_lineage: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -951,6 +947,8 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         event_earnings_raw_path,
         event_split_raw_path,
         event_dividend_raw_path,
+        calendar_source_manifest_path,
+        calendar_raw_path,
         universe_path,
         earnings_path,
         split_path,
@@ -1200,6 +1198,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                             event_dividend_raw_path,
                         )
                         if capture_event_lineage
+                        else ()
+                    ),
+                    *(
+                        (calendar_source_manifest_path, calendar_raw_path)
+                        if capture_calendar_lineage
                         else ()
                     ),
                     *((live_evidence_path,) if capture_live_source_evidence else ()),
@@ -1767,6 +1770,25 @@ def test_daily_report_verifier_requires_event_generation_lineage(
         )
 
 
+def test_daily_report_verifier_requires_calendar_generation_lineage(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_calendar_lineage=False,
+    )
+
+    with pytest.raises(ValueError, match="exact captured data-lake sources"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
 def test_daily_report_verifier_rejects_changed_candidate_source(
     tmp_path: Path,
 ) -> None:
@@ -1801,6 +1823,28 @@ def test_daily_report_verifier_rejects_changed_event_provider_source(
         tmp_path.glob("**/candidate-lake/bronze/source=finnhub/dataset=earnings-calendar/**/*.json")
     )
     event_path.write_bytes(b"{}")
+
+    with pytest.raises(ValueError, match="workflow artifact changed after capture"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_rejects_changed_calendar_provider_source(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+    )
+    calendar_path = next(
+        tmp_path.glob("**/candidate-lake/bronze/source=alpaca/dataset=market-calendar/**/*.json")
+    )
+    calendar_path.write_bytes(b"[]")
 
     with pytest.raises(ValueError, match="workflow artifact changed after capture"):
         Phase6DailyReportVerifier().verify(

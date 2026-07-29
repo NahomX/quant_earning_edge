@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 
 from quant_earning_edge.data import (
     BarsIngestor,
+    CalendarSourceCapture,
     CorporateActionsIngestor,
     EarningsIngestor,
     SessionFileStore,
@@ -274,6 +275,10 @@ class DailyInputPreparer:
                 self._polygon.corporate_action_observation_artifacts[action_observation_start:]
             ),
         )
+        calendar_source = CalendarSourceCapture.find_for_session(
+            session_file,
+            data_lake_root=self._layout.root,
+        )
         artifact = EventCandidateJob(self._layout).run(
             trade_date=trade_date,
             decision_at=decision_at,
@@ -284,6 +289,7 @@ class DailyInputPreparer:
             dividend_files=tuple(item.path for item in dividend_artifacts),
             universe_source_manifest=universe_source.path,
             event_source_manifest=event_source.path,
+            calendar_source_manifest=calendar_source.path,
         )
         return artifact.path.resolve()
 
@@ -378,9 +384,10 @@ class DailyInputPreparer:
                 continue
             manifest = EventCandidateManifest.load(manifest_path)
             if (
-                manifest.raw["schema_version"] == 4
+                manifest.raw["schema_version"] == 5
                 and manifest.universe_lineage_entries
                 and manifest.event_lineage_entries
+                and manifest.calendar_lineage_entries
             ):
                 manifest.source_paths(data_lake_root=self._layout.root)
                 paths.append(candidate)

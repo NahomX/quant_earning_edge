@@ -146,6 +146,25 @@ class CalendarSourceCapture:
         return CalendarSourceManifest.load(path)
 
     @staticmethod
+    def find_for_session(
+        session_file: Path,
+        *,
+        data_lake_root: Path,
+    ) -> CalendarSourceManifest:
+        """Select retained valid provenance for an exact session file."""
+        root = data_lake_root.resolve()
+        source_root = root / "manifests" / "market-calendar" / "sources"
+        matches = []
+        for path in sorted(source_root.glob("source-*.json")):
+            manifest = CalendarSourceManifest.load(path)
+            if manifest.session_path(data_lake_root=root) == session_file.resolve():
+                manifest.provider_paths(data_lake_root=root)
+                matches.append(manifest)
+        if not matches:
+            raise ValueError("session file lacks retained Alpaca source lineage")
+        return matches[0]
+
+    @staticmethod
     def reproduce(
         manifest: CalendarSourceManifest,
         *,

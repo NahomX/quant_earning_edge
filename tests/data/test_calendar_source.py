@@ -53,6 +53,12 @@ def _source_fixture(tmp_path: Path) -> tuple[CalendarSourceManifest, Path]:
 def test_calendar_reproduces_from_retained_alpaca_payload(tmp_path: Path) -> None:
     manifest, original_path = _source_fixture(tmp_path)
 
+    discovered = CalendarSourceCapture.find_for_session(
+        original_path,
+        data_lake_root=tmp_path / "lake",
+    )
+    assert discovered.path == manifest.path
+
     with TemporaryDirectory(prefix="qee-calendar-test-") as temporary:
         reproduced = CalendarSourceCapture.reproduce(
             manifest,

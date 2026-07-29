@@ -388,9 +388,10 @@ class NextWorkflowQueuer:
                 continue
             manifest = EventCandidateManifest.load(manifest_path)
             if (
-                manifest.raw["schema_version"] == 4
+                manifest.raw["schema_version"] == 5
                 and manifest.universe_lineage_entries
                 and manifest.event_lineage_entries
+                and manifest.calendar_lineage_entries
             ):
                 candidates.append(candidate)
         if not candidates:

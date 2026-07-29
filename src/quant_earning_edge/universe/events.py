@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from quant_earning_edge.data.calendar import SessionFileStore
+from quant_earning_edge.data.calendar_source import CalendarSourceManifest
 from quant_earning_edge.data.clients import EarningsTiming
 from quant_earning_edge.universe.event_source_capture import EventSourceCaptureManifest
 from quant_earning_edge.universe.source_capture import UniverseSourceCaptureManifest
@@ -120,7 +121,7 @@ class EventCandidateManifest:
         if (
             not isinstance(raw, dict)
             or set(raw) != required
-            or raw["schema_version"] not in {2, 3, 4}
+            or raw["schema_version"] not in {2, 3, 4, 5}
         ):
             raise ValueError("event-candidate manifest schema mismatch")
         sources = raw["source_files"]
@@ -137,8 +138,10 @@ class EventCandidateManifest:
                 "universe_source_manifest",
                 "universe_source_files",
             }
-        if raw["schema_version"] == 4:
+        if raw["schema_version"] >= 4:
             expected_source_keys |= {"event_source_manifest", "event_provider_files"}
+        if raw["schema_version"] == 5:
+            expected_source_keys |= {"calendar_source_manifest", "calendar_provider_files"}
         if not isinstance(sources, dict) or set(sources) != expected_source_keys:
             raise ValueError("event-candidate manifest source schema mismatch")
         if (
@@ -160,11 +163,19 @@ class EventCandidateManifest:
                 )
             )
             or (
-                raw["schema_version"] == 4
+                raw["schema_version"] >= 4
                 and (
                     not isinstance(sources["event_source_manifest"], dict)
                     or not isinstance(sources["event_provider_files"], list)
                     or not sources["event_provider_files"]
+                )
+            )
+            or (
+                raw["schema_version"] == 5
+                and (
+                    not isinstance(sources["calendar_source_manifest"], dict)
+                    or not isinstance(sources["calendar_provider_files"], list)
+                    or not sources["calendar_provider_files"]
                 )
             )
         ):
@@ -183,7 +194,15 @@ class EventCandidateManifest:
                     sources["event_source_manifest"],
                     *sources["event_provider_files"],
                 )
-                if raw["schema_version"] == 4
+                if raw["schema_version"] >= 4
+                else ()
+            ),
+            *(
+                (
+                    sources["calendar_source_manifest"],
+                    *sources["calendar_provider_files"],
+                )
+                if raw["schema_version"] == 5
                 else ()
             ),
             sources["universe_snapshot"],
@@ -252,6 +271,7 @@ class EventCandidateManifest:
         return (
             *self.universe_lineage_entries,
             *self.event_lineage_entries,
+            *self.calendar_lineage_entries,
             *self.candidate_source_entries,
         )
 
@@ -273,6 +293,16 @@ class EventCandidateManifest:
         return (
             sources["event_source_manifest"],
             *sources["event_provider_files"],
+        )
+
+    @property
+    def calendar_lineage_entries(self) -> tuple[dict[str, str], ...]:
+        if self.raw["schema_version"] < 5:
+            return ()
+        sources = self.raw["source_files"]
+        return (
+            sources["calendar_source_manifest"],
+            *sources["calendar_provider_files"],
         )
 
     @property
@@ -318,6 +348,7 @@ class EventCandidateJob:
         dividend_files: Sequence[Path],
         universe_source_manifest: Path | None = None,
         event_source_manifest: Path | None = None,
+        calendar_source_manifest: Path | None = None,
     ) -> EventCandidateArtifact:
         """Build candidates without reading observations newer than ``decision_at``."""
         if decision_at.tzinfo is None or decision_at.utcoffset() is None:
@@ -376,6 +407,19 @@ class EventCandidateJob:
                 or event_silver_paths != expected_event_paths
             ):
                 raise ValueError("event source manifest differs from candidate event inputs")
+        calendar_lineage = (
+            CalendarSourceManifest.load(calendar_source_manifest)
+            if calendar_source_manifest is not None
+            else None
+        )
+        if calendar_lineage is not None and event_lineage is None:
+            raise ValueError("calendar source lineage requires event source lineage")
+        if (
+            calendar_lineage is not None
+            and calendar_lineage.session_path(data_lake_root=self._source_root)
+            != session_file.resolve()
+        ):
+            raise ValueError("calendar source manifest differs from candidate session file")
         eligible_symbols = self._read_eligible_universe(
             universe_snapshot,
             trade_date=trade_date,
@@ -455,6 +499,7 @@ class EventCandidateJob:
             dividend_files=dividend_files,
             universe_lineage=universe_lineage,
             event_lineage=event_lineage,
+            calendar_lineage=calendar_lineage,
         )
 
     @staticmethod
@@ -605,6 +650,7 @@ class EventCandidateJob:
         dividend_files: Sequence[Path],
         universe_lineage: UniverseSourceCaptureManifest | None,
         event_lineage: EventSourceCaptureManifest | None,
+        calendar_lineage: CalendarSourceManifest | None,
     ) -> EventCandidateArtifact:
         records = [
             {
@@ -654,6 +700,11 @@ class EventCandidateJob:
                     if event_lineage is not None
                     else {}
                 ),
+                **(
+                    {"calendar_source_manifest_sha256": _file_sha256(calendar_lineage.path)}
+                    if calendar_lineage is not None
+                    else {}
+                ),
             }
             if universe_lineage is not None
             else core_evidence
@@ -679,9 +730,18 @@ class EventCandidateJob:
             if event_lineage is not None
             else ()
         )
+        calendar_provider_files = (
+            calendar_lineage.provider_paths(data_lake_root=self._source_root)
+            if calendar_lineage is not None
+            else ()
+        )
         evidence = {
             "schema_version": (
-                4
+                5
+                if calendar_lineage is not None
+                and event_lineage is not None
+                and universe_lineage is not None
+                else 4
                 if event_lineage is not None and universe_lineage is not None
                 else 3
                 if universe_lineage is not None
@@ -700,6 +760,16 @@ class EventCandidateJob:
                         ],
                     }
                     if universe_lineage is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "calendar_source_manifest": self._source_entry(calendar_lineage.path),
+                        "calendar_provider_files": [
+                            self._source_entry(item) for item in calendar_provider_files
+                        ],
+                    }
+                    if calendar_lineage is not None
                     else {}
                 ),
                 **(

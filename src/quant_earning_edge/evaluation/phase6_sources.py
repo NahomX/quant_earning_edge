@@ -329,7 +329,7 @@ class Phase6DailyReportVerifier:
             raise ValueError("live source differs from captured provider or workflow inputs")
 
     @staticmethod
-    def _verify_candidate_generation(  # noqa: PLR0912 - complete source chain.
+    def _verify_candidate_generation(  # noqa: PLR0912,PLR0915 - complete source chain.
         *,
         state: DailyWorkflowState,
         source: LivePlanningSourceSpec,
@@ -337,6 +337,10 @@ class Phase6DailyReportVerifier:
         candidate_path: Path,
         paths_by_sha: dict[str, list[Path]],
     ) -> None:
+        from quant_earning_edge.data import (  # noqa: PLC0415
+            CalendarSourceCapture,
+            CalendarSourceManifest,
+        )
         from quant_earning_edge.data.layout import LakehouseLayout  # noqa: PLC0415
         from quant_earning_edge.universe import (  # noqa: PLC0415
             EventCandidateJob,
@@ -364,7 +368,7 @@ class Phase6DailyReportVerifier:
                 "live source must bind to exactly one captured candidate-generation manifest"
             )
         manifest = manifests[0]
-        if manifest.raw["schema_version"] != 4:
+        if manifest.raw["schema_version"] != 5:
             raise ValueError("candidate generation lacks complete provider source lineage")
         source_root, sources = Phase6DailyReportVerifier._candidate_sources(
             manifest=manifest,
@@ -379,6 +383,7 @@ class Phase6DailyReportVerifier:
         source_groups = manifest.raw["source_files"]
         universe_lineage_count = len(manifest.universe_lineage_entries)
         event_lineage_count = len(manifest.event_lineage_entries)
+        calendar_lineage_count = len(manifest.calendar_lineage_entries)
         universe_manifest_path = sources[0]
         universe_manifest = UniverseSourceCaptureManifest.load(universe_manifest_path)
         if (
@@ -394,9 +399,19 @@ class Phase6DailyReportVerifier:
             != sources[universe_lineage_count + 1 : event_provider_end]
         ):
             raise ValueError("candidate event lineage differs from its source manifest")
-        candidate_sources = sources[event_provider_end:]
+        calendar_manifest_path = sources[event_provider_end]
+        calendar_manifest = CalendarSourceManifest.load(calendar_manifest_path)
+        calendar_provider_end = event_provider_end + calendar_lineage_count
+        if (
+            calendar_manifest.provider_paths(data_lake_root=source_root)
+            != sources[event_provider_end + 1 : calendar_provider_end]
+        ):
+            raise ValueError("candidate calendar lineage differs from its source manifest")
+        candidate_sources = sources[calendar_provider_end:]
         if event_manifest.silver_paths(data_lake_root=source_root) != (candidate_sources[2:]):
             raise ValueError("candidate event inputs differ from their source manifest")
+        if calendar_manifest.session_path(data_lake_root=source_root) != candidate_sources[1]:
+            raise ValueError("candidate calendar differs from its source manifest")
         earnings_end = 2 + len(source_groups["earnings_files"])
         splits_end = earnings_end + len(source_groups["split_files"])
         with TemporaryDirectory(prefix="qee-candidate-reconstruction-") as temporary:
@@ -413,6 +428,11 @@ class Phase6DailyReportVerifier:
                 data_lake_root=source_root,
                 output_layout=LakehouseLayout(Path(temporary) / "events"),
             )
+            CalendarSourceCapture.reproduce(
+                calendar_manifest,
+                data_lake_root=source_root,
+                output_layout=LakehouseLayout(Path(temporary) / "calendar"),
+            )
             reproduced = EventCandidateJob(
                 LakehouseLayout(Path(temporary) / "candidates"),
                 source_root=source_root,
@@ -426,6 +446,7 @@ class Phase6DailyReportVerifier:
                 dividend_files=candidate_sources[splits_end:],
                 universe_source_manifest=universe_manifest_path,
                 event_source_manifest=event_manifest_path,
+                calendar_source_manifest=calendar_manifest_path,
             )
             if (
                 hashlib.sha256(reproduced.path.read_bytes()).hexdigest()

@@ -2372,6 +2372,7 @@ def _capture_provider_freshness(
     *,
     environment: RuntimeEnvironment,
     symbol: str,
+    observation_paths: list[Path] | None = None,
 ) -> ProviderFreshnessEvidence:
     polygon_key = environment.require_polygon_api_key()
     alpaca_key, alpaca_secret = environment.require_alpaca_credentials()
@@ -2386,14 +2387,20 @@ def _capture_provider_freshness(
             timeout=environment.http_timeout_seconds,
         ) as alpaca_http,
     ):
-        return ProviderFreshnessProbe(
+        probe = ProviderFreshnessProbe(
             polygon_api_key=polygon_key,
             alpaca_api_key_id=alpaca_key,
             alpaca_secret_key=alpaca_secret,
             polygon_http=polygon_http,
             alpaca_http=alpaca_http,
             bronze_writer=BronzeWriter(layout),
-        ).probe(symbol=symbol)
+        )
+        evidence = probe.probe(symbol=symbol)
+        if observation_paths is not None:
+            observation_paths.extend(
+                artifact.path.resolve() for artifact in probe.observation_artifacts
+            )
+        return evidence
 
 
 def _probe_polygon_nbbo_entitlement(
@@ -2684,9 +2691,11 @@ def prepare_breaker_bundle(  # noqa: PLR0917 - complete autonomous control bound
             artifact_root=artifact_root,
             control_date=selected_date,
         )
+        freshness_observation_paths: list[Path] = []
         freshness = _capture_provider_freshness(
             environment=_environment(env_file),
             symbol=symbol,
+            observation_paths=freshness_observation_paths,
         )
         age = ReconciliationAgeEvaluator().evaluate(
             calendar=calendar,
@@ -2722,6 +2731,7 @@ def prepare_breaker_bundle(  # noqa: PLR0917 - complete autonomous control bound
     _echo_json(
         {
             "freshness_path": str(freshness_path),
+            "freshness_observation_paths": [str(path) for path in freshness_observation_paths],
             "reconciliation_age_path": str(age_path),
             "breaker_spec_path": str(breaker_path),
             "freshness_sha256": freshness.sha256,

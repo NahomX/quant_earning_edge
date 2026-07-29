@@ -68,18 +68,48 @@ def _write_breaker_auxiliary_evidence(
     daily: Path,
     *,
     observation: CircuitBreakerObservation,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path, Path]:
     assert observation.polygon_data_observed_at is not None
     assert observation.alpaca_data_observed_at is not None
-    freshness = ProviderFreshnessEvidence(
-        schema_version=1,
+    polygon_observed = observation.polygon_data_observed_at
+    polygon_nanoseconds = (
+        int(polygon_observed.timestamp()) * 1_000_000_000 + polygon_observed.microsecond * 1_000
+    )
+    polygon_payload = {
+        "status": "OK",
+        "request_id": None,
+        "ticker": {
+            "ticker": "SPY",
+            "updated": polygon_nanoseconds,
+        },
+    }
+    alpaca_payload = {"timestamp": observation.alpaca_data_observed_at.isoformat()}
+
+    def write_payload(path: Path, payload: object) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        return path
+
+    polygon_path = write_payload(
+        daily / "source=polygon" / "dataset=freshness-snapshot" / "polygon.json",
+        polygon_payload,
+    )
+    alpaca_path = write_payload(
+        daily / "source=alpaca" / "dataset=market-clock" / "alpaca.json",
+        alpaca_payload,
+    )
+    freshness = ProviderFreshnessEvidence.from_payloads(
+        polygon_payload=polygon_payload,
+        alpaca_payload=alpaca_payload,
         evaluated_at=observation.evaluated_at,
         polygon_symbol="SPY",
-        polygon_data_observed_at=observation.polygon_data_observed_at,
-        polygon_payload_sha256="a" * 64,
-        polygon_request_id=None,
-        alpaca_data_observed_at=observation.alpaca_data_observed_at,
-        alpaca_payload_sha256="b" * 64,
         alpaca_request_id=None,
     )
     freshness_path = daily / f"provider-freshness-{freshness.sha256}.json"
@@ -96,7 +126,7 @@ def _write_breaker_auxiliary_evidence(
     )
     age_path = daily / f"reconciliation-age-{age.sha256}.json"
     age.write(age_path)
-    return freshness_path, age_path
+    return freshness_path, age_path, polygon_path, alpaca_path
 
 
 def _no_trade_replay_sources(
@@ -176,7 +206,7 @@ def _no_trade_replay_sources(
     breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
     breaker_spec_path = daily / "breaker-controls.json"
     breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
-    freshness_path, age_path = _write_breaker_auxiliary_evidence(
+    freshness_path, age_path, polygon_path, alpaca_path = _write_breaker_auxiliary_evidence(
         daily,
         observation=breaker_observation,
     )
@@ -233,6 +263,8 @@ def _no_trade_replay_sources(
         "breaker_spec": breaker_spec_path,
         "freshness": freshness_path,
         "age": age_path,
+        "polygon_freshness": polygon_path,
+        "alpaca_freshness": alpaca_path,
         "submission": submission_path,
         "manifest": manifest_path,
         "index": index_path,
@@ -261,6 +293,8 @@ def _complete_source_workflow(
             return (
                 sources["freshness"],
                 sources["age"],
+                sources["polygon_freshness"],
+                sources["alpaca_freshness"],
                 sources["breaker_spec"],
                 sources["breaker"],
             )
@@ -295,6 +329,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_submission_observations: bool = True,
     capture_breaker_spec: bool = True,
     capture_breaker_auxiliary: bool = True,
+    capture_freshness_payloads: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -357,7 +392,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
     breaker_spec_path = daily / "breaker-controls.json"
     breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
-    freshness_path, age_path = _write_breaker_auxiliary_evidence(
+    freshness_path, age_path, polygon_path, alpaca_path = _write_breaker_auxiliary_evidence(
         daily,
         observation=breaker_observation,
     )
@@ -506,6 +541,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         if stage is WorkflowStage.EVALUATE_BREAKERS:
             return (
                 *((freshness_path, age_path) if capture_breaker_auxiliary else ()),
+                *(
+                    (polygon_path, alpaca_path)
+                    if capture_breaker_auxiliary and capture_freshness_payloads
+                    else ()
+                ),
                 *((breaker_spec_path,) if capture_breaker_spec else ()),
                 breaker_path,
             )
@@ -863,6 +903,25 @@ def test_daily_report_verifier_requires_breaker_safety_evidence(
     )
 
     with pytest.raises(ValueError, match="exactly one provider-freshness-"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_raw_freshness_payloads(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_freshness_payloads=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly one captured raw Polygon and Alpaca"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

@@ -57,14 +57,15 @@ def test_freshness_probe_validates_provider_timestamps_and_captures_bronze(
         transport=httpx.MockTransport(alpaca_response),
     )
     with polygon_http, alpaca_http:
-        evidence = ProviderFreshnessProbe(
+        probe = ProviderFreshnessProbe(
             polygon_api_key="polygon-key",
             alpaca_api_key_id="alpaca-key",
             alpaca_secret_key="alpaca-secret",
             polygon_http=polygon_http,
             alpaca_http=alpaca_http,
             bronze_writer=BronzeWriter(LakehouseLayout(tmp_path / "lake")),
-        ).probe(symbol="spy", evaluated_at=evaluated)
+        )
+        evidence = probe.probe(symbol="spy", evaluated_at=evaluated)
 
     output = tmp_path / "freshness.json"
     evidence.write(output)
@@ -73,4 +74,6 @@ def test_freshness_probe_validates_provider_timestamps_and_captures_bronze(
     assert evidence.polygon_data_observed_at == polygon_observed
     assert evidence.alpaca_data_observed_at == alpaca_observed
     assert evidence.polygon_request_id == "polygon-request"
+    assert len(probe.observation_artifacts) == 2
+    assert all(artifact.path.is_file() for artifact in probe.observation_artifacts)
     assert len(tuple((tmp_path / "lake" / "bronze").rglob("*.json"))) == 2

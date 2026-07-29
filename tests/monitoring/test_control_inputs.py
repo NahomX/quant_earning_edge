@@ -204,11 +204,20 @@ def test_prepare_breaker_bundle_discovers_sources_and_writes_content_addresses(
         alpaca_payload_sha256="b" * 64,
         alpaca_request_id="alpaca",
     )
-    monkeypatch.setattr(
-        cli_module,
-        "_capture_provider_freshness",
-        lambda **_: freshness,
-    )
+    raw_paths = (tmp_path / "polygon-freshness.json", tmp_path / "alpaca-clock.json")
+    for raw_path in raw_paths:
+        raw_path.write_text("{}", encoding="utf-8")
+
+    def capture_freshness(
+        *,
+        observation_paths: list[Path] | None = None,
+        **_: object,
+    ) -> ProviderFreshnessEvidence:
+        if observation_paths is not None:
+            observation_paths.extend(raw_paths)
+        return freshness
+
+    monkeypatch.setattr(cli_module, "_capture_provider_freshness", capture_freshness)
     calendar = SessionFileStore(LakehouseLayout(tmp_path / "calendar")).write(
         (
             MarketSession(
@@ -245,6 +254,7 @@ def test_prepare_breaker_bundle_discovers_sources_and_writes_content_addresses(
     payload = json.loads(result.stdout)
     assert payload == json.loads(repeated.stdout)
     assert Path(payload["freshness_path"]).name.startswith("provider-freshness-")
+    assert payload["freshness_observation_paths"] == [str(path.resolve()) for path in raw_paths]
     assert Path(payload["reconciliation_age_path"]).name.startswith("reconciliation-age-")
     breaker_path = Path(payload["breaker_spec_path"])
     assert breaker_path.name.startswith("breaker-controls-")

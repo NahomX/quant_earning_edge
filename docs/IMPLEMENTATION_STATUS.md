@@ -81,7 +81,7 @@ reproducible through `uv.lock`.
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 | Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
 | Immutable paper submission/reconciliation evidence | Complete | frozen requests and breaker-bound submission plus reconciliation independently checked against workflow-captured raw Alpaca observations; paper divergence remains non-gating |
-| Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts; decision reproduced from controls whose current safety observation is bound to captured freshness and reconciliation-age evidence |
+| Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts; decision reproduced from controls whose current safety observation is bound to captured reconciliation age and raw-provider-reproduced freshness evidence |
 | Fail-closed paper submission boundary | Complete | fresh non-halted breaker decision required before any broker request |
 | Restart-safe daily workflow state machine | Complete | ordered stages, leases, retries, hash-chained revisions, artifact verification |
 | In-process workflow advancement loop | Complete | advances until complete/leased/failed and durably records every transition |
@@ -105,10 +105,10 @@ reproducible through `uv.lock`.
 | Temporal workflow readiness | Complete | post-close stages remain pending without false attempts while the worker loop polls |
 | Rolling Phase 6 control preparation | Complete | calendar-bound workflow health, discovered prior reports, deterministic current report path |
 | Rolling breaker control preparation | Complete | prior frozen/replay pairing, distinct source/control dates, current provider freshness |
-| Provider-native freshness evidence | Complete | Polygon snapshot and Alpaca clock timestamps, raw bronze payload hashes, canonical immutable evidence |
+| Provider-native freshness evidence | Complete | Polygon snapshot and Alpaca clock timestamps, immutable Bronze payloads, canonical hashes, workflow capture, and independent Phase 6 reproduction |
 | Reconciliation-break age derivation | Complete | authoritative-session close count, latest-revision resolution, immutable report provenance |
 | Pre-open workflow readiness | Complete | order-control stages stay pending until ten minutes before the planned entry |
-| Self-refreshing pre-open breaker bundle | Complete | discovers prior daily evidence, probes providers at execution, emits content-addressed controls |
+| Self-refreshing pre-open breaker bundle | Complete | discovers prior daily evidence, probes providers at execution, emits content-addressed controls plus both raw freshness-observation paths |
 | Retry-safe paper reconciliation revisions | Complete | content-addressed broker observations allow later clean revisions to resolve earlier breaks |
 | Unified daily workflow preparation | Complete | one command prepares rolling Phase 6 controls and queues the self-refreshing eight-stage spec |
 | Secret-free operational readiness audit | Complete | credentials, canonical hosts, live clocks, NBBO entitlement, roots, heartbeat, calendar, bootstrap evidence |

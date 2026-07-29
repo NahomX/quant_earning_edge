@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -327,6 +328,23 @@ class Phase6DailyReportVerifier:
         )
         freshness = ProviderFreshnessEvidence.load(freshness_path)
         age = ReconciliationAgeEvidence.load(age_path)
+        canonical_payloads = Phase6DailyReportVerifier._canonical_payloads_by_sha(state)
+        polygon_payloads = canonical_payloads.get(freshness.polygon_payload_sha256, [])
+        alpaca_payloads = canonical_payloads.get(freshness.alpaca_payload_sha256, [])
+        if len(polygon_payloads) != 1 or len(alpaca_payloads) != 1:
+            raise ValueError(
+                "freshness evidence must bind to exactly one captured raw "
+                "Polygon and Alpaca payload"
+            )
+        reproduced_freshness = ProviderFreshnessEvidence.from_payloads(
+            polygon_payload=polygon_payloads[0],
+            alpaca_payload=alpaca_payloads[0],
+            evaluated_at=freshness.evaluated_at,
+            polygon_symbol=freshness.polygon_symbol,
+            alpaca_request_id=freshness.alpaca_request_id,
+        )
+        if reproduced_freshness.canonical_bytes != freshness.canonical_bytes:
+            raise ValueError("freshness evidence differs from captured raw provider payloads")
         current = reproduced_specs[0].observations[-1]
         if (
             current.session_date != age.control_date
@@ -340,6 +358,35 @@ class Phase6DailyReportVerifier:
                 "breaker controls differ from captured freshness or reconciliation age"
             )
         return breaker
+
+    @staticmethod
+    def _canonical_payloads_by_sha(
+        state: DailyWorkflowState,
+    ) -> dict[str, list[object]]:
+        payloads: dict[str, list[object]] = {}
+        artifact_paths = {
+            Path(artifact.path).resolve()
+            for stage in state.stages
+            for artifact in stage.output_artifacts
+            if Path(artifact.path).suffix == ".json"
+        }
+        for candidate in artifact_paths:
+            try:
+                encoded = candidate.read_bytes()
+                payload = json.loads(encoded)
+                canonical = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            except (OSError, ValueError):
+                continue
+            if canonical != encoded:
+                continue
+            digest = hashlib.sha256(canonical).hexdigest()
+            payloads.setdefault(digest, []).append(payload)
+        return payloads
 
     @staticmethod
     def _unique_prefixed_artifact(

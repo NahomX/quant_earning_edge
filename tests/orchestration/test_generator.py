@@ -161,9 +161,7 @@ def test_generate_cli_writes_complete_bound_workflow(tmp_path: Path) -> None:
         ("evaluation", "replay-frozen-session"),
     )
     assert replay.commands[2].artifact_bindings[0].source_stage is WorkflowStage.REPLAY_ORDERS
-    assert spec.stages[3].commands[0].artifact_json_keys == (
-        "broker_observation_paths",
-    )
+    assert spec.stages[3].commands[0].artifact_json_keys == ("broker_observation_paths",)
     assert spec.stages[6].commands[0].arguments[:2] == (
         "paper",
         "reconcile-frozen-revision",
@@ -231,6 +229,7 @@ def test_generate_cli_can_refresh_breakers_inside_preopen_stage(tmp_path: Path) 
     assert freeze.arguments[:2] == ("monitoring", "prepare-breaker-bundle")
     assert freeze.artifact_json_keys == (
         "freshness_path",
+        "freshness_observation_paths",
         "reconciliation_age_path",
         "breaker_spec_path",
     )

@@ -895,9 +895,11 @@ uv run qee monitoring prepare-breaker-bundle `
 ```
 
 This emits content-addressed freshness, reconciliation-age, and breaker input
-paths. Retries may safely create newer bundles; no mutable “latest” pointer is
-used. Preparation fails closed for a partial frozen/replay pair, a
-non-authoritative artifact date, or missing completed bootstrap evidence.
+paths plus the immutable Bronze paths for the raw Polygon snapshot and Alpaca
+clock responses. The workflow captures every emitted path. Retries may safely
+create newer bundles; no mutable “latest” pointer is used. Preparation fails
+closed for a partial frozen/replay pair, a non-authoritative artifact date, or
+missing completed bootstrap evidence.
 
 The command writes immutable evidence and exits `1` when any documented halt is
 active: replay loss above 2% of notional, three consecutive applicable fill
@@ -957,7 +959,12 @@ allow decision is not trusted as a summary: its strict canonical control
 specification must also be captured, and rerunning the breaker evaluator must
 reproduce the decision bytes exactly. The current control observation must in
 turn equal the captured provider-native freshness timestamps and
-reconciliation-age result, including their shared evaluation time.
+reconciliation-age result, including their shared evaluation time. Terminal
+verification also reloads the workflow-captured raw Polygon snapshot and Alpaca
+clock JSON, recomputes their canonical payload hashes and provider timestamps,
+and requires them to reproduce the freshness evidence byte-for-byte. Alpaca's
+HTTP request ID is response-header metadata retained by the freshness summary;
+the raw clock payload independently supplies its timestamp and payload hash.
 
 After the close, construct a reconciliation spec with the replay evidence paths
 and Alpaca order resources, then run:

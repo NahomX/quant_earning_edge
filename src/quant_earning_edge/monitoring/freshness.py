@@ -17,7 +17,7 @@ from quant_earning_edge.data.clients.errors import ProviderRequestError, Provide
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from quant_earning_edge.data.bronze import BronzeWriter
+    from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 
 
 class _AlpacaClock(BaseModel):
@@ -120,6 +120,39 @@ class ProviderFreshnessEvidence:
             raise ValueError("provider freshness evidence is not canonical")
         return evidence
 
+    @classmethod
+    def from_payloads(
+        cls,
+        *,
+        polygon_payload: Any,
+        alpaca_payload: Any,
+        evaluated_at: datetime,
+        polygon_symbol: str,
+        alpaca_request_id: str | None,
+    ) -> ProviderFreshnessEvidence:
+        """Build freshness evidence from exact decoded provider payloads."""
+        normalized = polygon_symbol.strip().upper()
+        try:
+            polygon = _PolygonSnapshot.model_validate(polygon_payload)
+            alpaca = _AlpacaClock.model_validate(alpaca_payload)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"provider freshness response failed validation: {error}"
+            ) from error
+        if polygon.status.upper() != "OK" or polygon.ticker.ticker.strip().upper() != normalized:
+            raise ProviderResponseError("Polygon freshness snapshot identity is invalid")
+        return cls(
+            schema_version=1,
+            evaluated_at=evaluated_at,
+            polygon_symbol=normalized,
+            polygon_data_observed_at=_from_nanoseconds(polygon.ticker.updated),
+            polygon_payload_sha256=_payload_hash(polygon_payload),
+            polygon_request_id=polygon.request_id,
+            alpaca_data_observed_at=alpaca.timestamp,
+            alpaca_payload_sha256=_payload_hash(alpaca_payload),
+            alpaca_request_id=alpaca_request_id,
+        )
+
 
 class ProviderFreshnessProbe:
     """Read provider-native clocks without treating local receipt time as data time."""
@@ -148,6 +181,12 @@ class ProviderFreshnessProbe:
         self._polygon_http = polygon_http
         self._alpaca_http = alpaca_http
         self._bronze = bronze_writer
+        self._observation_artifacts: list[BronzeArtifact] = []
+
+    @property
+    def observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return raw provider payloads captured by this probe instance."""
+        return tuple(self._observation_artifacts)
 
     def probe(
         self,
@@ -171,40 +210,30 @@ class ProviderFreshnessProbe:
         )
         polygon_raw = _decode(polygon_response, provider="Polygon")
         alpaca_raw = _decode(alpaca_response, provider="Alpaca")
-        try:
-            polygon = _PolygonSnapshot.model_validate(polygon_raw)
-            alpaca = _AlpacaClock.model_validate(alpaca_raw)
-        except ValidationError as error:
-            raise ProviderResponseError(
-                f"provider freshness response failed validation: {error}"
-            ) from error
-        if polygon.status.upper() != "OK" or polygon.ticker.ticker.strip().upper() != normalized:
-            raise ProviderResponseError("Polygon freshness snapshot identity is invalid")
-        observed_at = _from_nanoseconds(polygon.ticker.updated)
         evaluated = evaluated_at or datetime.now(UTC)
-        evidence = ProviderFreshnessEvidence(
-            schema_version=1,
+        evidence = ProviderFreshnessEvidence.from_payloads(
+            polygon_payload=polygon_raw,
+            alpaca_payload=alpaca_raw,
             evaluated_at=evaluated,
             polygon_symbol=normalized,
-            polygon_data_observed_at=observed_at,
-            polygon_payload_sha256=_payload_hash(polygon_raw),
-            polygon_request_id=polygon.request_id,
-            alpaca_data_observed_at=alpaca.timestamp,
-            alpaca_payload_sha256=_payload_hash(alpaca_raw),
             alpaca_request_id=alpaca_response.headers.get("X-Request-ID"),
         )
         if self._bronze is not None:
-            self._bronze.write_json(
-                polygon_raw,
-                source="polygon",
-                dataset="freshness-snapshot",
-                event_date=evaluated.date(),
+            self._observation_artifacts.append(
+                self._bronze.write_json(
+                    polygon_raw,
+                    source="polygon",
+                    dataset="freshness-snapshot",
+                    event_date=evaluated.date(),
+                )
             )
-            self._bronze.write_json(
-                alpaca_raw,
-                source="alpaca",
-                dataset="market-clock",
-                event_date=evaluated.date(),
+            self._observation_artifacts.append(
+                self._bronze.write_json(
+                    alpaca_raw,
+                    source="alpaca",
+                    dataset="market-clock",
+                    event_date=evaluated.date(),
+                )
             )
         return evidence
 
@@ -234,5 +263,10 @@ def _from_nanoseconds(value: int) -> datetime:
 
 def _payload_hash(payload: Any) -> str:
     return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
     ).hexdigest()

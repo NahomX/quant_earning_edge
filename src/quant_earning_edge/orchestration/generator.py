@@ -139,6 +139,7 @@ class DailyWorkflowSpecGenerator:
                     ),
                     artifact_json_keys=(
                         "freshness_path",
+                        "freshness_observation_paths",
                         "reconciliation_age_path",
                         "breaker_spec_path",
                     ),
@@ -262,6 +263,7 @@ class DailyWorkflowSpecGenerator:
                     ),
                     artifact_json_keys=(
                         "freshness_path",
+                        "freshness_observation_paths",
                         "reconciliation_age_path",
                         "breaker_spec_path",
                     ),

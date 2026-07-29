@@ -7,6 +7,7 @@
   "halt_snapshot_directory": "../../data/control-inputs/halts",
   "initial_cash": 100000,
   "lease_seconds": 900,
+  "maximum_model_age_calendar_days": 180,
   "model_evidence": "../../data/models/earnings-v1-production/production-<hash>.json",
   "model_file": "../../data/models/earnings-v1-production/production-<hash>.txt",
   "phase4_gate_file": "../../data/evaluation/phase4-gate-<hash>.json",

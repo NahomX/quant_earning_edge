@@ -1062,7 +1062,10 @@ The loop refuses to queue any session unless `phase4_gate_file` independently
 reloads as a passing pre-paper report, its SHA-256 exactly matches the digest
 embedded in the production-model evidence, and the model training cutoff is no
 later than proof start. The gate path is mandatory; a model's self-declared
-digest alone is not deployment authority.
+digest alone is not deployment authority. It also projects model age through
+proof end and refuses deployment when that exceeds
+`maximum_model_age_calendar_days` (180 by default), so the proof keeps one
+frozen model without silently aging beyond its precommitted limit.
 
 When `universe_config` and `halt_snapshot_directory` are present in the loop
 spec, the same cycle also runs `workflow prepare-session-inputs`. The halt

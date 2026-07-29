@@ -77,6 +77,7 @@ class WorkflowLoopSpec(BaseModel):
     feature_group: str = Field(default="earnings-v1", min_length=1)
     bar_lookback_calendar_days: int = Field(default=450, ge=365, le=730)
     freshness_symbol: str = Field(default="SPY", min_length=1)
+    maximum_model_age_calendar_days: int = Field(default=180, ge=90, le=365)
     lease_seconds: int = Field(default=900, ge=1, le=3600)
     command_timeout_seconds: float = Field(default=1800, gt=0, le=7200)
 
@@ -172,6 +173,9 @@ class NextWorkflowQueuer:
             raise ValueError("workflow loop Phase 4 gate differs from production model")
         if model.training_cutoff > deployment.proof_start:
             raise ValueError("workflow loop model training cutoff follows proof start")
+        model_age_at_end = (deployment.proof_end - model.training_cutoff).days
+        if model_age_at_end > deployment.maximum_model_age_calendar_days:
+            raise ValueError("workflow loop model will be stale before proof end")
         if model.feature_names != strategy.features:
             raise ValueError("workflow loop model features differ from strategy config")
         now = self._aware_now()

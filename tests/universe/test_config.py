@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from quant_earning_edge.universe import sector_from_sic_code
 from quant_earning_edge.universe.config import (
     load_halt_snapshot,
     load_universe_job_config,
@@ -60,3 +61,10 @@ def test_halt_snapshot_requires_timestamp_and_normalizes_symbols(tmp_path: Path)
     snapshot = load_halt_snapshot(path)
 
     assert snapshot.symbols == frozenset({"AAPL", "MSFT"})
+
+
+def test_sic_divisions_create_conservative_exposure_buckets() -> None:
+    assert sector_from_sic_code("3571") == "MANUFACTURING"
+    assert sector_from_sic_code("6021") == "FINANCE"
+    assert sector_from_sic_code(None) == "UNCLASSIFIED"
+    assert sector_from_sic_code("unknown") == "UNCLASSIFIED"

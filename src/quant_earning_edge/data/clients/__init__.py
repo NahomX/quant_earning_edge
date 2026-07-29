@@ -19,6 +19,7 @@ from quant_earning_edge.data.clients.polygon import (
     StockTrade,
     TickerDetails,
     TickerReference,
+    TickerSnapshot,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "StockTrade",
     "TickerDetails",
     "TickerReference",
+    "TickerSnapshot",
 ]

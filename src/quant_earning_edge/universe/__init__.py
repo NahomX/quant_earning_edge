@@ -2,6 +2,7 @@
 
 from quant_earning_edge.universe.builder import UniverseBuilder, UniverseSnapshot
 from quant_earning_edge.universe.events import (
+    EVENT_CANDIDATE_SCHEMA,
     CandidateExclusion,
     EventCandidate,
     EventCandidateArtifact,
@@ -23,6 +24,7 @@ from quant_earning_edge.universe.models import (
     RejectionReason,
     UniverseConfig,
     UniverseDecision,
+    sector_from_sic_code,
 )
 from quant_earning_edge.universe.snapshot import (
     UNIVERSE_SNAPSHOT_SCHEMA,
@@ -31,6 +33,7 @@ from quant_earning_edge.universe.snapshot import (
 )
 
 __all__ = [
+    "EVENT_CANDIDATE_SCHEMA",
     "UNIVERSE_SNAPSHOT_SCHEMA",
     "CandidateExclusion",
     "CandidateObservation",
@@ -53,4 +56,5 @@ __all__ = [
     "UniverseSnapshotArtifact",
     "UniverseSnapshotWriter",
     "evaluate_unattended_readiness",
+    "sector_from_sic_code",
 ]

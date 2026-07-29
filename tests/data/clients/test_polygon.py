@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
@@ -256,6 +256,7 @@ def test_ticker_details_are_explicitly_point_in_time_and_captured(tmp_path: Path
                     "primary_exchange": "XNAS",
                     "type": "CS",
                     "market_cap": 3_000_000_000_000,
+                    "sic_code": "3571",
                     "list_date": "1980-12-12",
                 },
             },
@@ -276,7 +277,57 @@ def test_ticker_details_are_explicitly_point_in_time_and_captured(tmp_path: Path
     assert details.asof_date == date(2026, 7, 27)
     assert details.primary_exchange == "XNAS"
     assert details.market_cap == 3_000_000_000_000
+    assert details.sic_code == "3571"
     assert len(list((tmp_path / "bronze").rglob("*.json"))) == 1
+
+
+def test_ticker_snapshot_uses_provider_nbbo_and_trade_timestamps(tmp_path: Path) -> None:
+    captured = datetime(2026, 7, 28, 1, 30, tzinfo=UTC)
+    quote_time = captured - timedelta(seconds=2)
+    trade_time = captured - timedelta(seconds=3)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/AAPL")
+        return httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "request_id": "snapshot-request",
+                "ticker": {
+                    "ticker": "AAPL",
+                    "lastQuote": {
+                        "P": 100.1,
+                        "S": 200,
+                        "p": 99.9,
+                        "s": 150,
+                        "t": int(quote_time.timestamp() * 1_000_000_000),
+                    },
+                    "lastTrade": {
+                        "p": 100.0,
+                        "t": int(trade_time.timestamp() * 1_000_000_000),
+                    },
+                },
+            },
+        )
+
+    http_client = httpx.Client(
+        base_url="https://api.polygon.io",
+        transport=httpx.MockTransport(respond),
+    )
+    with http_client:
+        snapshot = PolygonClient(
+            api_key="key",
+            http_client=http_client,
+            bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
+        ).ticker_snapshot(symbol="aapl", captured_at=captured)
+
+    assert snapshot.symbol == "AAPL"
+    assert snapshot.observed_at == quote_time
+    assert snapshot.last_trade_at == trade_time
+    assert snapshot.bid_price == 99.9
+    assert snapshot.ask_price == 100.1
+    assert snapshot.request_id == "snapshot-request"
+    assert len(snapshot.payload_sha256) == 64
 
 
 @pytest.mark.parametrize(

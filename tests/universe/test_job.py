@@ -80,6 +80,7 @@ class FakeMarketData:
             primary_exchange="XNAS",
             security_type="CS",
             market_cap=1_000_000_000,
+            sic_code="3571",
             list_date=date(1980, 1, 1),
         )
 
@@ -171,19 +172,21 @@ def test_job_builds_prior_close_adv_snapshot_and_success_manifest(tmp_path: Path
     assert result.manifest.eligible_count == 1
     assert result.snapshot.row_count == 2
     table = pq.ParquetFile(result.snapshot.path).read()  # type: ignore[no-untyped-call]
-    rows = table.select(["symbol", "avg_daily_volume", "eligible", "halted"]).to_pylist()
+    rows = table.select(["symbol", "avg_daily_volume", "eligible", "halted", "sector"]).to_pylist()
     assert rows == [
         {
             "symbol": "AAPL",
             "avg_daily_volume": 2_000_000.0,
             "eligible": True,
             "halted": False,
+            "sector": "MANUFACTURING",
         },
         {
             "symbol": "MSFT",
             "avg_daily_volume": 2_000_000.0,
             "eligible": False,
             "halted": True,
+            "sector": "MANUFACTURING",
         },
     ]
     assert store.read_all() == (result.manifest,)

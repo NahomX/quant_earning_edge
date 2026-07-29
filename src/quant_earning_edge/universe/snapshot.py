@@ -32,6 +32,7 @@ UNIVERSE_SNAPSHOT_SCHEMA = pa.schema(
         pa.field("security_type", pa.string(), nullable=False),
         pa.field("active", pa.bool_(), nullable=False),
         pa.field("halted", pa.bool_(), nullable=False),
+        pa.field("sector", pa.string(), nullable=False),
         pa.field("list_date", pa.date32()),
         pa.field("delisted_date", pa.date32()),
     ]
@@ -81,6 +82,7 @@ class UniverseSnapshotWriter:
                 "security_type": decision.candidate.security_type,
                 "active": decision.candidate.active,
                 "halted": decision.candidate.halted,
+                "sector": decision.candidate.sector,
                 "list_date": decision.candidate.list_date,
                 "delisted_date": decision.candidate.delisted_date,
             }

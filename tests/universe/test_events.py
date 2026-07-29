@@ -66,6 +66,7 @@ def _universe(tmp_path: Path, *, generated_at: datetime = DECISION_AT) -> Path:
             "security_type": "CS",
             "active": True,
             "halted": False,
+            "sector": "MANUFACTURING",
             "list_date": date(1980, 1, 1),
             "delisted_date": None,
         }
@@ -165,6 +166,9 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
     assert rows[0]["dividend_event_ids"] == []
     assert rows[1]["split_event_ids"] == []
     assert rows[1]["dividend_event_ids"] == ["dividend-goog"]
+    assert all(row["sector"] == "MANUFACTURING" for row in rows)
+    assert all(row["sizing_price"] == 100 for row in rows)
+    assert all(row["frozen_average_daily_volume_shares"] == 2_000_000 for row in rows)
     assert "eps_actual" not in rows[0]
 
 

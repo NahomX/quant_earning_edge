@@ -27,6 +27,9 @@ EVENT_CANDIDATE_SCHEMA = pa.schema(
         pa.field("asof_date", pa.date32(), nullable=False),
         pa.field("decision_at", pa.timestamp("us", tz="UTC"), nullable=False),
         pa.field("symbol", pa.string(), nullable=False),
+        pa.field("sector", pa.string(), nullable=False),
+        pa.field("sizing_price", pa.float64(), nullable=False),
+        pa.field("frozen_average_daily_volume_shares", pa.float64(), nullable=False),
         pa.field("event_date", pa.date32(), nullable=False),
         pa.field("timing", pa.string(), nullable=False),
         pa.field("year", pa.int16(), nullable=False),
@@ -55,6 +58,9 @@ class EventCandidate:
     """A scheduled earnings event tradable from a frozen prior-close universe."""
 
     symbol: str
+    sector: str
+    sizing_price: float
+    frozen_average_daily_volume_shares: float
     trade_date: date
     asof_date: date
     decision_at: datetime
@@ -164,6 +170,9 @@ class EventCandidateJob:
             candidates.append(
                 EventCandidate(
                     symbol=symbol,
+                    sector=eligible_symbols[symbol][0],
+                    sizing_price=eligible_symbols[symbol][1],
+                    frozen_average_daily_volume_shares=eligible_symbols[symbol][2],
                     trade_date=trade_date,
                     asof_date=asof_date,
                     decision_at=decision_at,
@@ -198,16 +207,25 @@ class EventCandidateJob:
         trade_date: date,
         asof_date: date,
         decision_at: datetime,
-    ) -> frozenset[str]:
+    ) -> dict[str, tuple[str, float, float]]:
         table = pq.read_table(path)  # type: ignore[no-untyped-call]
-        required = {"trade_date", "asof_date", "generated_at", "symbol", "eligible"}
+        required = {
+            "trade_date",
+            "asof_date",
+            "generated_at",
+            "symbol",
+            "eligible",
+            "sector",
+            "close",
+            "avg_daily_volume",
+        }
         if not required.issubset(table.column_names):
             raise ValueError("universe snapshot is missing required columns")
         rows = table.select(sorted(required)).to_pylist()
         if not rows:
             raise ValueError("universe snapshot must not be empty")
         symbols: set[str] = set()
-        eligible: set[str] = set()
+        eligible: dict[str, tuple[str, float, float]] = {}
         for row in rows:
             if row["trade_date"] != trade_date or row["asof_date"] != asof_date:
                 raise ValueError("universe snapshot dates do not match the requested sessions")
@@ -219,8 +237,13 @@ class EventCandidateJob:
                 raise ValueError(f"duplicate universe symbol: {symbol}")
             symbols.add(symbol)
             if row["eligible"]:
-                eligible.add(symbol)
-        return frozenset(eligible)
+                sector = str(row["sector"]).strip().upper()
+                close = float(row["close"])
+                average_volume = float(row["avg_daily_volume"])
+                if not sector or close <= 0 or average_volume <= 0:
+                    raise ValueError(f"eligible universe sizing fields are invalid: {symbol}")
+                eligible[symbol] = (sector, close, average_volume)
+        return eligible
 
     @staticmethod
     def _read_known_events(
@@ -324,6 +347,9 @@ class EventCandidateJob:
                 "asof_date": item.asof_date,
                 "decision_at": item.decision_at,
                 "symbol": item.symbol,
+                "sector": item.sector,
+                "sizing_price": item.sizing_price,
+                "frozen_average_daily_volume_shares": (item.frozen_average_daily_volume_shares),
                 "event_date": item.event_date,
                 "timing": item.timing.value,
                 "year": item.year,

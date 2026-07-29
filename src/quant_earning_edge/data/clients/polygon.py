@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -167,6 +169,7 @@ class TickerDetails(BaseModel):
     primary_exchange: str = Field(min_length=1)
     security_type: str = Field(min_length=1)
     market_cap: float = Field(gt=0)
+    sic_code: str | None = None
     list_date: date | None = None
     delisted_date: date | None = None
 
@@ -185,6 +188,38 @@ class TickerReference(BaseModel):
     primary_exchange: str
     security_type: str
     delisted_date: date | None = None
+
+
+class TickerSnapshot(BaseModel):
+    """Provider-timestamped decision NBBO and last trade from Polygon snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    symbol: str = Field(min_length=1)
+    captured_at: datetime
+    observed_at: datetime
+    bid_price: float = Field(gt=0)
+    ask_price: float = Field(gt=0)
+    bid_size: int = Field(gt=0)
+    ask_size: int = Field(gt=0)
+    last_trade_price: float = Field(gt=0)
+    last_trade_at: datetime
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> TickerSnapshot:
+        if any(
+            item.tzinfo is None or item.utcoffset() is None
+            for item in (self.captured_at, self.observed_at, self.last_trade_at)
+        ):
+            raise ValueError("ticker snapshot timestamps must be timezone-aware")
+        if self.ask_price < self.bid_price:
+            raise ValueError("ticker snapshot NBBO must not be crossed")
+        if self.observed_at > self.captured_at or self.last_trade_at > self.captured_at:
+            raise ValueError("ticker snapshot observation cannot follow capture")
+        object.__setattr__(self, "symbol", self.symbol.strip().upper())
+        return self
 
 
 class SplitAdjustmentType(StrEnum):
@@ -272,6 +307,7 @@ class _TickerDetailsPayload(BaseModel):
     primary_exchange: str = Field(min_length=1)
     security_type: str = Field(alias="type", min_length=1)
     market_cap: float = Field(gt=0)
+    sic_code: str | None = None
     list_date: date | None = None
     delisted_date: date | None = Field(default=None, alias="delisted_utc")
 
@@ -281,6 +317,39 @@ class _TickerDetailsResponse(BaseModel):
 
     status: str
     results: _TickerDetailsPayload
+
+
+class _SnapshotQuote(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    ask_price: float = Field(alias="P", gt=0)
+    ask_size: int = Field(alias="S", gt=0)
+    bid_price: float = Field(alias="p", gt=0)
+    bid_size: int = Field(alias="s", gt=0)
+    timestamp_ns: int = Field(alias="t", gt=0)
+
+
+class _SnapshotTrade(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    price: float = Field(alias="p", gt=0)
+    timestamp_ns: int = Field(alias="t", gt=0)
+
+
+class _SnapshotTickerPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    ticker: str
+    quote: _SnapshotQuote = Field(alias="lastQuote")
+    trade: _SnapshotTrade = Field(alias="lastTrade")
+
+
+class _SnapshotResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    status: str
+    request_id: str | None = None
+    ticker: _SnapshotTickerPayload
 
 
 class _TickerReferencePayload(BaseModel):
@@ -514,9 +583,65 @@ class PolygonClient:
             primary_exchange=details.primary_exchange,
             security_type=details.security_type,
             market_cap=details.market_cap,
+            sic_code=details.sic_code,
             list_date=details.list_date,
             delisted_date=details.delisted_date,
         )
+
+    def ticker_snapshot(
+        self,
+        *,
+        symbol: str,
+        captured_at: datetime | None = None,
+    ) -> TickerSnapshot:
+        """Capture the current two-sided NBBO and last trade with provider timestamps."""
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("symbol must not be empty")
+        captured = (captured_at or datetime.now(UTC)).astimezone(UTC)
+        response = self._request(
+            url=f"/v2/snapshot/locale/us/markets/stocks/tickers/{normalized_symbol}",
+            params=None,
+        )
+        raw = self._decode_json(response)
+        if self._bronze_writer is not None:
+            self._bronze_writer.write_json(
+                raw,
+                source="polygon",
+                dataset="decision-snapshot",
+                event_date=captured.date(),
+            )
+        try:
+            envelope = _SnapshotResponse.model_validate(raw)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Polygon ticker snapshot failed validation: {error}"
+            ) from error
+        if envelope.status.upper() != "OK":
+            raise ProviderResponseError(f"Polygon ticker snapshot status was {envelope.status!r}")
+        if envelope.ticker.ticker.strip().upper() != normalized_symbol:
+            raise ProviderResponseError("Polygon ticker snapshot identity did not match")
+        quote = envelope.ticker.quote
+        trade = envelope.ticker.trade
+        payload = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+        try:
+            return TickerSnapshot(
+                symbol=normalized_symbol,
+                captured_at=captured,
+                observed_at=self._nanoseconds_to_datetime(quote.timestamp_ns),
+                bid_price=quote.bid_price,
+                ask_price=quote.ask_price,
+                bid_size=quote.bid_size,
+                ask_size=quote.ask_size,
+                last_trade_price=trade.price,
+                last_trade_at=self._nanoseconds_to_datetime(trade.timestamp_ns),
+                payload_sha256=hashlib.sha256(payload).hexdigest(),
+                request_id=envelope.request_id,
+            )
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Polygon decision snapshot failed validation: {error}"
+            ) from error
 
     def minute_bars(
         self,

@@ -136,6 +136,7 @@ from quant_earning_edge.signals import (
     LiveOrderPlanner,
     LivePlanningAssembler,
     LivePlanningSourceSpec,
+    LiveSourceCaptureAssembler,
     ProductionModelArtifact,
     ProductionModelTrainer,
     load_strategy_config,
@@ -1018,6 +1019,117 @@ def score_live_planning(  # noqa: PLR0917 - explicit immutable input/output boun
             "model_sha256": artifact.model_sha256,
             "candidate_count": len(artifact.planning.candidates),
             "trade_date": artifact.planning.trade_date,
+        }
+    )
+
+
+@model_app.command("capture-live-source")
+def capture_live_source(  # noqa: PLR0917 - explicit provider capture boundary.
+    trade_date: Annotated[str, typer.Option(help="Target session date (YYYY-MM-DD).")],
+    candidate_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Frozen event-candidate Parquet."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative market sessions."),
+    ],
+    source_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Probability-free live planning source JSON."),
+    ],
+    evidence_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Provider and artifact lineage JSON."),
+    ],
+    initial_cash: Annotated[
+        float,
+        typer.Option(min=0.01, help="Initial capital of the NBBO-replay proof sleeve."),
+    ],
+    prior_replay_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--prior-replay-file",
+            exists=True,
+            dir_okay=False,
+            help="Clean prior replay-session report; repeat chronologically.",
+        ),
+    ] = None,
+    minimum_probability: Annotated[
+        float,
+        typer.Option(min=0.5, max=0.999999, help="Minimum long/short confidence."),
+    ] = 0.5,
+    env_file: EnvFileOption = None,
+) -> None:
+    """Capture paper equity and Polygon NBBOs into a causal live source."""
+    selected_date = _parse_date(trade_date, option="--trade-date")
+    environment = _environment(env_file)
+    try:
+        polygon_key = environment.require_polygon_api_key()
+        alpaca_key, alpaca_secret = environment.require_alpaca_credentials()
+        captured_at = datetime.now(UTC)
+        layout = LakehouseLayout(environment.data_lake_root)
+        assembler = LiveSourceCaptureAssembler()
+        symbols = assembler.candidate_symbols(candidate_file)
+        with (
+            httpx.Client(
+                base_url=environment.polygon_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as polygon_http,
+            httpx.Client(
+                base_url=environment.alpaca_trading_base_url,
+                timeout=environment.http_timeout_seconds,
+            ) as alpaca_http,
+        ):
+            polygon = PolygonClient(
+                api_key=polygon_key,
+                http_client=polygon_http,
+                bronze_writer=BronzeWriter(layout),
+            )
+            account = AlpacaPaperClient(
+                api_key_id=alpaca_key,
+                secret_key=alpaca_secret,
+                http_client=alpaca_http,
+                bronze_writer=BronzeWriter(layout),
+            ).account_snapshot(captured_at=captured_at)
+            snapshots = tuple(
+                polygon.ticker_snapshot(symbol=symbol, captured_at=captured_at)
+                for symbol in symbols
+            )
+        artifact = assembler.assemble(
+            trade_date=selected_date,
+            captured_at=captured_at,
+            candidate_file=candidate_file,
+            session_file=session_file,
+            account=account,
+            initial_cash=initial_cash,
+            snapshots=snapshots,
+            prior_replay_files=tuple(prior_replay_files or ()),
+            minimum_probability=minimum_probability,
+        )
+        assembler.write(
+            artifact,
+            source_output=source_output,
+            evidence_output=evidence_output,
+        )
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(str(error), param_hint="live source capture") from error
+    _echo_json(
+        {
+            "source_output": str(source_output.resolve()),
+            "evidence_output": str(evidence_output.resolve()),
+            "sha256": artifact.sha256,
+            "trade_date": artifact.source.trade_date,
+            "candidate_count": len(artifact.source.observations),
+            "prior_outcome_count": len(artifact.source.outcomes),
+            "equity": artifact.source.equity,
+            "paper_account_equity": artifact.paper_account_equity,
         }
     )
 

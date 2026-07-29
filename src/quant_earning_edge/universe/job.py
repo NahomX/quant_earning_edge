@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
-from quant_earning_edge.universe.models import CandidateObservation
+from quant_earning_edge.universe.models import CandidateObservation, sector_from_sic_code
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -298,6 +298,7 @@ class DailyUniverseJob:
             security_type=details.security_type,
             active=details.active,
             halted=halted,
+            sector=sector_from_sic_code(details.sic_code),
             list_date=details.list_date,
             delisted_date=details.delisted_date,
         )

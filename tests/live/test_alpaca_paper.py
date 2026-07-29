@@ -73,6 +73,41 @@ def test_client_refuses_live_or_noncanonical_hosts() -> None:
             )
 
 
+def test_account_snapshot_captures_paper_equity_and_bronze(tmp_path: Path) -> None:
+    captured = datetime(2026, 7, 28, 1, 30, tzinfo=UTC)
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/account"
+        return httpx.Response(
+            200,
+            json={
+                "equity": "100123.45",
+                "buying_power": "200246.90",
+                "status": "ACTIVE",
+                "trading_blocked": False,
+            },
+            headers={"X-Request-ID": "account-request"},
+        )
+
+    http_client = httpx.Client(
+        base_url="https://paper-api.alpaca.markets",
+        transport=httpx.MockTransport(respond),
+    )
+    with http_client:
+        snapshot = AlpacaPaperClient(
+            api_key_id="key",
+            secret_key="secret",
+            http_client=http_client,
+            bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
+        ).account_snapshot(captured_at=captured)
+
+    assert snapshot.equity == 100123.45
+    assert snapshot.buying_power == 200246.9
+    assert snapshot.provider_request_id == "account-request"
+    assert len(snapshot.payload_sha256) == 64
+    assert len(tuple((tmp_path / "bronze").rglob("*.json"))) == 1
+
+
 def test_submit_checks_client_id_then_places_one_paper_order(tmp_path: Path) -> None:
     requests: list[httpx.Request] = []
 

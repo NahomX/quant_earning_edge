@@ -14,6 +14,10 @@ from quant_earning_edge.signals.lgbm_model import (
     OosPrediction,
     WalkForwardModelRun,
 )
+from quant_earning_edge.signals.live_capture import (
+    LiveSourceCaptureArtifact,
+    LiveSourceCaptureAssembler,
+)
 from quant_earning_edge.signals.live_orders import (
     DailyOrderPlanningSpec,
     FrozenDailyOrders,
@@ -54,6 +58,8 @@ __all__ = [
     "LiveOrderPlanner",
     "LivePlanningAssembler",
     "LivePlanningSourceSpec",
+    "LiveSourceCaptureArtifact",
+    "LiveSourceCaptureAssembler",
     "MomentumPrice",
     "MomentumSignal",
     "OosPrediction",

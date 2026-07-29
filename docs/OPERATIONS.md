@@ -1107,7 +1107,31 @@ explicit empty order set produces auditable no-trade evidence.
 
 The live paper workflow must not reuse `plan-event-backtest`, because that
 research artifact contains realized entry/exit outcomes. Produce probabilities
-from the frozen production booster and point-in-time feature artifacts:
+from provider-backed market observations and the frozen production booster.
+First capture the probability-free source:
+
+```powershell
+uv run qee model capture-live-source `
+  --trade-date 2026-07-28 `
+  --candidate-file .\data\gold\event-candidates\for_trade_date=2026-07-28\candidates-<hash>.parquet `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --initial-cash 100000 `
+  --prior-replay-file .\workflow-artifacts\trade_date=2026-07-27\replay-session.json `
+  --source-output .\live-market-observations.json `
+  --evidence-output .\live-market-observations-evidence.json
+```
+
+The event-candidate artifact now carries its point-in-time SIC-division
+exposure bucket, prior-close sizing price, and frozen 20-session ADV from the
+universe snapshot. Capture reads authenticated Alpaca paper equity for
+operational evidence and obtains one Polygon two-sided NBBO/last-trade
+snapshot per candidate, retaining provider timestamps, payload hashes, and
+bronze responses. Sizing equity is not taken from Alpaca: it is chained from
+initial proof capital plus clean prior NBBO-replay P&L so Phase 6 accounting
+cannot drift. Prior replay reports must be canonical, reconciled,
+chronological, and equity-continuous.
+
+Then score the captured source from point-in-time feature artifacts:
 
 ```powershell
 uv run qee model score-live-planning `

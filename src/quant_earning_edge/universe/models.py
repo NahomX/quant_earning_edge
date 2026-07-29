@@ -61,6 +61,7 @@ class CandidateObservation:
     security_type: str
     active: bool
     halted: bool
+    sector: str = "UNCLASSIFIED"
     list_date: date | None = None
     delisted_date: date | None = None
 
@@ -79,6 +80,10 @@ class CandidateObservation:
             raise ValueError("primary_exchange must not be empty")
         if not self.security_type:
             raise ValueError("security_type must not be empty")
+        sector = self.sector.strip().upper()
+        if not sector:
+            raise ValueError("sector must not be empty")
+        object.__setattr__(self, "sector", sector)
 
 
 @dataclass(frozen=True)
@@ -88,3 +93,26 @@ class UniverseDecision:
     candidate: CandidateObservation
     eligible: bool
     rejection_reasons: tuple[RejectionReason, ...]
+
+
+def sector_from_sic_code(sic_code: str | None) -> str:
+    """Map authoritative SIC divisions to conservative portfolio-cap buckets."""
+    if sic_code is None or not sic_code.strip().isdigit():
+        return "UNCLASSIFIED"
+    value = int(sic_code)
+    divisions = (
+        (100, 999, "AGRICULTURE"),
+        (1000, 1499, "MINING"),
+        (1500, 1799, "CONSTRUCTION"),
+        (2000, 3999, "MANUFACTURING"),
+        (4000, 4999, "TRANSPORTATION_UTILITIES"),
+        (5000, 5199, "WHOLESALE"),
+        (5200, 5999, "RETAIL"),
+        (6000, 6799, "FINANCE"),
+        (7000, 8999, "SERVICES"),
+        (9100, 9729, "PUBLIC_ADMINISTRATION"),
+    )
+    return next(
+        (name for lower, upper, name in divisions if lower <= value <= upper),
+        "UNCLASSIFIED",
+    )

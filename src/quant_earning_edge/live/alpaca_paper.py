@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime annotations.
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
@@ -109,6 +109,37 @@ class BrokerOrder(BaseModel):
             raise ValueError("broker filled quantity must be whole-share")
         object.__setattr__(self, "symbol", self.symbol.strip().upper())
         return self
+
+
+class PaperAccountSnapshot(BaseModel):
+    """Causal paper-account equity used for portfolio sizing."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    captured_at: datetime
+    equity: float = Field(gt=0)
+    buying_power: float = Field(ge=0)
+    status: Literal["ACTIVE"]
+    trading_blocked: bool
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_request_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_account(self) -> PaperAccountSnapshot:
+        if self.captured_at.tzinfo is None or self.captured_at.utcoffset() is None:
+            raise ValueError("paper account capture time must be timezone-aware")
+        if self.trading_blocked:
+            raise ValueError("paper account is blocked from trading")
+        return self
+
+
+class _PaperAccountPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    equity: Decimal = Field(gt=0)
+    buying_power: Decimal = Field(ge=0)
+    status: Literal["ACTIVE"]
+    trading_blocked: bool
 
 
 @dataclass(frozen=True)
@@ -360,6 +391,41 @@ class AlpacaPaperClient:
                 event_date=broker_order.submitted_at.date(),
             )
         return broker_order
+
+    def account_snapshot(
+        self,
+        *,
+        captured_at: datetime | None = None,
+    ) -> PaperAccountSnapshot:
+        """Capture current paper equity and fail closed on blocked/non-active accounts."""
+        captured = (captured_at or datetime.now(UTC)).astimezone(UTC)
+        response = self._http.get("/v2/account", headers=self._headers)
+        self._raise_for_status(response)
+        raw = self._decode(response)
+        try:
+            account = _PaperAccountPayload.model_validate(raw)
+            payload = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+            snapshot = PaperAccountSnapshot(
+                captured_at=captured,
+                equity=float(account.equity),
+                buying_power=float(account.buying_power),
+                status=account.status,
+                trading_blocked=account.trading_blocked,
+                payload_sha256=hashlib.sha256(payload).hexdigest(),
+                provider_request_id=response.headers.get("X-Request-ID"),
+            )
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Alpaca paper account failed validation: {error}"
+            ) from error
+        if self._bronze_writer is not None:
+            self._bronze_writer.write_json(
+                raw,
+                source="alpaca-paper",
+                dataset="account",
+                event_date=captured.date(),
+            )
+        return snapshot
 
     @property
     def _headers(self) -> dict[str, str]:

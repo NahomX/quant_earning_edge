@@ -7,11 +7,21 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime fields.
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from quant_earning_edge.backtest import BacktestSpec, VectorbtBacktestEngine
+from quant_earning_edge.evaluation.momentum_builder import (
+    MomentumBaselineBuilder,
+    MomentumBaselineBuildSpec,
+)
 from quant_earning_edge.evaluation.report import PerformanceEvaluator, PerformanceReport
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from quant_earning_edge.data.calendar import SessionFile
 
 _SHA256_LENGTH = 64
 _MOMENTUM_STRATEGY = "cross_sectional_momentum_60_session"
@@ -29,13 +39,21 @@ class MomentumBenchmarkReferenceSpec(_StrictSpec):
     benchmark_name: str = Field(min_length=1)
     source_url: HttpUrl
     source_artifact_sha256: str
+    universe_source_url: HttpUrl
+    baseline_build_spec_sha256: str
     published_net_sharpe: float
     tolerance: float = Field(default=0.1, gt=0, le=0.1)
     minimum_session_count: int = Field(default=252, ge=252)
 
     @model_validator(mode="after")
     def validate_contract(self) -> MomentumBenchmarkReferenceSpec:
-        if self.schema_version != 1 or not _is_sha256(self.source_artifact_sha256):
+        if self.schema_version != 1 or not all(
+            _is_sha256(item)
+            for item in (
+                self.source_artifact_sha256,
+                self.baseline_build_spec_sha256,
+            )
+        ):
             raise ValueError("momentum benchmark reference identity is invalid")
         if not math.isfinite(self.published_net_sharpe):
             raise ValueError("published momentum Sharpe must be finite")
@@ -53,6 +71,15 @@ class MomentumBenchmarkReferenceSpec(_StrictSpec):
     def sha256(self) -> str:
         return hashlib.sha256(self.canonical_bytes).hexdigest()
 
+    def write(self, output: Path) -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(self.canonical_bytes)
+        except FileExistsError:
+            if output.read_bytes() != self.canonical_bytes:
+                raise RuntimeError(f"momentum benchmark reference collision at {output}") from None
+
     @classmethod
     def load(cls, path: Path) -> MomentumBenchmarkReferenceSpec:
         encoded = path.read_bytes()
@@ -65,7 +92,7 @@ class MomentumBenchmarkReferenceSpec(_StrictSpec):
 class MomentumBaselineManifest(_StrictSpec):
     """Actual baseline identity linked to the standardized backtest input."""
 
-    schema_version: int = 1
+    schema_version: int = 2
     strategy: str
     lookback_sessions: int
     selection_fraction: float = Field(gt=0, le=0.5)
@@ -73,11 +100,14 @@ class MomentumBaselineManifest(_StrictSpec):
     universe_artifact_sha256: str
     trade_plan_sha256: str
     backtest_input_sha256: str
+    build_spec_sha256: str
+    session_file_sha256: str
+    daily_bar_sha256: tuple[str, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_contract(self) -> MomentumBaselineManifest:
-        if self.schema_version != 1:
-            raise ValueError("momentum baseline schema_version must be 1")
+        if self.schema_version != 2:
+            raise ValueError("momentum baseline schema_version must be 2")
         if self.strategy != _MOMENTUM_STRATEGY or self.lookback_sessions != 60:
             raise ValueError("momentum baseline strategy contract differs")
         if self.universe != _MOMENTUM_UNIVERSE:
@@ -86,6 +116,9 @@ class MomentumBaselineManifest(_StrictSpec):
             self.universe_artifact_sha256,
             self.trade_plan_sha256,
             self.backtest_input_sha256,
+            self.build_spec_sha256,
+            self.session_file_sha256,
+            *self.daily_bar_sha256,
         ):
             if not _is_sha256(digest):
                 raise ValueError("momentum baseline artifact identity is invalid")
@@ -102,6 +135,15 @@ class MomentumBaselineManifest(_StrictSpec):
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(self.canonical_bytes)
+        except FileExistsError:
+            if output.read_bytes() != self.canonical_bytes:
+                raise RuntimeError(f"momentum baseline manifest collision at {output}") from None
 
     @classmethod
     def load(cls, path: Path) -> MomentumBaselineManifest:
@@ -168,23 +210,58 @@ class MomentumBenchmarkGateReport:
 class MomentumBenchmarkGateEvaluator:
     """Verify source, strategy, and performance identities before comparison."""
 
-    def evaluate(
+    def evaluate(  # noqa: PLR0912 - strict source/reproduction gate.
         self,
         *,
         reference_spec: MomentumBenchmarkReferenceSpec,
         reference_artifact: Path,
         universe_artifact: Path,
         trade_plan: Path,
+        build_spec: MomentumBaselineBuildSpec,
+        calendar: SessionFile,
+        daily_bar_files: Sequence[Path],
         baseline_manifest: MomentumBaselineManifest,
         performance_report: PerformanceReport,
     ) -> MomentumBenchmarkGateReport:
         reference_hash = _file_sha256(reference_artifact)
         if reference_hash != reference_spec.source_artifact_sha256:
             raise ValueError("published momentum reference artifact hash differs")
+        if build_spec.sha256 != reference_spec.baseline_build_spec_sha256:
+            raise ValueError("published momentum reference build methodology differs")
         if _file_sha256(universe_artifact) != baseline_manifest.universe_artifact_sha256:
             raise ValueError("momentum historical-universe artifact hash differs")
         if _file_sha256(trade_plan) != baseline_manifest.trade_plan_sha256:
             raise ValueError("momentum trade-plan artifact hash differs")
+        if build_spec.sha256 != baseline_manifest.build_spec_sha256:
+            raise ValueError("momentum build-spec artifact hash differs")
+        if calendar.sha256 != baseline_manifest.session_file_sha256:
+            raise ValueError("momentum session-file artifact hash differs")
+        bar_hashes = tuple(sorted(_file_sha256(path) for path in daily_bar_files))
+        if bar_hashes != baseline_manifest.daily_bar_sha256:
+            raise ValueError("momentum daily-bar artifact hashes differ")
+        rebuilt = MomentumBaselineBuilder().build(
+            spec=build_spec,
+            calendar=calendar,
+            universe_artifact=universe_artifact,
+            daily_bar_files=daily_bar_files,
+        )
+        if rebuilt.trade_plan_bytes != trade_plan.read_bytes():
+            raise ValueError("momentum trade plan does not reproduce from source artifacts")
+        expected_manifest = MomentumBaselineManifest(
+            schema_version=2,
+            strategy=_MOMENTUM_STRATEGY,
+            lookback_sessions=build_spec.lookback_sessions,
+            selection_fraction=build_spec.selection_fraction,
+            universe=_MOMENTUM_UNIVERSE,
+            universe_artifact_sha256=rebuilt.universe_artifact_sha256,
+            trade_plan_sha256=rebuilt.trade_plan_sha256,
+            backtest_input_sha256=rebuilt.trade_plan.input_sha256,
+            build_spec_sha256=rebuilt.build_spec_sha256,
+            session_file_sha256=rebuilt.session_file_sha256,
+            daily_bar_sha256=rebuilt.daily_bar_sha256,
+        )
+        if expected_manifest != baseline_manifest:
+            raise ValueError("momentum baseline manifest does not reproduce from source artifacts")
         reproduced = _reproduce_performance(
             trade_plan=trade_plan,
             claimed=performance_report,

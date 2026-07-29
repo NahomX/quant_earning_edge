@@ -191,22 +191,49 @@ The Phase 3 exit gate is not a free-form comparison. Prepare:
 
 - a locally pinned copy of the publication/source artifact;
 - a canonical reference JSON containing its SHA-256, HTTPS source URL,
-  published net Sharpe, tolerance no greater than `0.1`, and at least 252
+  published net Sharpe, the historical-membership source URL, the exact
+  build-spec SHA-256, tolerance no greater than `0.1`, and at least 252
   required sessions;
-- a canonical baseline manifest declaring
-  `cross_sectional_momentum_60_session`, lookback `60`,
-  `historical_spy_components`, and the universe, trade-plan, and vectorbt
-  backtest-input hashes;
-- an immutable daily `BacktestSpec` JSON as the trade plan; and
-- the standardized performance report produced from that exact specification
-  by `backtest run-ledger`.
+- an authoritative session file covering the 60-session lookback and all
+  post-signal exits;
+- adjusted daily-bar Parquet partitions; and
+- point-in-time membership Parquet with the exact non-null schema `symbol:
+  string`, `effective_from: date32`, `effective_through: date32`. Intervals for
+  a symbol must not overlap.
 
-Then run:
+Copy `configs/evaluation/momentum_build.example.json`, set the signal window and
+the methodology documented by the publication, canonicalize it, and build the
+ledger:
+
+```powershell
+uv run qee evaluation build-momentum-baseline `
+  --build-spec .\configs\evaluation\momentum_build.json `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --universe-artifact .\data\benchmarks\historical-spy-components.parquet `
+  --daily-bar-file .\data\silver\daily-bars\year=2024\part-<hash>.parquet `
+  --daily-bar-file .\data\silver\daily-bars\year=2025\part-<hash>.parquet `
+  --trade-plan-output .\data\benchmarks\momentum-trade-plan.json `
+  --manifest-output .\data\benchmarks\momentum-baseline.json
+```
+
+The builder ranks only members effective on each signal date, uses exactly 61
+closes for the 60-session return, sizes from the known signal-date close and
+20-session ADV, enters at the next session's open, and exits after the
+precommitted holding interval. The generated manifest binds the methodology,
+calendar, membership, every bar partition, trade plan, and semantic vectorbt
+input. Run that trade plan through `backtest run-ledger` to create the
+standardized performance report and MLflow provenance.
+
+Then evaluate:
 
 ```powershell
 uv run qee evaluation momentum-benchmark-gate `
   --reference-spec .\data\benchmarks\momentum-reference.json `
   --reference-artifact .\data\benchmarks\published-source.pdf `
+  --build-spec .\configs\evaluation\momentum_build.json `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --daily-bar-file .\data\silver\daily-bars\year=2024\part-<hash>.parquet `
+  --daily-bar-file .\data\silver\daily-bars\year=2025\part-<hash>.parquet `
   --baseline-manifest .\data\benchmarks\momentum-baseline.json `
   --universe-artifact .\data\benchmarks\historical-spy-components.parquet `
   --trade-plan .\data\benchmarks\momentum-trade-plan.json `
@@ -214,12 +241,11 @@ uv run qee evaluation momentum-benchmark-gate `
   --output .\data\benchmarks\momentum-gate.json
 ```
 
-The command rejects a changed publication, universe, or trade plan; a
-noncanonical manifest; an intraday or mismatched backtest input; fewer than the
-reference's required sessions; and a no-trade report. It reruns the supplied
-trade plan with the standardized daily vectorbt engine and requires the entire
-performance report, including bootstrap evidence, to reproduce. It then
-persists the comparison verdict and exits `1` when the absolute net-Sharpe
+The command rebuilds the trade plan and manifest from those pinned sources,
+then reruns the standardized daily vectorbt engine. It rejects any changed
+publication, methodology, calendar, universe, bar partition, trade plan,
+manifest, or performance value (including bootstrap evidence). Only then does
+it persist the comparison verdict; it exits `1` when the absolute net-Sharpe
 difference exceeds the committed tolerance. Fixture results cannot satisfy the
 credentialed Phase 3 gate.
 

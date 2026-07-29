@@ -292,7 +292,7 @@ class VectorbtBacktestEngine:
         )
         return BacktestResult(
             engine=f"vectorbt-{vbt.__version__}",
-            input_sha256=_input_digest(
+            input_sha256=backtest_input_sha256(
                 trades=trades,
                 marks=marks,
                 sessions=session_dates,
@@ -508,7 +508,7 @@ class VectorbtIntradayEngine:
             raise RuntimeError("intraday vectorbt net equity does not reconcile")
         return BacktestResult(
             engine=f"vectorbt-intraday-{vbt.__version__}",
-            input_sha256=_input_digest(
+            input_sha256=backtest_input_sha256(
                 trades=trades,
                 marks=(),
                 sessions=session_dates,
@@ -602,7 +602,7 @@ def _import_vectorbt() -> Any:
     return vbt
 
 
-def _input_digest(
+def backtest_input_sha256(
     *,
     trades: Sequence[TradeIntent],
     marks: Sequence[DailyMark],

@@ -44,8 +44,8 @@ reproducible through `uv.lock`.
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
 | Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
-| Deterministic 60-session momentum baseline | Complete | causal ranking/future-data invariance tests |
-| Source-bound Phase 3 momentum comparison gate | Complete | pinned publication hash, historical-SPY manifest, vectorbt input linkage, strict ±0.1 verdict |
+| Deterministic 60-session momentum baseline | Complete | PIT membership + adjusted-bar builder, causal next-open ledger, immutable source manifest |
+| Source-bound Phase 3 momentum comparison gate | Complete | rebuilds methodology/calendar/universe/bars/trades/report before strict ±0.1 verdict |
 | Decomposed execution cost model | Complete | commission, spread, impact, borrow, and stop tests |
 | Vectorbt daily round-trip engine | Complete | long/short mark-to-market, determinism, rejection tests |
 | Exact daily cost attribution invariant | Complete | gross minus five cost components equals net on every session |

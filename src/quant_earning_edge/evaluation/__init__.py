@@ -5,6 +5,12 @@ from quant_earning_edge.evaluation.folds import (
     WalkForwardEvaluation,
     WalkForwardEvaluator,
 )
+from quant_earning_edge.evaluation.momentum_builder import (
+    HISTORICAL_SPY_MEMBERSHIP_SCHEMA,
+    MomentumBaselineBuild,
+    MomentumBaselineBuilder,
+    MomentumBaselineBuildSpec,
+)
 from quant_earning_edge.evaluation.momentum_gate import (
     MomentumBaselineManifest,
     MomentumBenchmarkGateEvaluator,
@@ -61,6 +67,7 @@ from quant_earning_edge.evaluation.tracking import (
 )
 
 __all__ = [
+    "HISTORICAL_SPY_MEMBERSHIP_SCHEMA",
     "BacktestResultCombiner",
     "BacktestTrackingReference",
     "BootstrapSummary",
@@ -70,6 +77,9 @@ __all__ = [
     "FoldBacktestResults",
     "FoldEvaluation",
     "HtmlTearsheetWriter",
+    "MomentumBaselineBuild",
+    "MomentumBaselineBuildSpec",
+    "MomentumBaselineBuilder",
     "MomentumBaselineManifest",
     "MomentumBenchmarkGateEvaluator",
     "MomentumBenchmarkGateReport",

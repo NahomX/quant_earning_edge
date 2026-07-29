@@ -52,6 +52,8 @@ from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient,
 from quant_earning_edge.evaluation import (
     FoldBacktestResults,
     HtmlTearsheetWriter,
+    MomentumBaselineBuilder,
+    MomentumBaselineBuildSpec,
     MomentumBaselineManifest,
     MomentumBenchmarkGateEvaluator,
     MomentumBenchmarkReferenceSpec,
@@ -671,6 +673,82 @@ def run_backtest_ledger(  # noqa: PLR0917 - explicit run and provenance contract
     )
 
 
+@evaluation_app.command("build-momentum-baseline")
+def build_momentum_baseline(  # noqa: PLR0917 - explicit source/output contract.
+    build_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical momentum methodology JSON."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative market-session file."),
+    ],
+    universe_artifact: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Historical point-in-time SPY membership Parquet.",
+        ),
+    ],
+    daily_bar_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--daily-bar-file",
+            exists=True,
+            dir_okay=False,
+            help="Adjusted daily-bar Parquet; repeat for every source partition.",
+        ),
+    ],
+    trade_plan_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Generated immutable BacktestSpec JSON."),
+    ],
+    manifest_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Generated immutable baseline manifest."),
+    ],
+) -> None:
+    """Build the causal historical momentum ledger from pinned sources."""
+    try:
+        methodology = MomentumBaselineBuildSpec.load(build_spec)
+        built = MomentumBaselineBuilder().build(
+            spec=methodology,
+            calendar=SessionFileStore.load(session_file),
+            universe_artifact=universe_artifact,
+            daily_bar_files=daily_bar_files,
+        )
+        manifest = MomentumBaselineManifest(
+            schema_version=2,
+            strategy="cross_sectional_momentum_60_session",
+            lookback_sessions=methodology.lookback_sessions,
+            selection_fraction=methodology.selection_fraction,
+            universe="historical_spy_components",
+            universe_artifact_sha256=built.universe_artifact_sha256,
+            trade_plan_sha256=built.trade_plan_sha256,
+            backtest_input_sha256=built.trade_plan.input_sha256,
+            build_spec_sha256=built.build_spec_sha256,
+            session_file_sha256=built.session_file_sha256,
+            daily_bar_sha256=built.daily_bar_sha256,
+        )
+        built.write_trade_plan(trade_plan_output)
+        manifest.write(manifest_output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="momentum baseline inputs") from error
+    _echo_json(
+        {
+            "trade_plan_output": str(trade_plan_output.resolve()),
+            "trade_plan_sha256": built.trade_plan_sha256,
+            "manifest_output": str(manifest_output.resolve()),
+            "manifest_sha256": manifest.sha256,
+            "build_spec_sha256": built.build_spec_sha256,
+            "backtest_input_sha256": built.trade_plan.input_sha256,
+            "trade_count": len(built.trade_plan.trades),
+            "session_count": len(built.trade_plan.sessions),
+        }
+    )
+
+
 @evaluation_app.command("momentum-benchmark-gate")
 def evaluate_momentum_benchmark_gate(  # noqa: PLR0917 - explicit evidence boundary.
     reference_spec: Annotated[
@@ -687,6 +765,23 @@ def evaluate_momentum_benchmark_gate(  # noqa: PLR0917 - explicit evidence bound
             exists=True,
             dir_okay=False,
             help="Pinned downloaded publication artifact.",
+        ),
+    ],
+    build_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical momentum methodology JSON."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative market-session file."),
+    ],
+    daily_bar_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--daily-bar-file",
+            exists=True,
+            dir_okay=False,
+            help="Adjusted daily-bar Parquet; repeat for every source partition.",
         ),
     ],
     baseline_manifest: Annotated[
@@ -733,6 +828,9 @@ def evaluate_momentum_benchmark_gate(  # noqa: PLR0917 - explicit evidence bound
             reference_artifact=reference_artifact,
             universe_artifact=universe_artifact,
             trade_plan=trade_plan,
+            build_spec=MomentumBaselineBuildSpec.load(build_spec),
+            calendar=SessionFileStore.load(session_file),
+            daily_bar_files=daily_bar_files,
             baseline_manifest=MomentumBaselineManifest.load(baseline_manifest),
             performance_report=PerformanceReport.load(performance_report),
         )

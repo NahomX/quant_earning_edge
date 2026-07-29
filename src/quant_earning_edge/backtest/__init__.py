@@ -15,6 +15,7 @@ from quant_earning_edge.backtest.engine import (
     TradeLedger,
     VectorbtBacktestEngine,
     VectorbtIntradayEngine,
+    backtest_input_sha256,
 )
 from quant_earning_edge.backtest.nbbo_replay import (
     DecisionSnapshot,
@@ -80,5 +81,6 @@ __all__ = [
     "WalkForwardFold",
     "WalkForwardPlan",
     "WalkForwardPlanner",
+    "backtest_input_sha256",
     "replay_order",
 ]

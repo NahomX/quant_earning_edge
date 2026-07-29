@@ -7,7 +7,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_earning_edge.backtest.engine import DailyMark, TradeIntent
+from quant_earning_edge.backtest.engine import (
+    DailyMark,
+    TradeIntent,
+    backtest_input_sha256,
+)
 
 
 class DailyMarkSpec(BaseModel):
@@ -67,4 +71,15 @@ class BacktestSpec(BaseModel):
             self.sessions,
             tuple(item.to_domain() for item in self.marks),
             tuple(item.to_domain() for item in self.trades),
+        )
+
+    @property
+    def input_sha256(self) -> str:
+        """Return the same semantic identity emitted by both vectorbt engines."""
+        initial_cash, sessions, marks, trades = self.domain_inputs()
+        return backtest_input_sha256(
+            trades=trades,
+            marks=marks,
+            sessions=sessions,
+            initial_cash=initial_cash,
         )

@@ -37,6 +37,8 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   and test modules under the same commands used by CI.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 109 source files.
+- CI uses read-only repository permissions and immutable release commit pins
+  for its Node 24 checkout and uv setup actions.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical

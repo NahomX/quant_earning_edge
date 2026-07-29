@@ -1,6 +1,6 @@
 services:
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.13.2
+    image: ghcr.io/mlflow/mlflow:v3.14.0
     container_name: qee_mlflow
     command: >
       mlflow server

@@ -52,9 +52,17 @@ from quant_earning_edge.evaluation.strategy_gate import (
     Phase4PromotionEvidence,
 )
 from quant_earning_edge.evaluation.tearsheet import HtmlTearsheetWriter
+from quant_earning_edge.evaluation.tracking import (
+    BacktestTrackingReference,
+    default_artifact_location,
+    default_tracking_uri,
+    log_backtest_run,
+    source_tree_sha256,
+)
 
 __all__ = [
     "BacktestResultCombiner",
+    "BacktestTrackingReference",
     "BootstrapSummary",
     "ConfidenceInterval",
     "CostAttribution",
@@ -88,6 +96,10 @@ __all__ = [
     "ReplaySessionReport",
     "WalkForwardEvaluation",
     "WalkForwardEvaluator",
+    "default_artifact_location",
+    "default_tracking_uri",
     "encode_phase6_controls",
+    "log_backtest_run",
+    "source_tree_sha256",
     "write_phase6_controls",
 ]

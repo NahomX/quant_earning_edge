@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -11,9 +11,6 @@ from quant_earning_edge.runtime import (
     load_runtime_environment,
     load_subprocess_environment,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_environment_file_loads_without_exposing_secrets(
@@ -70,3 +67,12 @@ def test_missing_key_and_unsafe_endpoint_fail_cleanly(
     unsafe.write_text("POLYGON_BASE_URL=http://example.test", encoding="utf-8")
     with pytest.raises(RuntimeConfigurationError, match="HTTPS"):
         load_runtime_environment(env_file=unsafe)
+
+
+def test_example_uses_runtime_alpaca_credential_names() -> None:
+    example = (Path(__file__).parents[1] / ".env.example").read_text(encoding="utf-8")
+
+    assert "APCA_API_KEY_ID=" in example
+    assert "APCA_API_SECRET_KEY=" in example
+    assert "ALPACA_API_KEY_ID=" not in example
+    assert "ALPACA_API_SECRET_KEY=" not in example

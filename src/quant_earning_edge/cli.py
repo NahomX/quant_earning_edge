@@ -67,6 +67,9 @@ from quant_earning_edge.evaluation import (
     ReplaySessionAggregationSpec,
     ReplaySessionAggregator,
     ReplaySessionReport,
+    default_artifact_location,
+    default_tracking_uri,
+    log_backtest_run,
 )
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
@@ -564,7 +567,7 @@ def plan_backtest_splits(  # noqa: PLR0917 - CLI options define the split contra
 
 
 @backtest_app.command("run-ledger")
-def run_backtest_ledger(
+def run_backtest_ledger(  # noqa: PLR0917 - explicit run and provenance contract.
     spec_file: Annotated[
         Path,
         typer.Option(exists=True, dir_okay=False, help="Validated daily backtest JSON spec."),
@@ -585,6 +588,11 @@ def run_backtest_ledger(
         int,
         typer.Option(help="Deterministic bootstrap random seed."),
     ] = 20260427,
+    mlflow_experiment: Annotated[
+        str,
+        typer.Option(help="MLflow experiment receiving reproducibility evidence."),
+    ] = "quant_earning_edge-backtests",
+    env_file: EnvFileOption = None,
 ) -> None:
     """Run vectorbt, reconcile costs, and persist standardized evidence."""
     try:
@@ -619,6 +627,32 @@ def run_backtest_ledger(
             result=result,
             output=tearsheet_output,
         )
+    try:
+        tracking_environment = load_subprocess_environment(env_file=env_file)
+        tracking = log_backtest_run(
+            tracking_uri=default_tracking_uri(
+                output,
+                environment=tracking_environment,
+            ),
+            artifact_location=default_artifact_location(
+                output,
+                environment=tracking_environment,
+            ),
+            experiment_name=mlflow_experiment,
+            run_kind="ledger",
+            report_bytes=report.to_json_bytes(),
+            report_sha256=report.sha256,
+            input_sha256=report.input_sha256,
+            engine=report.engine,
+            trade_count=report.trade_count,
+            session_count=report.session_count,
+            bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
+            source_files=(spec_file,),
+            extra_parameters={"tearsheet": tearsheet_output is not None},
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="MLflow tracking") from error
     _echo_json(
         {
             "output": str(output.resolve()),
@@ -626,6 +660,10 @@ def run_backtest_ledger(
             "input_sha256": report.input_sha256,
             "trade_count": report.trade_count,
             "session_count": report.session_count,
+            "mlflow_run_id": tracking.run_id,
+            "mlflow_experiment_id": tracking.experiment_id,
+            "code_sha256": tracking.code_sha256,
+            "source_manifest_sha256": tracking.source_manifest_sha256,
             "tearsheet_output": (
                 str(tearsheet_output.resolve()) if tearsheet_output is not None else None
             ),
@@ -1275,7 +1313,7 @@ def plan_live_orders(
 
 
 @model_app.command("plan-event-backtest")
-def plan_event_backtest(
+def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract.
     planning_spec: Annotated[
         Path,
         typer.Option(
@@ -1296,6 +1334,11 @@ def plan_event_backtest(
         Path,
         typer.Option(dir_okay=False, help="Immutable standardized evaluation JSON."),
     ],
+    mlflow_experiment: Annotated[
+        str,
+        typer.Option(help="MLflow experiment receiving reproducibility evidence."),
+    ] = "quant_earning_edge-backtests",
+    env_file: EnvFileOption = None,
 ) -> None:
     """Create causal event trades and evaluate their timestamped executions."""
     try:
@@ -1336,6 +1379,35 @@ def plan_event_backtest(
         evaluator.write(report, evaluation_output)
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="event backtest inputs") from error
+    try:
+        tracking_environment = load_subprocess_environment(env_file=env_file)
+        tracking = log_backtest_run(
+            tracking_uri=default_tracking_uri(
+                evaluation_output,
+                environment=tracking_environment,
+            ),
+            artifact_location=default_artifact_location(
+                evaluation_output,
+                environment=tracking_environment,
+            ),
+            experiment_name=mlflow_experiment,
+            run_kind="event-plan",
+            report_bytes=report.to_json_bytes(),
+            report_sha256=report.sha256,
+            input_sha256=report.input_sha256,
+            engine=report.engine,
+            trade_count=report.trade_count,
+            session_count=report.session_count,
+            bootstrap_resamples=10_000,
+            seed=20260427,
+            source_files=(planning_spec, strategy_config, plan_output),
+            extra_parameters={
+                "plan_sha256": plan.sha256,
+                "strategy_sha256": strategy_file_sha256(strategy_config),
+            },
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="MLflow tracking") from error
     _echo_json(
         {
             "plan_output": str(plan_output.resolve()),
@@ -1343,12 +1415,14 @@ def plan_event_backtest(
             "evaluation_output": str(evaluation_output.resolve()),
             "evaluation_sha256": report.sha256,
             "trade_count": len(plan.intents),
+            "mlflow_run_id": tracking.run_id,
+            "code_sha256": tracking.code_sha256,
         }
     )
 
 
 @evaluation_app.command("phase4-gate")
-def evaluate_phase4_gate(
+def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contract.
     aggregation_spec: Annotated[
         Path,
         typer.Option(
@@ -1365,11 +1439,21 @@ def evaluate_phase4_gate(
         int,
         typer.Option(min=1, help="Trade bootstrap resamples."),
     ] = 10_000,
+    seed: Annotated[
+        int,
+        typer.Option(help="Deterministic bootstrap random seed."),
+    ] = 20260427,
+    mlflow_experiment: Annotated[
+        str,
+        typer.Option(help="MLflow experiment receiving reproducibility evidence."),
+    ] = "quant_earning_edge-backtests",
+    env_file: EnvFileOption = None,
 ) -> None:
     """Replay event plans and evaluate both documented strategy gates."""
     try:
         spec = Phase4AggregationSpec.model_validate_json(aggregation_spec.read_bytes())
         fold_results = []
+        plan_paths: list[Path] = []
         for fold in spec.folds:
             results = []
             for configured_path in fold.event_plan_files:
@@ -1378,6 +1462,7 @@ def evaluate_phase4_gate(
                     if configured_path.is_absolute()
                     else aggregation_spec.parent / configured_path
                 )
+                plan_paths.append(plan_path)
                 plan = EventTradePlanner.load(plan_path)
                 results.append(
                     VectorbtIntradayEngine().run(
@@ -1396,11 +1481,42 @@ def evaluate_phase4_gate(
             )
         evaluator = Phase4GateEvaluator(
             bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
         )
         report = evaluator.evaluate(tuple(fold_results))
         evaluator.write(report, output)
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="Phase 4 aggregation") from error
+    try:
+        tracking_environment = load_subprocess_environment(env_file=env_file)
+        tracking = log_backtest_run(
+            tracking_uri=default_tracking_uri(
+                output,
+                environment=tracking_environment,
+            ),
+            artifact_location=default_artifact_location(
+                output,
+                environment=tracking_environment,
+            ),
+            experiment_name=mlflow_experiment,
+            run_kind="phase4-gate",
+            report_bytes=report.to_json_bytes(),
+            report_sha256=report.sha256,
+            input_sha256=report.overall.input_sha256,
+            engine=report.overall.engine,
+            trade_count=report.overall.trade_count,
+            session_count=report.overall.session_count,
+            bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
+            source_files=(aggregation_spec, *plan_paths),
+            extra_parameters={
+                "fold_count": len(report.walk_forward.folds),
+                "passes_phase4_research_gate": report.passes_phase4_research_gate,
+                "passes_pre_paper_backtest_gate": report.passes_pre_paper_backtest_gate,
+            },
+        )
+    except (OSError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="MLflow tracking") from error
     _echo_json(
         {
             "output": str(output.resolve()),
@@ -1409,6 +1525,8 @@ def evaluate_phase4_gate(
             "fold_count": len(report.walk_forward.folds),
             "passes_phase4_research_gate": report.passes_phase4_research_gate,
             "passes_pre_paper_backtest_gate": report.passes_pre_paper_backtest_gate,
+            "mlflow_run_id": tracking.run_id,
+            "code_sha256": tracking.code_sha256,
         }
     )
 

@@ -51,6 +51,7 @@ reproducible through `uv.lock`.
 | Exact daily cost attribution invariant | Complete | gross minus five cost components equals net on every session |
 | Standardized machine-readable evaluation | Complete | headline metrics, 10,000-resample CI, immutable JSON |
 | Reproducible backtest CLI | Complete | validated JSON input, semantic input hash, report hash |
+| Fail-closed MLflow backtest provenance | Complete | code/data/source hashes, cost parameters, seed, engine, and canonical report for all research entry points |
 | Fold-level walk-forward gate evidence | Complete | ordered OOS folds and explicit 75% positive-Sharpe gate |
 | Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
 | Fractional-Kelly portfolio constructor | Complete | causal 60-trade history, integer shares, all hard caps |

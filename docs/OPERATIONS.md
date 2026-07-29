@@ -160,7 +160,8 @@ uv run qee backtest run-ledger `
   --output .\data\manifests\backtest\performance-report.json `
   --tearsheet-output .\data\manifests\backtest\performance-report.html `
   --bootstrap-resamples 10000 `
-  --seed 20260427
+  --seed 20260427 `
+  --env-file .\.env
 ```
 
 The engine values gross and net portfolios separately, applies the documented
@@ -171,6 +172,14 @@ gross/net Sharpe, annualized return, max drawdown, hit rate, payoff, exposure,
 turnover, sequential per-component Sharpe loss, and deterministic 95%
 trade-resampled confidence intervals. A one-trade diagnostic run has no
 bootstrap interval because it cannot estimate dispersion.
+
+Every ledger, event-plan backtest, and Phase 4 aggregation is fail-closed on
+MLflow tracking. The run records the exact package source-tree hash, semantic
+backtest input hash, hashes of every source artifact, cost-model parameters,
+engine version, bootstrap settings and seed, plus the canonical report. It
+uses `MLFLOW_TRACKING_URI` when configured; otherwise it creates an
+output-local `.mlflow` store and `.mlflow-artifacts` directory for an auditable
+offline run.
 
 The optional HTML output is self-contained and deterministic: it reads the
 same reconciled result as the JSON report, embeds no remote assets or current

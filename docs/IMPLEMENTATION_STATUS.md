@@ -77,7 +77,7 @@ reproducible through `uv.lock`.
 | Daily replay lifecycle reconciliation | Complete | exact entry/exit mapping, partial-fill breaks, commission/net P&L |
 | Immutable daily Phase 6 report and CLI | Complete | evidence hashes, fill/slippage percentiles, stable no-trade canonicalization, collision-safe JSON |
 | No-trade operational session evidence | Complete | explicit zero return, no invented orders or fill-rate denominator |
-| Locked 90-session Phase 6 hard gate | Complete | independent order replay and daily-report reconstruction, Sharpe CI/config, fills, global slippage, uptime, reconciliation, ordered daily-report hashes, CLI |
+| Locked 90-session Phase 6 hard gate | Complete | independent order replay and daily-report reconstruction, required clean paper-reconciliation stage, Sharpe CI/config, fills, global slippage, uptime, ordered daily-report hashes, CLI |
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 | Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
 | Immutable paper submission/reconciliation evidence | Complete | CLI records, exact paper/replay identity checks, non-gating divergence |

@@ -632,6 +632,13 @@ manifest, specs, index, and evidence hashes to match, then re-aggregates the
 daily report and requires its canonical bytes to match. Re-hashing a hand-edited
 daily P&L, fill, or slippage summary cannot enter the 90-session verdict.
 
+The verifier also requires that session's workflow
+`reconcile_session` stage to have succeeded. Its one captured,
+content-addressed paper-reconciliation revision must be terminal, have no
+operational breaks, reference exactly the captured replay-evidence hashes, and
+reconcile its order identities and replay fields to that evidence. Paper fill
+prices and P&L remain diagnostic only; they do not enter performance metrics.
+
 Cost attribution begins at gross P&L between entry/exit arrival midpoints. It
 then subtracts modeled spread, modeled square-root impact, the realized
 execution residual (queue/auction effects beyond those models), and commission.

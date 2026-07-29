@@ -20,8 +20,10 @@ from quant_earning_edge.evaluation.replay_session import (
     ReplaySessionAggregator,
     ReplaySessionReport,
 )
+from quant_earning_edge.live import PaperReconciliationReport
 from quant_earning_edge.orchestration.workflow import (
     DailyWorkflowStore,
+    StageStatus,
     WorkflowStage,
 )
 
@@ -75,6 +77,11 @@ class Phase6DailyReportVerifier:
         captured_evidence = self._captured_evidence(
             replay_stage,
             index=captured_index,
+        )
+        self._verify_paper_reconciliation(
+            state=state,
+            frozen=frozen,
+            evidence=captured_evidence,
         )
         reproduced_evidence = self._reproduce_order_evidence(
             state=state,
@@ -192,6 +199,50 @@ class Phase6DailyReportVerifier:
         if tuple(item.sha256 for item in evidence) != index.evidence_sha256:
             raise ValueError("workflow replay evidence hashes differ from their index")
         return evidence
+
+    @staticmethod
+    def _verify_paper_reconciliation(
+        *,
+        state: DailyWorkflowState,
+        frozen: FrozenDailyOrders,
+        evidence: tuple[NbboReplayEvidence, ...],
+    ) -> None:
+        stage = Phase6DailyReportVerifier._stage(
+            state,
+            WorkflowStage.RECONCILE_SESSION,
+        )
+        if stage.status is not StageStatus.SUCCEEDED:
+            raise ValueError("paper reconciliation stage is not complete")
+        paths = tuple(
+            Path(item.path).resolve()
+            for item in stage.output_artifacts
+            if Path(item.path).name.startswith("paper-reconciliation-")
+            and Path(item.path).suffix == ".json"
+        )
+        if len(paths) != 1:
+            raise ValueError("workflow must capture exactly one paper reconciliation revision")
+        report = PaperReconciliationReport.load(paths[0])
+        if report.session_date != frozen.trade_date:
+            raise ValueError("paper reconciliation and frozen-order dates differ")
+        expected_hashes = tuple(sorted(item.sha256 for item in evidence))
+        if report.replay_evidence_sha256 != expected_hashes:
+            raise ValueError("paper reconciliation is not bound to captured replay evidence")
+        if report.reconciliation_break_count or not report.all_orders_terminal:
+            raise ValueError("paper reconciliation has an unresolved operational break")
+        replay_by_id = {item.result.order.order_id: item.result for item in evidence}
+        paper_by_id = {item.client_order_id: item for item in report.orders}
+        if set(paper_by_id) != set(replay_by_id):
+            raise ValueError("paper reconciliation order identities differ from replay evidence")
+        for order_id, replay in replay_by_id.items():
+            paper = paper_by_id[order_id]
+            if (
+                paper.symbol != replay.order.ticker
+                or paper.side != replay.order.side
+                or paper.intended_quantity != replay.order.quantity
+                or paper.replay_filled_quantity != replay.filled_qty
+                or paper.replay_fill_price != replay.fill_price
+            ):
+                raise ValueError("paper reconciliation fields differ from replay evidence")
 
     @staticmethod
     def _reproduce_order_evidence(

@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 360 automated tests pass.
+- 361 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 94 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -62,6 +62,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   orders, strategy, normalized NBBO/trade files, replay specs, and order
   evidence before Phase 6 aggregation; a re-hashed edited P&L/fill/slippage
   summary is rejected.
+- Every included daily report also requires a succeeded, captured paper
+  reconciliation bound to the same replay evidence; unresolved operational
+  breaks cannot enter the terminal verdict.
 - Paper submission is locked to Alpaca's paper host. Circuit breakers and
   reconciliation failures halt new orders.
 

@@ -30,6 +30,7 @@ from quant_earning_edge.evaluation import (
     Phase6DailyReportVerifier,
     ReplaySessionAggregator,
 )
+from quant_earning_edge.live import BrokerOrder, PaperOrderReconciler
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
     DailyWorkflowState,
@@ -127,6 +128,14 @@ def _no_trade_replay_sources(
         evidence_files=(),
         evidence_sha256=(),
     ).write(index_path)
+    reconciliation = PaperOrderReconciler().evaluate(
+        evidence=(),
+        broker_orders=(),
+        session_date=session_date,
+        evaluated_at=datetime.now(UTC),
+    )
+    reconciliation_path = daily / f"paper-reconciliation-{reconciliation.sha256}.json"
+    reconciliation.write(reconciliation_path)
     report_path = daily / "replay-session.json"
     ReplaySessionAggregator().evaluate_frozen_long_orders(
         evidence=(),
@@ -140,6 +149,7 @@ def _no_trade_replay_sources(
         "frozen": frozen_path,
         "manifest": manifest_path,
         "index": index_path,
+        "reconciliation": reconciliation_path,
         "report": report_path,
     }
 
@@ -150,6 +160,7 @@ def _complete_source_workflow(
     tmp_path: Path,
     session_date: date,
     sources: dict[str, Path],
+    reconciliation_succeeds: bool = True,
 ) -> DailyWorkflowState:
     def handler(
         _: DailyWorkflowState,
@@ -161,6 +172,10 @@ def _complete_source_workflow(
             return (sources["frozen"],)
         if stage is WorkflowStage.REPLAY_ORDERS:
             return (sources["manifest"], sources["index"], sources["report"])
+        if stage is WorkflowStage.RECONCILE_SESSION:
+            if not reconciliation_succeeds:
+                raise RuntimeError("paper reconciliation is still unresolved")
+            return (sources["reconciliation"],)
         output = tmp_path / "stage-artifacts" / f"{stage.value}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text("{}", encoding="utf-8")
@@ -277,14 +292,43 @@ def _trade_source_workflow(
         index_output=index_path,
     )
     evidence_paths = tuple(evidence_directory / item for item in index.evidence_files)
+    evidence = tuple(NbboReplayEvidence.load(path) for path in evidence_paths)
     report_path = daily / "replay-session.json"
     ReplaySessionAggregator().evaluate_frozen_long_orders(
-        evidence=tuple(NbboReplayEvidence.load(path) for path in evidence_paths),
+        evidence=evidence,
         intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
         session_date=session_date,
         initial_cash=frozen.portfolio.equity,
         commission_bps_per_side=strategy.costs.commission_bps_per_side,
     ).write(report_path)
+    broker_orders = tuple(
+        BrokerOrder.model_validate(
+            {
+                "id": f"broker-{item.result.order.order_id}",
+                "client_order_id": item.result.order.order_id,
+                "symbol": item.result.order.ticker,
+                "asset_class": "us_equity",
+                "qty": str(item.result.order.quantity),
+                "filled_qty": str(item.result.filled_qty),
+                "filled_avg_price": item.result.fill_price,
+                "side": item.result.order.side,
+                "type": "market",
+                "time_in_force": "day",
+                "status": "filled",
+                "submitted_at": item.result.order.submitted_at,
+                "filled_at": item.result.fragments[-1].timestamp,
+            }
+        )
+        for item in evidence
+    )
+    reconciliation = PaperOrderReconciler().evaluate(
+        evidence=evidence,
+        broker_orders=broker_orders,
+        session_date=session_date,
+        evaluated_at=exit_at + timedelta(minutes=10),
+    )
+    reconciliation_path = daily / f"paper-reconciliation-{reconciliation.sha256}.json"
+    reconciliation.write(reconciliation_path)
 
     def handler(
         _: DailyWorkflowState,
@@ -304,6 +348,8 @@ def _trade_source_workflow(
                 *evidence_paths,
                 report_path,
             )
+        if stage is WorkflowStage.RECONCILE_SESSION:
+            return (reconciliation_path,)
         output = tmp_path / "trade-stage-artifacts" / f"{stage.value}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text("{}", encoding="utf-8")
@@ -476,6 +522,28 @@ def test_daily_report_verifier_rejects_rehashed_summary_not_matching_sources(
     )
 
     with pytest.raises(ValueError, match="differs from independent reconstruction"):
+        Phase6DailyReportVerifier().verify(
+            sources["report"],
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_rejects_unresolved_paper_reconciliation(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    sources = _no_trade_replay_sources(tmp_path, session_date=session_date)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    state = _complete_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        sources=sources,
+        reconciliation_succeeds=False,
+    )
+    assert not state.complete
+
+    with pytest.raises(ValueError, match="paper reconciliation stage is not complete"):
         Phase6DailyReportVerifier().verify(
             sources["report"],
             workflow_store=store,

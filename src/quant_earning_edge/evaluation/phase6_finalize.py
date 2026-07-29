@@ -18,7 +18,7 @@ from quant_earning_edge.evaluation.phase6_gate import (
     Phase6GateEvaluator,
     Phase6GateReport,
 )
-from quant_earning_edge.evaluation.replay_session import ReplaySessionReport
+from quant_earning_edge.evaluation.phase6_sources import Phase6DailyReportVerifier
 from quant_earning_edge.orchestration.health import WorkflowHealthEvaluator
 
 if TYPE_CHECKING:
@@ -131,7 +131,10 @@ class Phase6CompletionFinalizer:
         aggregation_bytes = encode_phase6_controls(controls.aggregation_spec)
         aggregation_sha256 = hashlib.sha256(aggregation_bytes).hexdigest()
         aggregation_path = resolved_output / f"phase6-controls-{aggregation_sha256}.json"
-        reports = tuple(ReplaySessionReport.load(path) for path in controls.included_report_files)
+        reports = tuple(
+            Phase6DailyReportVerifier().verify(path, workflow_store=workflow_store)
+            for path in controls.included_report_files
+        )
         report = Phase6GateEvaluator(
             bootstrap_resamples=original.bootstrap_resamples,
             seed=original.seed,

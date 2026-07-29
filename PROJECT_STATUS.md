@@ -33,9 +33,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 358 automated tests pass.
+- 360 automated tests pass.
 - Ruff formatting and lint pass.
-- Mypy strict checking passes across 93 source files.
+- Mypy strict checking passes across 94 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
@@ -58,6 +58,10 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Terminal uptime is independently reconstructed from the bound append-only
   workflow store and its captured artifacts; a hand-authored health summary is
   rejected even when its internal arithmetic is consistent.
+- Each daily report is independently rebuilt from workflow-captured frozen
+  orders, strategy, normalized NBBO/trade files, replay specs, and order
+  evidence before Phase 6 aggregation; a re-hashed edited P&L/fill/slippage
+  summary is rejected.
 - Paper submission is locked to Alpaca's paper host. Circuit breakers and
   reconciliation failures halt new orders.
 

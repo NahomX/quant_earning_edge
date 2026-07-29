@@ -68,6 +68,7 @@ from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
     Phase6CompletionFinalizer,
     Phase6ControlBuilder,
+    Phase6DailyReportVerifier,
     Phase6GateEvaluator,
     ReplaySessionAggregationSpec,
     ReplaySessionAggregator,
@@ -2057,19 +2058,30 @@ def evaluate_phase6_gate(
             if spec.workflow_store_root.is_absolute()
             else aggregation_spec.parent / spec.workflow_store_root
         )
+        workflow_store = DailyWorkflowStore(workflow_store_root)
         reproduced_health = WorkflowHealthEvaluator().evaluate(
             calendar=calendar,
-            store=DailyWorkflowStore(workflow_store_root),
+            store=workflow_store,
             start_date=spec.proof_start,
             end_date=spec.proof_end,
         )
-        if reproduced_health.canonical_bytes != workflow_health.canonical_bytes:
+        if (
+            workflow_health.calendar_sha256 != reproduced_health.calendar_sha256
+            or workflow_health.start_date != reproduced_health.start_date
+            or workflow_health.end_date != reproduced_health.end_date
+            or workflow_health.authoritative_session_dates
+            != reproduced_health.authoritative_session_dates
+            or not set(workflow_health.scheduled_complete_dates).issubset(
+                reproduced_health.scheduled_complete_dates
+            )
+        ):
             raise ValueError("workflow health does not reproduce from the bound workflow store")
         reports = tuple(
-            ReplaySessionReport.load(
+            Phase6DailyReportVerifier().verify(
                 configured_path
                 if configured_path.is_absolute()
-                else aggregation_spec.parent / configured_path
+                else aggregation_spec.parent / configured_path,
+                workflow_store=workflow_store,
             )
             for configured_path in spec.session_report_files
         )

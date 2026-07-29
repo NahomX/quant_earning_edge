@@ -610,16 +610,27 @@ prior resolved equity, preventing hidden account resets.
 
 Before any metrics are evaluated, `phase6-gate` replays the workflow-health
 classification from `workflow_store_root`. It validates each session's complete
-append-only revision chain and every captured stage artifact, then requires the
-reconstructed canonical health report to equal `workflow_health_file`. A
-self-consistent but hand-authored uptime summary cannot enter the terminal
-verdict.
+append-only revision chain and every captured stage artifact. The supplied
+`workflow_health_file` may be an earlier control snapshot because the active
+workflow advances after preparation, but it may not claim any scheduled
+completion absent from the reconstructed state. All terminal metrics use the
+fresh reconstruction, so a self-consistent hand-authored uptime summary cannot
+enter the verdict.
 
 The final verdict requires all of: net Sharpe above 0.8, bootstrap lower bound
 above 0.3, fully-filled intended-order rate above 90%, global 90th-percentile
 adverse slippage below twice modeled, uptime above 95%, at least 90
 authoritative sessions, and no reconciliation breaks. Paper-broker P&L is not
 an input.
+
+Every included daily replay report is independently reconstructed before it is
+aggregated. The verifier loads the workflow-captured frozen orders, strategy,
+normalized NBBO/trade files, materialization manifest, replay specs, evidence
+index, and order evidence. It rebuilds the replay specs from those market
+sources, re-runs every order into a temporary evidence set, requires the
+manifest, specs, index, and evidence hashes to match, then re-aggregates the
+daily report and requires its canonical bytes to match. Re-hashing a hand-edited
+daily P&L, fill, or slippage summary cannot enter the 90-session verdict.
 
 Cost attribution begins at gross P&L between entry/exit arrival midpoints. It
 then subtracts modeled spread, modeled square-root impact, the realized

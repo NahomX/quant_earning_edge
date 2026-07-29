@@ -33,6 +33,7 @@ from quant_earning_edge.evaluation.phase6_gate import (
     Phase6GateEvaluator,
     Phase6GateReport,
 )
+from quant_earning_edge.evaluation.phase6_sources import Phase6DailyReportVerifier
 from quant_earning_edge.evaluation.replay_session import (
     ReplayRoundTrip,
     ReplayRoundTripResult,
@@ -97,6 +98,7 @@ __all__ = [
     "Phase6CompletionFinalizer",
     "Phase6ControlArtifacts",
     "Phase6ControlBuilder",
+    "Phase6DailyReportVerifier",
     "Phase6FinalizationArtifacts",
     "Phase6FinalizationEvidence",
     "Phase6GateEvaluator",

@@ -440,15 +440,17 @@ class ReplaySessionAggregator:
             else None
         )
         break_count = sum(not item.reconciled for item in results)
-        commission = sum(item.commission for item in results)
-        realized_execution_cost = sum(item.realized_execution_slippage_cost for item in results)
-        modeled_spread_cost = sum(item.modeled_spread_cost for item in results)
-        modeled_impact_cost = sum(item.modeled_market_impact_cost for item in results)
-        execution_residual_cost = sum(item.execution_residual_cost for item in results)
-        arrival_gross_pnl = (
-            sum(item.arrival_gross_pnl for item in results) if break_count == 0 else None
+        commission = float(sum(item.commission for item in results))
+        realized_execution_cost = float(
+            sum(item.realized_execution_slippage_cost for item in results)
         )
-        gross_pnl = sum(item.gross_pnl for item in results) if break_count == 0 else None
+        modeled_spread_cost = float(sum(item.modeled_spread_cost for item in results))
+        modeled_impact_cost = float(sum(item.modeled_market_impact_cost for item in results))
+        execution_residual_cost = float(sum(item.execution_residual_cost for item in results))
+        arrival_gross_pnl = (
+            float(sum(item.arrival_gross_pnl for item in results)) if break_count == 0 else None
+        )
+        gross_pnl = float(sum(item.gross_pnl for item in results)) if break_count == 0 else None
         net_pnl = gross_pnl - commission if gross_pnl is not None else None
         return ReplaySessionReport(
             schema_version=2,

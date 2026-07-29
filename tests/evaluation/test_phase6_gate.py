@@ -16,13 +16,14 @@ from quant_earning_edge.data.clients import MarketSession
 from quant_earning_edge.evaluation import (
     Phase6GateEvaluator,
     ReplayRoundTripResult,
-    ReplaySessionAggregator,
     ReplaySessionReport,
 )
 from quant_earning_edge.orchestration import (
+    DailyWorkflowState,
     DailyWorkflowStore,
     WorkflowHealthEvaluator,
     WorkflowHealthReport,
+    WorkflowTrigger,
 )
 
 if TYPE_CHECKING:
@@ -322,25 +323,22 @@ def test_phase6_gate_rejects_hidden_daily_capital_reset(tmp_path: Path) -> None:
 def test_phase6_cli_marks_short_fixture_as_insufficient(tmp_path: Path) -> None:
     calendar = _calendar(tmp_path, 2)
     workflow_root = tmp_path / "workflow-store"
-    report_paths = []
-    for session in calendar.sessions:
-        report = ReplaySessionAggregator().evaluate(
-            evidence=(),
-            round_trips=(),
-            session_date=session.session_date,
-            initial_cash=100_000,
-        )
-        path = tmp_path / f"{session.session_date}.json"
-        report.write(path)
-        report_paths.append(path.name)
     spec_path = tmp_path / "phase6.json"
     health_path = tmp_path / "workflow-health.json"
+    workflow_store = DailyWorkflowStore(workflow_root)
     WorkflowHealthEvaluator().evaluate(
         calendar=calendar,
-        store=DailyWorkflowStore(workflow_root),
+        store=workflow_store,
         start_date=calendar.sessions[0].session_date,
         end_date=calendar.sessions[-1].session_date,
     ).write(health_path)
+    workflow_store.write(
+        DailyWorkflowState.initialize(
+            trade_date=calendar.sessions[0].session_date,
+            now=datetime(2025, 1, 2, 12, tzinfo=UTC),
+            trigger=WorkflowTrigger.SCHEDULED,
+        )
+    )
     output = tmp_path / "gate.json"
     spec_path.write_text(
         json.dumps(
@@ -351,7 +349,7 @@ def test_phase6_cli_marks_short_fixture_as_insufficient(tmp_path: Path) -> None:
                 "proof_start": calendar.sessions[0].session_date.isoformat(),
                 "proof_end": calendar.sessions[-1].session_date.isoformat(),
                 "initial_cash": 100_000,
-                "session_report_files": report_paths,
+                "session_report_files": [],
                 "bootstrap_resamples": 10,
             }
         ),

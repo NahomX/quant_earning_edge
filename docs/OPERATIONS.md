@@ -230,6 +230,7 @@ an exclusive label-closure cutoff:
 uv run qee model train-production `
   --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
   --training-cutoff 2026-07-28 `
+  --phase4-gate .\data\evaluation\phase4-gate.json `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
   --output-dir .\data\models\earnings-v1-production
 ```
@@ -240,6 +241,10 @@ stopping, with five sessions and overlapping label horizons purged before
 that block. The command writes a content-addressed booster and canonical
 evidence containing the source hashes, exact feature order, causal date
 boundaries, partition counts, seed, LightGBM version, and model hash.
+The command independently recomputes the documented Phase 4 research and
+pre-paper thresholds from canonical report metrics. A false or inconsistent
+verdict is rejected; the passing report SHA-256 is embedded in the model
+artifact and is mandatory when that artifact is reloaded for live scoring.
 
 ## Plan and evaluate one OOS event session
 

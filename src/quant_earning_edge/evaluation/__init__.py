@@ -43,6 +43,7 @@ from quant_earning_edge.evaluation.strategy_gate import (
     Phase4AggregationSpec,
     Phase4GateEvaluation,
     Phase4GateEvaluator,
+    Phase4PromotionEvidence,
 )
 from quant_earning_edge.evaluation.tearsheet import HtmlTearsheetWriter
 
@@ -60,6 +61,7 @@ __all__ = [
     "Phase4AggregationSpec",
     "Phase4GateEvaluation",
     "Phase4GateEvaluator",
+    "Phase4PromotionEvidence",
     "Phase6AggregationSpec",
     "Phase6CompletionFinalizer",
     "Phase6ControlArtifacts",

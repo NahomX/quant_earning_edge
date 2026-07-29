@@ -55,6 +55,7 @@ from quant_earning_edge.evaluation import (
     PerformanceEvaluator,
     Phase4AggregationSpec,
     Phase4GateEvaluator,
+    Phase4PromotionEvidence,
     Phase6AggregationSpec,
     Phase6CompletionFinalizer,
     Phase6ControlBuilder,
@@ -903,6 +904,14 @@ def train_production_model(
             help="Exclusive ISO date boundary; labels must close before this date.",
         ),
     ],
+    phase4_gate: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Passing canonical Phase 4 pre-paper gate report.",
+        ),
+    ],
     strategy_config: Annotated[
         Path,
         typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
@@ -915,6 +924,7 @@ def train_production_model(
     """Refit a cutoff-safe model for later decision-time inference."""
     try:
         cutoff = date.fromisoformat(training_cutoff)
+        promotion = Phase4PromotionEvidence.load(phase4_gate)
         config = load_strategy_config(strategy_config)
         trainer = ProductionModelTrainer(
             feature_names=config.features,
@@ -926,6 +936,7 @@ def train_production_model(
         artifact = trainer.run(
             dataset_files=dataset_files,
             training_cutoff=cutoff,
+            phase4_gate_sha256=promotion.report_sha256,
         )
         model_path, evidence_path = trainer.write(artifact, output_dir)
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
@@ -937,6 +948,7 @@ def train_production_model(
             "artifact_sha256": artifact.sha256,
             "model_sha256": artifact.model_sha256,
             "training_cutoff": artifact.training_cutoff,
+            "phase4_gate_sha256": artifact.phase4_gate_sha256,
             "fit_count": artifact.fit_count,
             "validation_count": artifact.validation_count,
         }

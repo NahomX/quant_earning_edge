@@ -22,6 +22,7 @@ from quant_earning_edge.evaluation import (
     BacktestResultCombiner,
     FoldBacktestResults,
     Phase4GateEvaluator,
+    Phase4PromotionEvidence,
 )
 from quant_earning_edge.portfolio import PortfolioPlan
 from quant_earning_edge.signals import EventTradePlanner, PlannedEventTrades
@@ -219,3 +220,30 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
     assert payload["trade_count"] == 2
     assert payload["fold_count"] == 2
     assert output.exists()
+
+
+def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
+    report = {
+        "overall": {
+            "net_sharpe": 1.2,
+            "max_drawdown": 0.10,
+            "bootstrap": {"sharpe": {"lower": 0.6}},
+        },
+        "walk_forward": {"passes_positive_fold_gate": True},
+        "passes_phase4_research_gate": True,
+        "passes_pre_paper_backtest_gate": True,
+    }
+    path = tmp_path / "passing-gate.json"
+    encoded = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(encoded)
+
+    promotion = Phase4PromotionEvidence.load(path)
+
+    assert promotion.report_sha256
+    assert promotion.net_sharpe == 1.2
+
+    report["overall"]["net_sharpe"] = 0.9
+    failing = tmp_path / "inconsistent-gate.json"
+    failing.write_bytes(json.dumps(report, sort_keys=True, separators=(",", ":")).encode())
+    with pytest.raises(ValueError, match="pre-paper gate verdict is inconsistent"):
+        Phase4PromotionEvidence.load(failing)

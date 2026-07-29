@@ -74,6 +74,60 @@ class Phase4GateEvaluation:
         return hashlib.sha256(self.to_json_bytes()).hexdigest()
 
 
+@dataclass(frozen=True)
+class Phase4PromotionEvidence:
+    """Minimal verified decision needed to authorize a deployable model refit."""
+
+    report_sha256: str
+    net_sharpe: float
+    lower_sharpe: float
+    max_drawdown: float
+    positive_fold_gate: bool
+
+    @classmethod
+    def load(cls, path: Path) -> Phase4PromotionEvidence:
+        """Reload canonical Phase 4 JSON and independently recompute both gates."""
+        encoded = path.read_bytes()
+        raw = json.loads(encoded)
+        expected = {
+            "overall",
+            "walk_forward",
+            "passes_phase4_research_gate",
+            "passes_pre_paper_backtest_gate",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected:
+            raise ValueError("Phase 4 gate report schema mismatch")
+        if json.dumps(raw, sort_keys=True, separators=(",", ":")).encode() != encoded:
+            raise ValueError("Phase 4 gate report is not canonical")
+        try:
+            overall = raw["overall"]
+            walk_forward = raw["walk_forward"]
+            bootstrap = overall["bootstrap"]
+            net_sharpe = float(overall["net_sharpe"])
+            max_drawdown = float(overall["max_drawdown"])
+            lower_sharpe = float(bootstrap["sharpe"]["lower"])
+            positive_fold_gate = bool(walk_forward["passes_positive_fold_gate"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("invalid Phase 4 gate report") from error
+        research = net_sharpe >= 0.8 and lower_sharpe >= 0.3 and max_drawdown <= 0.20
+        pre_paper = (
+            net_sharpe > 1.0 and lower_sharpe > 0.5 and max_drawdown < 0.15 and positive_fold_gate
+        )
+        if bool(raw["passes_phase4_research_gate"]) != research:
+            raise ValueError("Phase 4 research gate verdict is inconsistent")
+        if bool(raw["passes_pre_paper_backtest_gate"]) != pre_paper:
+            raise ValueError("Phase 4 pre-paper gate verdict is inconsistent")
+        if not pre_paper:
+            raise ValueError("Phase 4 pre-paper backtest gate did not pass")
+        return cls(
+            report_sha256=hashlib.sha256(encoded).hexdigest(),
+            net_sharpe=net_sharpe,
+            lower_sharpe=lower_sharpe,
+            max_drawdown=max_drawdown,
+            positive_fold_gate=positive_fold_gate,
+        )
+
+
 class BacktestResultCombiner:
     """Combine event-session ledgers only when equity and time are continuous."""
 

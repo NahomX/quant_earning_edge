@@ -100,7 +100,9 @@ def test_live_planning_scores_features_without_manual_probability(tmp_path: Path
     _training(training)
     _features(features, decision)
     model = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
-        dataset_files=(training,), training_cutoff=date(2025, 3, 3)
+        dataset_files=(training,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
     )
 
     artifact = LivePlanningAssembler().assemble(
@@ -130,7 +132,9 @@ def test_live_planning_rejects_features_computed_after_decision(tmp_path: Path) 
     _training(training)
     _features(features, decision + timedelta(seconds=1))
     model = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
-        dataset_files=(training,), training_cutoff=date(2025, 3, 3)
+        dataset_files=(training,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
     )
 
     with pytest.raises(ValueError, match="after decision_at"):
@@ -152,7 +156,9 @@ def test_live_planning_cli_writes_linked_planning_and_evidence(tmp_path: Path) -
     _features(features, decision)
     source_path.write_text(_source(decision).model_dump_json(), encoding="utf-8")
     model = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
-        dataset_files=(training,), training_cutoff=date(2025, 3, 3)
+        dataset_files=(training,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
     )
     model_path, model_evidence = ProductionModelTrainer.write(model, tmp_path / "models")
 

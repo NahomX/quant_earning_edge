@@ -355,7 +355,11 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
         threshold=strategy.label.threshold,
         seed=strategy.seed,
         early_stopping_rounds=10,
-    ).run(dataset_files=(training,), training_cutoff=date(2025, 3, 3))
+    ).run(
+        dataset_files=(training,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
+    )
     model_file, model_evidence = ProductionModelTrainer.write(model, tmp_path / "models")
     decision = datetime(2026, 7, 27, 22, tzinfo=UTC)
     features = tmp_path / "features.parquet"

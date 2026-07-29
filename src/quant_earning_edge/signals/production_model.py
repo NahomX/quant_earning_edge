@@ -24,6 +24,7 @@ class ProductionModelArtifact:
 
     schema_version: int
     training_cutoff: date
+    phase4_gate_sha256: str
     dataset_sha256: tuple[str, ...]
     feature_names: tuple[str, ...]
     label_name: str
@@ -55,6 +56,8 @@ class ProductionModelArtifact:
             raise ValueError("production model date boundaries are not causal")
         if min(self.fit_count, self.validation_count, self.best_iteration) < 1:
             raise ValueError("production model partition counts must be positive")
+        if not _is_sha256(self.phase4_gate_sha256):
+            raise ValueError("production model Phase 4 gate digest is invalid")
         if hashlib.sha256(self.model_text.encode()).hexdigest() != self.model_sha256:
             raise ValueError("production model content does not match its SHA-256")
 
@@ -90,6 +93,7 @@ class ProductionModelArtifact:
         expected = {
             "schema_version",
             "training_cutoff",
+            "phase4_gate_sha256",
             "dataset_sha256",
             "feature_names",
             "label_name",
@@ -111,6 +115,7 @@ class ProductionModelArtifact:
             artifact = cls(
                 schema_version=int(raw["schema_version"]),
                 training_cutoff=date.fromisoformat(str(raw["training_cutoff"])),
+                phase4_gate_sha256=str(raw["phase4_gate_sha256"]),
                 dataset_sha256=tuple(str(item) for item in raw["dataset_sha256"]),
                 feature_names=tuple(str(item) for item in raw["feature_names"]),
                 label_name=str(raw["label_name"]),
@@ -168,6 +173,7 @@ class ProductionModelTrainer:
         *,
         dataset_files: Sequence[Path],
         training_cutoff: date,
+        phase4_gate_sha256: str,
     ) -> ProductionModelArtifact:
         """Fit on closed labels before cutoff and retain a purged final validation."""
         hashes = _dataset_hashes(dataset_files)
@@ -229,6 +235,7 @@ class ProductionModelTrainer:
         return ProductionModelArtifact(
             schema_version=1,
             training_cutoff=training_cutoff,
+            phase4_gate_sha256=phase4_gate_sha256,
             dataset_sha256=hashes,
             feature_names=self._feature_names,
             label_name=self._label_name,
@@ -295,3 +302,7 @@ def _import_lightgbm() -> Any:
             "LightGBM is required; install the project with the 'ml' extra"
         ) from error
     return lgb
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(item in "0123456789abcdef" for item in value)

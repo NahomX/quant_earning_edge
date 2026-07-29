@@ -41,8 +41,12 @@ def test_production_refit_is_deterministic_and_scores_exact_features(tmp_path: P
     trainer = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10)
     cutoff = date(2025, 3, 3)
 
-    first = trainer.run(dataset_files=(dataset,), training_cutoff=cutoff)
-    second = trainer.run(dataset_files=(dataset,), training_cutoff=cutoff)
+    first = trainer.run(
+        dataset_files=(dataset,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+    )
+    second = trainer.run(
+        dataset_files=(dataset,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+    )
     paths = trainer.write(first, output)
     trainer.write(first, output)
     loaded = first.load(evidence_path=paths[1], model_path=paths[0])
@@ -64,8 +68,12 @@ def test_rows_whose_labels_close_after_cutoff_cannot_change_model(tmp_path: Path
     trainer = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10)
     cutoff = date(2025, 3, 3)
 
-    first = trainer.run(dataset_files=(original,), training_cutoff=cutoff)
-    second = trainer.run(dataset_files=(mutated,), training_cutoff=cutoff)
+    first = trainer.run(
+        dataset_files=(original,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+    )
+    second = trainer.run(
+        dataset_files=(mutated,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+    )
 
     assert first.model_sha256 == second.model_sha256
     assert first.model_text == second.model_text
@@ -76,7 +84,9 @@ def test_inference_rejects_missing_or_extra_features(tmp_path: Path) -> None:
     dataset = tmp_path / "training.parquet"
     _dataset(dataset)
     artifact = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
-        dataset_files=(dataset,), training_cutoff=date(2025, 3, 3)
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
     )
 
     for values in ({}, {"signal": 1.0, "extra": 2.0}):
@@ -92,7 +102,9 @@ def test_loader_rejects_tampered_booster(tmp_path: Path) -> None:
     dataset = tmp_path / "training.parquet"
     _dataset(dataset)
     artifact = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
-        dataset_files=(dataset,), training_cutoff=date(2025, 3, 3)
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
     )
     model_path, evidence_path = ProductionModelTrainer.write(artifact, tmp_path / "models")
     model_path.write_text(model_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")

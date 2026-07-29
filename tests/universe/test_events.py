@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -19,7 +20,11 @@ from quant_earning_edge.data.clients import (
     SplitAdjustmentType,
     StockSplit,
 )
-from quant_earning_edge.universe import CandidateExclusion, EventCandidateJob
+from quant_earning_edge.universe import (
+    CandidateExclusion,
+    EventCandidateJob,
+    EventCandidateManifest,
+)
 from quant_earning_edge.universe.snapshot import UNIVERSE_SNAPSHOT_SCHEMA
 
 if TYPE_CHECKING:
@@ -142,18 +147,20 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
         ingested_at=DECISION_AT,
     )
     split_files, dividend_files = _corporate_actions(tmp_path)
+    universe_path = _universe(tmp_path)
+    session_path = _sessions(tmp_path)
 
     artifact = EventCandidateJob(LakehouseLayout(tmp_path)).run(
         trade_date=TRADE_DATE,
         decision_at=DECISION_AT,
-        universe_snapshot=_universe(tmp_path),
-        session_file=_sessions(tmp_path),
+        universe_snapshot=universe_path,
+        session_file=session_path,
         earnings_files=tuple(item.path for item in earnings),
         split_files=split_files,
         dividend_files=dividend_files,
     )
 
-    rows = pq.read_table(artifact.path).to_pylist()  # type: ignore[no-untyped-call]
+    rows = pq.ParquetFile(artifact.path).read().to_pylist()  # type: ignore[no-untyped-call]
     assert [(row["symbol"], row["event_date"], row["timing"]) for row in rows] == [
         ("AAPL", ASOF_DATE, "amc"),
         ("GOOG", TRADE_DATE, "bmo"),
@@ -170,6 +177,19 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
     assert all(row["sizing_price"] == 100 for row in rows)
     assert all(row["frozen_average_daily_volume_shares"] == 2_000_000 for row in rows)
     assert "eps_actual" not in rows[0]
+    manifest = EventCandidateManifest.load(artifact.manifest_path)
+    assert manifest.raw["schema_version"] == 2
+    assert (
+        manifest.raw["candidate_file_sha256"]
+        == hashlib.sha256(artifact.path.read_bytes()).hexdigest()
+    )
+    assert manifest.source_paths(data_lake_root=tmp_path) == (
+        universe_path.resolve(),
+        session_path.resolve(),
+        *(item.path.resolve() for item in earnings),
+        *(item.resolve() for item in split_files),
+        *(item.resolve() for item in dividend_files),
+    )
 
 
 def test_join_ignores_earnings_observations_ingested_after_decision(tmp_path: Path) -> None:
@@ -254,6 +274,6 @@ def test_join_does_not_annotate_actions_observed_after_decision(tmp_path: Path) 
         dividend_files=dividend_files,
     )
 
-    row = pq.read_table(artifact.path).to_pylist()[0]  # type: ignore[no-untyped-call]
+    row = pq.ParquetFile(artifact.path).read().to_pylist()[0]  # type: ignore[no-untyped-call]
     assert row["split_event_ids"] == []
     assert row["dividend_event_ids"] == []

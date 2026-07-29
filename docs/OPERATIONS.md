@@ -1453,9 +1453,12 @@ uv run qee model capture-live-source `
   --evidence-output .\live-market-observations-evidence.json
 ```
 
-The event-candidate artifact now carries its point-in-time SIC-division
-exposure bucket, prior-close sizing price, and frozen 20-session ADV from the
-universe snapshot. Capture reads authenticated Alpaca paper equity for
+The event-candidate artifact now carries a strict schema-v2 manifest that binds
+the exact universe snapshot, authoritative session file, earnings inputs, and
+split/dividend inputs used to generate it. The proof queue will not dispatch a
+candidate without that complete lineage. The artifact also carries its
+point-in-time SIC-division exposure bucket, prior-close sizing price, and frozen
+20-session ADV from the universe snapshot. Capture reads authenticated Alpaca paper equity for
 operational evidence and obtains one Polygon two-sided NBBO/last-trade
 snapshot per candidate, retaining provider timestamps, payload hashes, and
 bronze responses. The command emits every raw account/snapshot Bronze path, and
@@ -1466,10 +1469,11 @@ plus clean prior NBBO-replay P&L so Phase 6 accounting cannot drift. Prior
 replay reports must be canonical, reconciled, chronological, and
 equity-continuous.
 
-Terminal verification reloads all of those captured inputs, reconstructs the
-paper-account and provider snapshots from raw JSON, reruns candidate/session
-validation and replay-equity chaining, and requires the probability-free source
-bytes to match before model scoring is allowed.
+Terminal verification reloads all of those captured inputs, independently
+regenerates the candidate Parquet and manifest from the captured upstream data,
+reconstructs the paper-account and provider snapshots from raw JSON, reruns
+session validation and replay-equity chaining, and requires the
+probability-free source bytes to match before model scoring is allowed.
 
 Then score the captured source from point-in-time feature artifacts:
 

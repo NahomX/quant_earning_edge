@@ -156,6 +156,65 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
     return lake, loop_spec, inbox
 
 
+def _write_empty_candidate(lake: Path) -> Path:
+    root = lake / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = root / "candidates-empty.parquet"
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
+        candidate,
+    )
+    session = next((lake / "manifests" / "market-calendar").glob("sessions-*.json"))
+    upstream = tuple(
+        lake / f"queue-source-{name}.parquet"
+        for name in ("universe", "earnings", "splits", "dividends")
+    )
+    for index, path in enumerate(upstream):
+        path.write_bytes(f"queue-source-{index}".encode())
+
+    def entry(path: Path) -> dict[str, str]:
+        return {
+            "path": path.relative_to(lake).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    universe_entry = entry(upstream[0])
+    session_entry = entry(session)
+    earnings_entry = entry(upstream[1])
+    split_entry = entry(upstream[2])
+    dividend_entry = entry(upstream[3])
+    earnings_hash = hashlib.sha256(earnings_entry["sha256"].encode()).hexdigest()
+    split_hash = hashlib.sha256(split_entry["sha256"].encode()).hexdigest()
+    dividend_hash = hashlib.sha256(dividend_entry["sha256"].encode()).hexdigest()
+    manifest = {
+        "schema_version": 2,
+        "trade_date": "2026-07-28",
+        "decision_at": "2026-07-28T01:30:00+00:00",
+        "records": [],
+        "candidate_file_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        "universe_snapshot_sha256": universe_entry["sha256"],
+        "session_file_sha256": session_entry["sha256"],
+        "earnings_input_sha256": earnings_hash,
+        "corporate_actions_input_sha256": hashlib.sha256(
+            f"{split_hash}{dividend_hash}".encode()
+        ).hexdigest(),
+        "candidate_split_overlap_count": 0,
+        "candidate_dividend_overlap_count": 0,
+        "excluded_counts": {},
+        "source_files": {
+            "universe_snapshot": universe_entry,
+            "session_file": session_entry,
+            "earnings_files": [earnings_entry],
+            "split_files": [split_entry],
+            "dividend_files": [dividend_entry],
+        },
+    }
+    candidate.with_name("manifest-empty.json").write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    )
+    return candidate
+
+
 def test_loop_spec_requires_phase4_gate_artifact(tmp_path: Path) -> None:
     _, loop_spec, _ = _deployment(tmp_path)
     raw = json.loads(loop_spec.read_bytes())
@@ -333,16 +392,31 @@ def test_queue_waits_for_authoritative_candidate_artifact(tmp_path: Path) -> Non
     assert not calls
 
 
+def test_queue_waits_for_candidate_generation_manifest(tmp_path: Path) -> None:
+    lake, loop_spec, inbox = _deployment(tmp_path)
+    root = lake / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
+    root.mkdir(parents=True)
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
+        root / "candidates-partial.parquet",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    result = NextWorkflowQueuer(
+        data_lake_root=lake,
+        clock=lambda: datetime(2026, 7, 28, 1, 30, tzinfo=UTC),
+        executor=_executor(calls),
+    ).run_once(loop_spec=loop_spec, inbox=inbox)
+
+    assert result.status is WorkflowQueueStatus.WAITING_FOR_INPUTS
+    assert not calls
+
+
 def test_queue_stages_zero_candidate_proof_start_without_fake_features(
     tmp_path: Path,
 ) -> None:
     lake, loop_spec, inbox = _deployment(tmp_path)
-    candidate_root = lake / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
-    candidate_root.mkdir(parents=True)
-    pq.write_table(  # type: ignore[no-untyped-call]
-        pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
-        candidate_root / "candidates-empty.parquet",
-    )
+    _write_empty_candidate(lake)
     calls: list[tuple[str, ...]] = []
     queuer = NextWorkflowQueuer(
         data_lake_root=lake,
@@ -383,12 +457,7 @@ def test_queue_invokes_provider_input_preparation_before_staging(
     ) -> QeeCommandResult:
         if "prepare-session-inputs" in argv:
             calls.append(argv)
-            root = lake / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
-            root.mkdir(parents=True)
-            pq.write_table(  # type: ignore[no-untyped-call]
-                pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
-                root / "candidates-empty.parquet",
-            )
+            _write_empty_candidate(lake)
             return QeeCommandResult(return_code=0, stdout="{}")
         return _executor(calls)(argv, cwd=cwd, timeout_seconds=timeout_seconds)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -87,6 +88,60 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         encoding="utf-8",
     )
     return planning, breakers, phase6, artifact_root
+
+
+def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Path:
+    root = lake_root / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
+    root.mkdir(parents=True)
+    candidate = root / "candidates-test.parquet"
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
+        candidate,
+    )
+    upstream = tuple(
+        lake_root / f"{name}.parquet" for name in ("universe", "earnings", "splits", "dividends")
+    )
+    for index, path in enumerate(upstream):
+        path.write_bytes(f"source-{index}".encode())
+
+    def entry(path: Path) -> dict[str, str]:
+        return {
+            "path": path.relative_to(lake_root).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    universe, earnings, splits, dividends = (entry(path) for path in upstream)
+    session = entry(session_file)
+    earnings_hash = hashlib.sha256(earnings["sha256"].encode()).hexdigest()
+    split_hash = hashlib.sha256(splits["sha256"].encode()).hexdigest()
+    dividend_hash = hashlib.sha256(dividends["sha256"].encode()).hexdigest()
+    manifest = {
+        "schema_version": 2,
+        "trade_date": "2026-07-28",
+        "decision_at": "2026-07-28T01:30:00+00:00",
+        "records": [],
+        "candidate_file_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        "universe_snapshot_sha256": universe["sha256"],
+        "session_file_sha256": session["sha256"],
+        "earnings_input_sha256": earnings_hash,
+        "corporate_actions_input_sha256": hashlib.sha256(
+            f"{split_hash}{dividend_hash}".encode()
+        ).hexdigest(),
+        "candidate_split_overlap_count": 0,
+        "candidate_dividend_overlap_count": 0,
+        "excluded_counts": {},
+        "source_files": {
+            "universe_snapshot": universe,
+            "session_file": session,
+            "earnings_files": [earnings],
+            "split_files": [splits],
+            "dividend_files": [dividends],
+        },
+    }
+    candidate.with_name("manifest-test.json").write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    )
+    return candidate
 
 
 def test_generate_cli_writes_complete_bound_workflow(tmp_path: Path) -> None:
@@ -359,6 +414,10 @@ def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
     session_file = tmp_path / "sessions.json"
     automated = AutomatedPlanningInputs(
         candidate_file=tmp_path / "candidates.parquet",
+        candidate_lineage_files=(
+            tmp_path / "candidate-manifest.json",
+            tmp_path / "candidate-source.parquet",
+        ),
         session_file=session_file,
         model_evidence=tmp_path / "production.json",
         model_file=tmp_path / "production.txt",
@@ -390,6 +449,7 @@ def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
     assert freeze.not_before == decision_at
     assert freeze.commands[0].arguments[:2] == ("model", "capture-live-source")
     assert freeze.commands[0].artifact_json_keys == ("provider_observation_paths",)
+    assert all(path.resolve() in freeze.output_files for path in automated.candidate_lineage_files)
     assert [command.arguments[:2] for command in generation.commands] == [
         ("model", "score-live-planning"),
         ("model", "plan-live-orders"),
@@ -470,7 +530,9 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    session_file = tmp_path / "sessions.json"
+    lake_root = tmp_path / "lake"
+    lake_root.mkdir()
+    session_file = lake_root / "sessions.json"
     session_file.write_text(
         json.dumps(
             {
@@ -492,7 +554,7 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     env_file = tmp_path / ".env"
-    env_file.write_text(f"DATA_LAKE_ROOT={tmp_path / 'lake'}", encoding="utf-8")
+    env_file.write_text(f"DATA_LAKE_ROOT={lake_root}", encoding="utf-8")
     output = tmp_path / "inbox" / "2026-07-28.json"
 
     result = CliRunner().invoke(
@@ -537,10 +599,9 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
     workflow = WorkflowRunSpec.model_validate_json(output.read_bytes())
     assert Path(payload["planning_output"]).resolve() in workflow.stages[0].output_files
 
-    candidates = tmp_path / "candidates.parquet"
-    pq.write_table(  # type: ignore[no-untyped-call]
-        pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
-        candidates,
+    candidates = _empty_candidate_with_lineage(
+        lake_root=lake_root,
+        session_file=session_file,
     )
     automated_output = tmp_path / "staging" / "automated-2026-07-28.json"
     automated_result = CliRunner().invoke(
@@ -576,9 +637,13 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
             "--env-file",
             str(env_file),
         ],
+        terminal_width=500,
     )
 
-    assert automated_result.exit_code == 0
+    assert automated_result.exit_code == 0, (
+        automated_result.output,
+        automated_result.exception,
+    )
     automated_workflow = WorkflowRunSpec.model_validate_json(automated_output.read_bytes())
     assert automated_workflow.stages[0].commands[0].arguments[:2] == (
         "model",

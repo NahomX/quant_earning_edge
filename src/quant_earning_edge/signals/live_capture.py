@@ -111,7 +111,7 @@ class LiveSourceCaptureAssembler:
         """Read the exact sorted symbol set needed for provider snapshot capture."""
         if pq.read_schema(path) != EVENT_CANDIDATE_SCHEMA:  # type: ignore[no-untyped-call]
             raise ValueError("live source candidate artifact schema mismatch")
-        rows = pq.read_table(path, columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
+        rows = pq.ParquetFile(path).read(columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
         symbols = tuple(str(row["symbol"]).strip().upper() for row in rows)
         if symbols != tuple(sorted(set(symbols))):
             raise ValueError("live source candidate symbols must be unique and sorted")
@@ -227,7 +227,7 @@ class LiveSourceCaptureAssembler:
     ) -> tuple[list[dict[str, Any]], str]:
         if pq.read_schema(path) != EVENT_CANDIDATE_SCHEMA:  # type: ignore[no-untyped-call]
             raise ValueError("live source candidate artifact schema mismatch")
-        rows: list[dict[str, Any]] = pq.read_table(path).to_pylist()  # type: ignore[no-untyped-call]
+        rows: list[dict[str, Any]] = pq.ParquetFile(path).read().to_pylist()  # type: ignore[no-untyped-call]
         symbols = tuple(str(row["symbol"]).strip().upper() for row in rows)
         if symbols != tuple(sorted(set(symbols))):
             raise ValueError("live source candidate symbols must be unique and sorted")

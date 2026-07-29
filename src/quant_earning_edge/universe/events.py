@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
@@ -85,11 +86,150 @@ class EventCandidateArtifact:
     excluded_counts: dict[CandidateExclusion, int]
 
 
+@dataclass(frozen=True)
+class EventCandidateManifest:
+    """Strict candidate-generation inputs and expected output identity."""
+
+    path: Path
+    raw: dict[str, Any]
+
+    @classmethod
+    def load(cls, path: Path) -> EventCandidateManifest:
+        try:
+            encoded = path.read_bytes()
+            raw = json.loads(encoded)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"invalid event-candidate manifest: {path}") from error
+        required = {
+            "schema_version",
+            "trade_date",
+            "decision_at",
+            "records",
+            "candidate_file_sha256",
+            "universe_snapshot_sha256",
+            "session_file_sha256",
+            "earnings_input_sha256",
+            "corporate_actions_input_sha256",
+            "candidate_split_overlap_count",
+            "candidate_dividend_overlap_count",
+            "excluded_counts",
+            "source_files",
+        }
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
+            raise ValueError("event-candidate manifest schema mismatch")
+        sources = raw["source_files"]
+        if not isinstance(sources, dict) or set(sources) != {
+            "universe_snapshot",
+            "session_file",
+            "earnings_files",
+            "split_files",
+            "dividend_files",
+        }:
+            raise ValueError("event-candidate manifest source schema mismatch")
+        if (
+            not isinstance(sources["universe_snapshot"], dict)
+            or not isinstance(sources["session_file"], dict)
+            or not all(
+                isinstance(sources[name], list)
+                for name in ("earnings_files", "split_files", "dividend_files")
+            )
+            or not sources["earnings_files"]
+            or not sources["split_files"]
+            or not sources["dividend_files"]
+        ):
+            raise ValueError("event-candidate manifest source collection is invalid")
+        entries = (
+            sources["universe_snapshot"],
+            sources["session_file"],
+            *sources["earnings_files"],
+            *sources["split_files"],
+            *sources["dividend_files"],
+        )
+        for entry in entries:
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"path", "sha256"}
+                or not _is_sha256(entry["sha256"])
+                or not str(entry["path"]).strip()
+            ):
+                raise ValueError("event-candidate manifest source entry is invalid")
+            source_path = PurePosixPath(entry["path"])
+            if (
+                source_path.is_absolute()
+                or ".." in source_path.parts
+                or source_path.as_posix() != entry["path"]
+            ):
+                raise ValueError("event-candidate manifest source path is invalid")
+        digest_fields = (
+            "candidate_file_sha256",
+            "universe_snapshot_sha256",
+            "session_file_sha256",
+            "earnings_input_sha256",
+            "corporate_actions_input_sha256",
+        )
+        if any(not _is_sha256(raw[field]) for field in digest_fields):
+            raise ValueError("event-candidate manifest digest is invalid")
+        earnings_hash = _aggregate_file_hashes(sources["earnings_files"])
+        split_hash = _aggregate_file_hashes(sources["split_files"])
+        dividend_hash = _aggregate_file_hashes(sources["dividend_files"])
+        corporate_actions_hash = hashlib.sha256(f"{split_hash}{dividend_hash}".encode()).hexdigest()
+        if (
+            raw["universe_snapshot_sha256"] != sources["universe_snapshot"]["sha256"]
+            or raw["session_file_sha256"] != sources["session_file"]["sha256"]
+            or raw["earnings_input_sha256"] != earnings_hash
+            or raw["corporate_actions_input_sha256"] != corporate_actions_hash
+        ):
+            raise ValueError("event-candidate manifest aggregate digest differs from its sources")
+        try:
+            trade_date = date.fromisoformat(str(raw["trade_date"]))
+            decision_at = datetime.fromisoformat(str(raw["decision_at"]))
+        except ValueError as error:
+            raise ValueError("event-candidate manifest timestamps are invalid") from error
+        if (
+            str(trade_date) != raw["trade_date"]
+            or decision_at.tzinfo is None
+            or decision_at.utcoffset() is None
+            or not isinstance(raw["records"], list)
+            or not isinstance(raw["excluded_counts"], dict)
+            or not isinstance(raw["candidate_split_overlap_count"], int)
+            or not isinstance(raw["candidate_dividend_overlap_count"], int)
+        ):
+            raise ValueError("event-candidate manifest metadata is invalid")
+        canonical = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+        if canonical != encoded:
+            raise ValueError("event-candidate manifest is not canonical")
+        return cls(path=path.resolve(), raw=raw)
+
+    @property
+    def source_entries(self) -> tuple[dict[str, str], ...]:
+        sources = self.raw["source_files"]
+        return (
+            sources["universe_snapshot"],
+            sources["session_file"],
+            *sources["earnings_files"],
+            *sources["split_files"],
+            *sources["dividend_files"],
+        )
+
+    def source_paths(self, *, data_lake_root: Path) -> tuple[Path, ...]:
+        root = data_lake_root.resolve()
+        paths = tuple((root / entry["path"]).resolve() for entry in self.source_entries)
+        if any(path == root or root not in path.parents for path in paths):
+            raise ValueError("event-candidate source escapes the data lake")
+        if any(
+            _file_sha256(path) != entry["sha256"]
+            for path, entry in zip(paths, self.source_entries, strict=True)
+        ):
+            raise ValueError("event-candidate source file is missing or differs")
+        return paths
+
+
 class EventCandidateJob:
     """Join explicit sessions, known earnings observations, and one frozen universe."""
 
-    def __init__(self, layout: LakehouseLayout) -> None:
+    def __init__(self, layout: LakehouseLayout, *, source_root: Path | None = None) -> None:
         self._layout = layout
+        self._source_root = (source_root or layout.root).resolve()
 
     def run(
         self,
@@ -198,6 +338,12 @@ class EventCandidateJob:
             earnings_hash=earnings_hash,
             corporate_actions_hash=corporate_actions_hash,
             exclusions=exclusions,
+            decision_at=decision_at,
+            universe_snapshot=universe_snapshot,
+            session_file=session_file,
+            earnings_files=earnings_files,
+            split_files=split_files,
+            dividend_files=dividend_files,
         )
 
     @staticmethod
@@ -208,7 +354,7 @@ class EventCandidateJob:
         asof_date: date,
         decision_at: datetime,
     ) -> dict[str, tuple[str, float, float]]:
-        table = pq.read_table(path)  # type: ignore[no-untyped-call]
+        table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
         required = {
             "trade_date",
             "asof_date",
@@ -265,7 +411,7 @@ class EventCandidateJob:
         file_hashes: list[str] = []
         for path in sorted(paths):
             file_hashes.append(_file_sha256(path))
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if not required.issubset(table.column_names):
                 raise ValueError(f"earnings file is missing required columns: {path}")
             observations.extend(table.select(sorted(required)).to_pylist())
@@ -302,7 +448,7 @@ class EventCandidateJob:
         file_hashes: list[str] = []
         for path in sorted(paths):
             file_hashes.append(_file_sha256(path))
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if not required.issubset(table.column_names):
                 raise ValueError(f"corporate-action file is missing required columns: {path}")
             for row in table.select(sorted(required)).to_pylist():
@@ -340,6 +486,12 @@ class EventCandidateJob:
         earnings_hash: str,
         corporate_actions_hash: str,
         exclusions: dict[CandidateExclusion, int],
+        decision_at: datetime,
+        universe_snapshot: Path,
+        session_file: Path,
+        earnings_files: Sequence[Path],
+        split_files: Sequence[Path],
+        dividend_files: Sequence[Path],
     ) -> EventCandidateArtifact:
         records = [
             {
@@ -365,7 +517,7 @@ class EventCandidateJob:
             }
             for item in candidates
         ]
-        evidence = {
+        core_evidence = {
             "trade_date": trade_date,
             "records": records,
             "universe_snapshot_sha256": universe_hash,
@@ -380,7 +532,7 @@ class EventCandidateJob:
                 reason.value: count for reason, count in exclusions.items() if count
             },
         }
-        digest = _digest_records(evidence)
+        digest = _digest_records(core_evidence)
         root = self._layout.root / "gold" / "event-candidates" / f"for_trade_date={trade_date}"
         root.mkdir(parents=True, exist_ok=True)
         path = root / f"candidates-{digest[:20]}.parquet"
@@ -389,8 +541,23 @@ class EventCandidateJob:
             with path.open("xb") as sink:
                 pq.write_table(table, sink, compression="zstd")  # type: ignore[no-untyped-call]
         except FileExistsError:
-            if pq.read_schema(path) != EVENT_CANDIDATE_SCHEMA:  # type: ignore[no-untyped-call]
+            existing = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
+            if existing.schema != EVENT_CANDIDATE_SCHEMA or not existing.equals(table):
                 raise RuntimeError(f"candidate artifact schema collision at {path}") from None
+        evidence = {
+            "schema_version": 2,
+            "trade_date": trade_date,
+            "decision_at": decision_at,
+            **core_evidence,
+            "candidate_file_sha256": _file_sha256(path),
+            "source_files": {
+                "universe_snapshot": self._source_entry(universe_snapshot),
+                "session_file": self._source_entry(session_file),
+                "earnings_files": [self._source_entry(item) for item in sorted(earnings_files)],
+                "split_files": [self._source_entry(item) for item in sorted(split_files)],
+                "dividend_files": [self._source_entry(item) for item in sorted(dividend_files)],
+            },
+        }
         manifest_path = root / f"manifest-{digest[:20]}.json"
         encoded_manifest = json.dumps(
             evidence,
@@ -412,6 +579,14 @@ class EventCandidateJob:
             excluded_counts={reason: count for reason, count in exclusions.items() if count},
         )
 
+    def _source_entry(self, path: Path) -> dict[str, str]:
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(self._source_root)
+        except ValueError as error:
+            raise ValueError("event-candidate source must be inside the data lake") from error
+        return {"path": relative.as_posix(), "sha256": _file_sha256(resolved)}
+
 
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -429,3 +604,17 @@ def _digest_records(records: object) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(item in "0123456789abcdef" for item in value)
+    )
+
+
+def _aggregate_file_hashes(entries: Sequence[dict[str, str]]) -> str:
+    return hashlib.sha256(
+        "".join(sorted(entry["sha256"] for entry in entries)).encode()
+    ).hexdigest()

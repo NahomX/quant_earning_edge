@@ -173,6 +173,7 @@ from quant_earning_edge.signals import (
 from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
+    EventCandidateManifest,
     RunTrigger,
     UniverseBuilder,
     UniverseManifestStore,
@@ -3483,6 +3484,7 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
             )
         strategy = load_strategy_config(strategy_config)
         calendar = SessionFileStore.load(session_file)
+        environment = _environment(env_file)
         artifact_root.mkdir(parents=True, exist_ok=True)
         control_root = (
             artifact_root.resolve()
@@ -3607,8 +3609,31 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 / f"trade_date={selected_date.isoformat()}"
                 / "scored-live-planning-evidence.json"
             )
+            candidate_identity = candidate_file.stem.removeprefix("candidates-")
+            candidate_manifest_path = candidate_file.with_name(
+                f"manifest-{candidate_identity}.json"
+            )
+            candidate_manifest = EventCandidateManifest.load(candidate_manifest_path)
+            if (
+                candidate_manifest.raw["trade_date"] != selected_date.isoformat()
+                or candidate_manifest.raw["candidate_file_sha256"]
+                != hashlib.sha256(candidate_file.read_bytes()).hexdigest()
+                or candidate_manifest.raw["session_file_sha256"] != calendar.sha256
+            ):
+                raise ValueError("event-candidate manifest differs from the selected artifact")
+            try:
+                candidate_file.resolve().relative_to(environment.data_lake_root.resolve())
+            except ValueError as error:
+                raise ValueError("event-candidate artifact must be inside the data lake") from error
+            candidate_lineage_files = (
+                candidate_manifest_path.resolve(),
+                *candidate_manifest.source_paths(
+                    data_lake_root=environment.data_lake_root,
+                ),
+            )
             automated_planning = AutomatedPlanningInputs(
                 candidate_file=candidate_file,
+                candidate_lineage_files=candidate_lineage_files,
                 session_file=session_file,
                 model_evidence=model_evidence,
                 model_file=model_file,
@@ -3629,7 +3654,6 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
             order_controls_at = selected_session.open_at - timedelta(minutes=10)
             order_submission_expires_at = selected_session.open_at + timedelta(minutes=5)
             market_events_at = selected_session.close_at + timedelta(minutes=6)
-        environment = _environment(env_file)
         health_output = control_root / "workflow-health.json"
         phase6_output = control_root / "phase6-controls.json"
         controls = Phase6ControlBuilder().build(

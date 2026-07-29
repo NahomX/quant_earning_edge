@@ -25,6 +25,7 @@ class AutomatedPlanningInputs:
     """Immutable inputs needed for worker-time provider capture and model scoring."""
 
     candidate_file: Path
+    candidate_lineage_files: tuple[Path, ...]
     session_file: Path
     model_evidence: Path
     model_file: Path
@@ -212,17 +213,22 @@ class DailyWorkflowSpecGenerator:
                     artifact_json_keys=("provider_observation_paths",),
                 ),
             )
-            freeze_outputs = (
-                automatic.candidate_file.resolve(),
-                automatic.session_file.resolve(),
-                automatic.model_evidence.resolve(),
-                automatic.model_file.resolve(),
-                *(path.resolve() for path in automatic.feature_files),
-                *(path.resolve() for path in automatic.prior_replay_files),
-                strategy,
-                phase6,
-                live_source,
-                live_source_evidence,
+            freeze_outputs = tuple(
+                dict.fromkeys(
+                    (
+                        automatic.candidate_file.resolve(),
+                        *(path.resolve() for path in automatic.candidate_lineage_files),
+                        automatic.session_file.resolve(),
+                        automatic.model_evidence.resolve(),
+                        automatic.model_file.resolve(),
+                        *(path.resolve() for path in automatic.feature_files),
+                        *(path.resolve() for path in automatic.prior_replay_files),
+                        strategy,
+                        phase6,
+                        live_source,
+                        live_source_evidence,
+                    )
+                )
             )
             score_arguments = [
                 "model",

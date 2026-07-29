@@ -7,6 +7,7 @@ from quant_earning_edge.universe.events import (
     EventCandidate,
     EventCandidateArtifact,
     EventCandidateJob,
+    EventCandidateManifest,
 )
 from quant_earning_edge.universe.job import (
     DailyUniverseJob,
@@ -41,6 +42,7 @@ __all__ = [
     "EventCandidate",
     "EventCandidateArtifact",
     "EventCandidateJob",
+    "EventCandidateManifest",
     "HaltSnapshot",
     "ReadinessEvidence",
     "RejectionReason",

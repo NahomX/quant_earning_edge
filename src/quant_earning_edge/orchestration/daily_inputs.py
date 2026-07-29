@@ -350,7 +350,7 @@ class DailyInputPreparer:
     def _candidate_symbols(path: Path) -> tuple[str, ...]:
         if pq.read_schema(path) != EVENT_CANDIDATE_SCHEMA:  # type: ignore[no-untyped-call]
             raise ValueError("daily candidate artifact schema mismatch")
-        rows = pq.read_table(path, columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
+        rows = pq.ParquetFile(path).read(columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
         symbols = tuple(str(row["symbol"]).strip().upper() for row in rows)
         if symbols != tuple(sorted(set(symbols))):
             raise ValueError("daily candidate symbols must be unique and sorted")

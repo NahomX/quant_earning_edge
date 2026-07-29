@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
@@ -41,11 +42,13 @@ if TYPE_CHECKING:
         StageRecord,
     )
     from quant_earning_edge.signals.config import EarningsStrategyConfig
+    from quant_earning_edge.signals.live_capture import LiveSourceCaptureArtifact
     from quant_earning_edge.signals.live_orders import (
         DailyOrderPlanningSpec,
         FrozenDailyOrders,
     )
     from quant_earning_edge.signals.live_planning import LivePlanningSourceSpec
+    from quant_earning_edge.universe import EventCandidateManifest
 
 
 class Phase6DailyReportVerifier:
@@ -286,6 +289,13 @@ class Phase6DailyReportVerifier:
             or any(not paths for paths in replay_matches)
         ):
             raise ValueError("live source lacks exact captured provider and workflow inputs")
+        Phase6DailyReportVerifier._verify_candidate_generation(
+            state=state,
+            source=source,
+            captured=captured,
+            candidate_path=candidate_paths[0],
+            paths_by_sha=paths_by_sha,
+        )
         account = PaperAccountSnapshot.from_payload(
             json.loads(account_paths[0].read_bytes()),
             captured_at=source.decision_at,
@@ -317,6 +327,98 @@ class Phase6DailyReportVerifier:
         )
         if reproduced.canonical_bytes != captured.canonical_bytes:
             raise ValueError("live source differs from captured provider or workflow inputs")
+
+    @staticmethod
+    def _verify_candidate_generation(
+        *,
+        state: DailyWorkflowState,
+        source: LivePlanningSourceSpec,
+        captured: LiveSourceCaptureArtifact,
+        candidate_path: Path,
+        paths_by_sha: dict[str, list[Path]],
+    ) -> None:
+        from quant_earning_edge.data.layout import LakehouseLayout  # noqa: PLC0415
+        from quant_earning_edge.universe import (  # noqa: PLC0415
+            EventCandidateJob,
+            EventCandidateManifest,
+        )
+
+        manifests = []
+        for stage in state.stages:
+            for artifact in stage.output_artifacts:
+                path = Path(artifact.path).resolve()
+                if path.suffix != ".json":
+                    continue
+                try:
+                    manifest = EventCandidateManifest.load(path)
+                except (OSError, ValueError):
+                    continue
+                if manifest.raw["candidate_file_sha256"] == captured.candidate_file_sha256:
+                    manifests.append(manifest)
+        if len(manifests) != 1:
+            raise ValueError(
+                "live source must bind to exactly one captured candidate-generation manifest"
+            )
+        manifest = manifests[0]
+        source_root, sources = Phase6DailyReportVerifier._candidate_sources(
+            manifest=manifest,
+            paths_by_sha=paths_by_sha,
+        )
+        if (
+            manifest.raw["trade_date"] != source.trade_date.isoformat()
+            or manifest.raw["candidate_file_sha256"]
+            != hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        ):
+            raise ValueError("live source candidate identity differs from its generation manifest")
+        source_groups = manifest.raw["source_files"]
+        earnings_end = 2 + len(source_groups["earnings_files"])
+        splits_end = earnings_end + len(source_groups["split_files"])
+        with TemporaryDirectory(prefix="qee-candidate-reconstruction-") as temporary:
+            reproduced = EventCandidateJob(
+                LakehouseLayout(Path(temporary)),
+                source_root=source_root,
+            ).run(
+                trade_date=source.trade_date,
+                decision_at=datetime.fromisoformat(manifest.raw["decision_at"]),
+                universe_snapshot=sources[0],
+                session_file=sources[1],
+                earnings_files=sources[2:earnings_end],
+                split_files=sources[earnings_end:splits_end],
+                dividend_files=sources[splits_end:],
+            )
+            if (
+                hashlib.sha256(reproduced.path.read_bytes()).hexdigest()
+                != captured.candidate_file_sha256
+                or EventCandidateManifest.load(reproduced.manifest_path).raw != manifest.raw
+            ):
+                raise ValueError(
+                    "candidate artifact differs from reconstructed captured upstream inputs"
+                )
+
+    @staticmethod
+    def _candidate_sources(
+        *,
+        manifest: EventCandidateManifest,
+        paths_by_sha: dict[str, list[Path]],
+    ) -> tuple[Path, tuple[Path, ...]]:
+        first_entry = manifest.source_entries[0]
+        first_paths = paths_by_sha.get(first_entry["sha256"], [])
+        relative = Path(first_entry["path"])
+        roots = []
+        for candidate in first_paths:
+            root = candidate
+            for _ in relative.parts:
+                root = root.parent
+            if (root / relative).resolve() == candidate.resolve():
+                roots.append(root.resolve())
+        for root in sorted(set(roots), key=str):
+            sources = tuple((root / entry["path"]).resolve() for entry in manifest.source_entries)
+            if all(
+                path in paths_by_sha.get(entry["sha256"], [])
+                for path, entry in zip(sources, manifest.source_entries, strict=True)
+            ):
+                return root, sources
+        raise ValueError("candidate manifest lacks its exact captured data-lake sources")
 
     @staticmethod
     def _stage(

@@ -21,7 +21,10 @@ from quant_earning_edge.orchestration.commands import (
     execute_qee_command,
 )
 from quant_earning_edge.orchestration.workflow import DailyWorkflowStore
-from quant_earning_edge.universe.events import EVENT_CANDIDATE_SCHEMA
+from quant_earning_edge.universe.events import (
+    EVENT_CANDIDATE_SCHEMA,
+    EventCandidateManifest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -385,14 +388,27 @@ class NextWorkflowQueuer:
                 f"multiple event-candidate artifacts exist for {trade_date}; "
                 "the authoritative revision is ambiguous"
             )
-        self._candidate_symbols(candidates[0])
-        return candidates[0].resolve()
+        candidate = candidates[0].resolve()
+        identity = candidate.stem.removeprefix("candidates-")
+        manifest_path = candidate.with_name(f"manifest-{identity}.json")
+        if not manifest_path.is_file():
+            return None
+        manifest = EventCandidateManifest.load(manifest_path)
+        if (
+            manifest.raw["trade_date"] != trade_date.isoformat()
+            or manifest.raw["candidate_file_sha256"]
+            != hashlib.sha256(candidate.read_bytes()).hexdigest()
+        ):
+            raise ValueError("workflow queue candidate manifest differs from its artifact")
+        manifest.source_paths(data_lake_root=self._data_lake_root)
+        self._candidate_symbols(candidate)
+        return candidate
 
     @staticmethod
     def _candidate_symbols(path: Path) -> tuple[str, ...]:
         if pq.read_schema(path) != EVENT_CANDIDATE_SCHEMA:  # type: ignore[no-untyped-call]
             raise ValueError("workflow queue candidate artifact schema mismatch")
-        rows = pq.read_table(path, columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
+        rows = pq.ParquetFile(path).read(columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
         symbols = tuple(str(row["symbol"]).strip().upper() for row in rows)
         if symbols != tuple(sorted(set(symbols))):
             raise ValueError("workflow queue candidate symbols must be unique and sorted")

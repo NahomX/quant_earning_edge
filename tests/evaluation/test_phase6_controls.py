@@ -29,7 +29,16 @@ from quant_earning_edge.data import (
     SessionFileStore,
     SilverWriter,
 )
-from quant_earning_edge.data.clients import MarketSession, PolygonClient, StockQuote
+from quant_earning_edge.data.clients import (
+    CashDividend,
+    DividendDistributionType,
+    EarningsEvent,
+    MarketSession,
+    PolygonClient,
+    SplitAdjustmentType,
+    StockQuote,
+    StockSplit,
+)
 from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
     Phase6CompletionFinalizer,
@@ -72,7 +81,8 @@ from quant_earning_edge.signals import (
     load_strategy_config,
     strategy_file_sha256,
 )
-from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
+from quant_earning_edge.universe import EventCandidateJob
+from quant_earning_edge.universe.snapshot import UNIVERSE_SNAPSHOT_SCHEMA
 
 _MODEL_TEMP = TemporaryDirectory(prefix="qee-phase6-model-")
 
@@ -142,7 +152,9 @@ def _write_live_source_capture(
     snapshot: DecisionSnapshotSpec | None,
 ) -> tuple[LivePlanningSourceSpec, tuple[Path, ...], Path]:
     prior_date = trade_date - timedelta(days=1)
-    calendar = SessionFileStore(LakehouseLayout(daily / "live-calendar")).write(
+    candidate_root = daily / "candidate-lake"
+    candidate_layout = LakehouseLayout(candidate_root)
+    calendar = SessionFileStore(candidate_layout).write(
         (
             MarketSession(
                 session_date=prior_date,
@@ -182,37 +194,86 @@ def _write_live_source_capture(
             ),
         )
     )
-    candidate_path = daily.parent / f"event-candidates-{trade_date.isoformat()}.parquet"
-    candidate_rows = (
-        [
-            {
-                "trade_date": trade_date,
-                "asof_date": prior_date,
-                "decision_at": captured_at,
-                "symbol": "AAA",
-                "sector": "Technology",
-                "sizing_price": 100.0,
-                "frozen_average_daily_volume_shares": 1_000_000.0,
-                "event_date": prior_date,
-                "timing": "amc",
-                "year": trade_date.year,
-                "quarter": 3,
-                "eps_estimate": 1.0,
-                "revenue_estimate": 100.0,
-                "split_event_ids": [],
-                "dividend_event_ids": [],
-                "universe_snapshot_sha256": "a" * 64,
-                "session_file_sha256": calendar.sha256,
-                "earnings_input_sha256": "b" * 64,
-                "corporate_actions_input_sha256": "c" * 64,
-            }
-        ]
-        if snapshot is not None
-        else []
-    )
+    universe_path = candidate_root / "universe-snapshot.parquet"
     pq.write_table(  # type: ignore[no-untyped-call]
-        pa.Table.from_pylist(candidate_rows, schema=EVENT_CANDIDATE_SCHEMA),
-        candidate_path,
+        pa.Table.from_pylist(
+            [
+                {
+                    "trade_date": trade_date,
+                    "asof_date": prior_date,
+                    "generated_at": captured_at,
+                    "config_sha256": "a" * 64,
+                    "symbol": "AAA",
+                    "eligible": True,
+                    "rejection_reasons": [],
+                    "close": 100.0,
+                    "avg_daily_volume": 1_000_000.0,
+                    "market_cap_usd": 1_000_000_000.0,
+                    "primary_exchange": "XNAS",
+                    "security_type": "CS",
+                    "active": True,
+                    "halted": False,
+                    "sector": "TECHNOLOGY",
+                    "list_date": date(2000, 1, 1),
+                    "delisted_date": None,
+                }
+            ],
+            schema=UNIVERSE_SNAPSHOT_SCHEMA,
+        ),
+        universe_path,
+    )
+    writer = SilverWriter(candidate_layout)
+    earnings = writer.write_earnings(
+        (
+            EarningsEvent.model_validate(
+                {
+                    "date": prior_date if snapshot is not None else trade_date + timedelta(days=10),
+                    "symbol": "AAA",
+                    "hour": "amc",
+                    "year": trade_date.year,
+                    "quarter": 3,
+                    "epsEstimate": 1.0,
+                    "revenueEstimate": 100.0,
+                }
+            ),
+        ),
+        ingested_at=captured_at,
+    )
+    splits = writer.write_splits(
+        (
+            StockSplit(
+                event_id="irrelevant-split",
+                symbol="ZZZ",
+                execution_date=trade_date + timedelta(days=10),
+                adjustment_type=SplitAdjustmentType.FORWARD_SPLIT,
+                split_from=1,
+                split_to=2,
+            ),
+        ),
+        ingested_at=captured_at,
+    )
+    dividends = writer.write_dividends(
+        (
+            CashDividend(
+                event_id="irrelevant-dividend",
+                symbol="ZZZ",
+                ex_dividend_date=trade_date + timedelta(days=10),
+                distribution_type=DividendDistributionType.RECURRING,
+                cash_amount=0.25,
+                currency="USD",
+                frequency=4,
+            ),
+        ),
+        ingested_at=captured_at,
+    )
+    candidate = EventCandidateJob(candidate_layout).run(
+        trade_date=trade_date,
+        decision_at=captured_at,
+        universe_snapshot=universe_path,
+        session_file=calendar.path,
+        earnings_files=tuple(item.path for item in earnings),
+        split_files=tuple(item.path for item in splits),
+        dividend_files=tuple(item.path for item in dividends),
     )
 
     def write_raw(path: Path, payload: object) -> Path:
@@ -273,7 +334,7 @@ def _write_live_source_capture(
     capture = LiveSourceCaptureAssembler().assemble(
         trade_date=trade_date,
         captured_at=captured_at,
-        candidate_file=candidate_path,
+        candidate_file=candidate.path,
         session_file=calendar.path,
         account=account,
         initial_cash=100_000,
@@ -290,11 +351,16 @@ def _write_live_source_capture(
     return (
         capture.source,
         (
-            candidate_path,
+            candidate.path,
             calendar.path,
             account_path,
             *snapshot_paths,
             evidence_path,
+            candidate.manifest_path,
+            universe_path,
+            *(item.path for item in earnings),
+            *(item.path for item in splits),
+            *(item.path for item in dividends),
         ),
         source_path,
     )
@@ -440,7 +506,17 @@ def _no_trade_replay_sources(
         ),
         snapshot=None,
     )
-    candidate_path, live_calendar_path, account_path, live_evidence_path = live_capture_paths
+    (
+        candidate_path,
+        live_calendar_path,
+        account_path,
+        live_evidence_path,
+        candidate_manifest_path,
+        universe_path,
+        earnings_path,
+        split_path,
+        dividend_path,
+    ) = live_capture_paths
     planning, planning_sources, planning_evidence_path = _write_scored_planning(
         daily,
         source=planning_source,
@@ -532,6 +608,11 @@ def _no_trade_replay_sources(
         "planning": planning_path,
         "planning_source": source_path,
         "candidate_file": candidate_path,
+        "candidate_manifest": candidate_manifest_path,
+        "candidate_universe": universe_path,
+        "candidate_earnings": earnings_path,
+        "candidate_splits": split_path,
+        "candidate_dividends": dividend_path,
         "live_calendar": live_calendar_path,
         "account_observation": account_path,
         "live_source_evidence": live_evidence_path,
@@ -572,6 +653,11 @@ def _complete_source_workflow(
                 sources["strategy"],
                 sources["planning_source"],
                 sources["candidate_file"],
+                sources["candidate_manifest"],
+                sources["candidate_universe"],
+                sources["candidate_earnings"],
+                sources["candidate_splits"],
+                sources["candidate_dividends"],
                 sources["live_calendar"],
                 sources["account_observation"],
                 sources["live_source_evidence"],
@@ -632,6 +718,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_scored_planning_evidence: bool = True,
     capture_live_source_evidence: bool = True,
     capture_live_provider_inputs: bool = True,
+    capture_candidate_lineage: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -661,6 +748,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         account_path,
         live_snapshot_path,
         live_evidence_path,
+        candidate_manifest_path,
+        universe_path,
+        earnings_path,
+        split_path,
+        dividend_path,
     ) = live_capture_paths
     feature_path = daily / "live-features.parquet"
     feature_path.parent.mkdir(parents=True, exist_ok=True)
@@ -873,6 +965,17 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                             live_snapshot_path,
                         )
                         if capture_live_provider_inputs
+                        else ()
+                    ),
+                    *(
+                        (
+                            candidate_manifest_path,
+                            universe_path,
+                            earnings_path,
+                            split_path,
+                            dividend_path,
+                        )
+                        if capture_candidate_lineage
                         else ()
                     ),
                     *((live_evidence_path,) if capture_live_source_evidence else ()),
@@ -1377,6 +1480,45 @@ def test_daily_report_verifier_requires_live_provider_inputs(
     )
 
     with pytest.raises(ValueError, match="exact captured provider and workflow inputs"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_candidate_generation_lineage(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_candidate_lineage=False,
+    )
+
+    with pytest.raises(ValueError, match="candidate-generation manifest"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_rejects_changed_candidate_source(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+    )
+    universe_path = next(tmp_path.glob("**/candidate-lake/universe-snapshot.parquet"))
+    universe_path.write_bytes(b"changed after candidate generation")
+
+    with pytest.raises(ValueError, match="workflow artifact changed after capture"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

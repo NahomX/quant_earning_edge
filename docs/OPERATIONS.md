@@ -1356,6 +1356,21 @@ semantic verification by the combined manifest/artifact fingerprint; unchanged
 later scans use hash checks, while a restart or any byte change forces full
 reproduction again.
 
+An operator or independent reviewer can run that same full reproduction
+directly:
+
+```powershell
+uv run qee evaluation verify-phase6-finalization `
+  --manifest .\artifacts\trade_date=2026-07-28\post-completion\finalization-<workflow-state-sha256>.json `
+  --artifact-root .\artifacts `
+  --env-file .\.env
+```
+
+Success emits `"verified": true` with the reproduced workflow-state and gate
+hashes, verdict, and session counts. Missing, noncanonical, relocated,
+hash-inconsistent, or semantically unreproducible health, controls, daily
+sources, reconciliation, gate, or manifest evidence exits nonzero.
+
 When `workflow worker --env-file` is used, dotenv settings are merged into a
 child-only subprocess environment. Existing process variables still take
 precedence, the parent environment is not mutated, and secrets never become

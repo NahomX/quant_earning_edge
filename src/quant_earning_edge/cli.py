@@ -69,6 +69,7 @@ from quant_earning_edge.evaluation import (
     Phase6CompletionFinalizer,
     Phase6ControlBuilder,
     Phase6DailyReportVerifier,
+    Phase6FinalizationEvidence,
     Phase6GateEvaluator,
     ReplaySessionAggregationSpec,
     ReplaySessionAggregator,
@@ -2159,6 +2160,59 @@ def finalize_phase6_after_workflow(
             "aggregation_path": str(artifacts.aggregation_path),
             "gate_report_path": str(artifacts.gate_report_path),
             "manifest_path": str(artifacts.manifest_path),
+            "gate_report_sha256": artifacts.report.sha256,
+            "verdict": artifacts.report.verdict,
+            "passes_phase6_gate": artifacts.report.passes_phase6_gate,
+            "observed_session_count": artifacts.report.observed_session_count,
+            "scheduled_complete_session_count": (artifacts.report.scheduled_complete_session_count),
+        }
+    )
+
+
+@evaluation_app.command("verify-phase6-finalization")
+def verify_phase6_finalization(
+    manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Content-addressed post-completion finalization manifest.",
+        ),
+    ],
+    artifact_root: Annotated[
+        Path,
+        typer.Option(exists=True, file_okay=False, help="Daily workflow artifacts."),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Independently reproduce a complete Phase 6 finalization bundle."""
+    try:
+        environment = _environment(env_file)
+        evidence = Phase6FinalizationEvidence.load(manifest)
+        artifacts = Phase6CompletionFinalizer().verify(
+            manifest_path=manifest,
+            artifact_root=artifact_root,
+            output_directory=manifest.parent,
+            workflow_store=DailyWorkflowStore(environment.data_lake_root),
+            expected_state_sha256=evidence.workflow_state_sha256,
+        )
+    except (
+        OSError,
+        RuntimeConfigurationError,
+        ValidationError,
+        ValueError,
+        RuntimeError,
+    ) as error:
+        raise typer.BadParameter(
+            str(error),
+            param_hint="Phase 6 finalization verification",
+        ) from error
+    _echo_json(
+        {
+            "verified": True,
+            "manifest_path": str(manifest.resolve()),
+            "workflow_state_sha256": evidence.workflow_state_sha256,
+            "gate_report_path": str(artifacts.gate_report_path),
             "gate_report_sha256": artifacts.report.sha256,
             "verdict": artifacts.report.verdict,
             "passes_phase6_gate": artifacts.report.passes_phase6_gate,

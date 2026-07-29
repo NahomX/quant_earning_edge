@@ -512,6 +512,19 @@ def test_finalize_phase6_refreshes_health_after_workflow_completion(
         expected_state_sha256=state.sha256,
     )
     assert verified.report.canonical_bytes == Path(payload["gate_report_path"]).read_bytes()
+    verify_arguments = [
+        "evaluation",
+        "verify-phase6-finalization",
+        "--manifest",
+        str(manifest_path),
+        "--artifact-root",
+        str(artifact_root),
+        "--env-file",
+        str(env_file),
+    ]
+    cli_verification = CliRunner().invoke(app, verify_arguments)
+    assert cli_verification.exit_code == 0, cli_verification.output
+    assert json.loads(cli_verification.stdout)["verified"] is True
 
     forged_gate = output_directory / f"phase6-gate-{hashlib.sha256(b'{}').hexdigest()}.json"
     forged_gate.write_bytes(b"{}")
@@ -530,6 +543,8 @@ def test_finalize_phase6_refreshes_health_after_workflow_completion(
             workflow_store=store,
             expected_state_sha256=state.sha256,
         )
+    cli_rejection = CliRunner().invoke(app, verify_arguments)
+    assert cli_rejection.exit_code == 2
 
 
 def test_daily_report_verifier_rejects_rehashed_summary_not_matching_sources(

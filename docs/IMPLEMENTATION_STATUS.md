@@ -112,7 +112,7 @@ reproducible through `uv.lock`.
 | Retry-safe paper reconciliation revisions | Complete | content-addressed broker observations allow later clean revisions to resolve earlier breaks |
 | Unified daily workflow preparation | Complete | one command prepares rolling Phase 6 controls and queues the self-refreshing eight-stage spec |
 | Secret-free operational readiness audit | Complete | credentials, canonical hosts, live clocks, NBBO entitlement, roots, heartbeat, calendar, bootstrap evidence |
-| Automatic post-completion Phase 6 finalization | Complete | worker refreshes health and verdict after terminal state; marker acceptance independently reproduces health, controls, daily sources, and gate bytes |
+| Automatic post-completion Phase 6 finalization | Complete | worker refreshes health and verdict after terminal state; marker acceptance and audit CLI independently reproduce health, controls, daily sources, and gate bytes |
 | External env-file propagation to stage subprocesses | Complete | child-only merged environment; process precedence; no secret arguments or mutation |
 | Expiring pre-open execution boundary | Complete | first four stages stop permanently at entry expiry instead of submitting or retrying late |
 | Durable operator-attention evidence | Complete | invalid specs and expired windows emit idempotent content-addressed attention records |

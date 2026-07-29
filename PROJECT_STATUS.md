@@ -69,6 +69,8 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   reproducing its workflow health, rolling controls, daily source evidence,
   and terminal gate bytes; hash-consistent arbitrary JSON cannot suppress
   finalization.
+- Operators and reviewers can run the same fail-closed semantic verification
+  directly against any content-addressed finalization bundle.
 - Paper submission is locked to Alpaca's paper host. Circuit breakers and
   reconciliation failures halt new orders.
 

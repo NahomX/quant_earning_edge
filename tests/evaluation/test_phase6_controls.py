@@ -32,7 +32,13 @@ from quant_earning_edge.evaluation import (
     Phase6DailyReportVerifier,
     ReplaySessionAggregator,
 )
-from quant_earning_edge.live import BrokerOrder, PaperOrderReconciler
+from quant_earning_edge.live import (
+    BrokerOrder,
+    PaperBatchSubmission,
+    PaperOrderReconciler,
+    PaperSubmission,
+)
+from quant_earning_edge.monitoring import CircuitBreakerDecision
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
     DailyWorkflowState,
@@ -109,6 +115,29 @@ def _no_trade_replay_sources(
         )
     )
     frozen.write(frozen_path)
+    breaker = CircuitBreakerDecision(
+        schema_version=1,
+        session_date=session_date,
+        evaluated_at=datetime.now(UTC),
+        observation_dates=(session_date,),
+        replay_source_dates=(session_date,),
+        halt_new_orders=False,
+        triggered_breakers=(),
+        replay_loss_fraction=0.0,
+        consecutive_low_fill_sessions=0,
+        polygon_freshness_minutes=0.0,
+        alpaca_freshness_minutes=0.0,
+        reconciliation_break_age_sessions=None,
+    )
+    breaker_path = daily / "breaker-decision.json"
+    breaker.write(breaker_path)
+    submission_path = daily / "paper-batch-submission.json"
+    PaperBatchSubmission(
+        schema_version=1,
+        session_date=session_date,
+        breaker_decision_sha256=breaker.sha256,
+        submissions=(),
+    ).write(submission_path)
     manifest_path = daily / "replay-materialization-manifest.json"
     loaded_strategy = load_strategy_config(strategy)
     manifest = ReplaySpecMaterializer().materialize(
@@ -149,6 +178,8 @@ def _no_trade_replay_sources(
     return {
         "strategy": strategy,
         "frozen": frozen_path,
+        "breaker": breaker_path,
+        "submission": submission_path,
         "manifest": manifest_path,
         "index": index_path,
         "reconciliation": reconciliation_path,
@@ -164,7 +195,7 @@ def _complete_source_workflow(
     sources: dict[str, Path],
     reconciliation_succeeds: bool = True,
 ) -> DailyWorkflowState:
-    def handler(
+    def handler(  # noqa: PLR0911 - explicit workflow-stage fixture.
         _: DailyWorkflowState,
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
@@ -172,6 +203,10 @@ def _complete_source_workflow(
             return (sources["strategy"],)
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (sources["frozen"],)
+        if stage is WorkflowStage.EVALUATE_BREAKERS:
+            return (sources["breaker"],)
+        if stage is WorkflowStage.SUBMIT_PAPER_ORDERS:
+            return (sources["submission"],)
         if stage is WorkflowStage.REPLAY_ORDERS:
             return (sources["manifest"], sources["index"], sources["report"])
         if stage is WorkflowStage.RECONCILE_SESSION:
@@ -192,12 +227,13 @@ def _complete_source_workflow(
     ).run_until_idle(trade_date=session_date)
 
 
-def _trade_source_workflow(
+def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixture.
     *,
     store: DailyWorkflowStore,
     tmp_path: Path,
     session_date: date,
     capture_broker_observations: bool = True,
+    capture_submission_observations: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -243,6 +279,22 @@ def _trade_source_workflow(
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
     frozen_path = daily / "frozen-daily-orders.json"
     frozen.write(frozen_path)
+    breaker = CircuitBreakerDecision(
+        schema_version=1,
+        session_date=session_date,
+        evaluated_at=entry_at - timedelta(minutes=5),
+        observation_dates=(session_date,),
+        replay_source_dates=(session_date,),
+        halt_new_orders=False,
+        triggered_breakers=(),
+        replay_loss_fraction=0.0,
+        consecutive_low_fill_sessions=0,
+        polygon_freshness_minutes=0.0,
+        alpaca_freshness_minutes=0.0,
+        reconciliation_break_age_sessions=None,
+    )
+    breaker_path = daily / "breaker-decision.json"
+    breaker.write(breaker_path)
     quote_artifact = SilverWriter(LakehouseLayout(tmp_path / "market-lake")).write_stock_quotes(
         (
             StockQuote(
@@ -342,6 +394,30 @@ def _trade_source_workflow(
             encoding="utf-8",
         )
         broker_observation_paths.append(observation_path)
+    request_by_id = {item.client_order_id: item for item in frozen.paper_batch.orders}
+    paper_submission = PaperBatchSubmission(
+        schema_version=1,
+        session_date=session_date,
+        breaker_decision_sha256=breaker.sha256,
+        submissions=tuple(
+            PaperSubmission(
+                schema_version=1,
+                request=request_by_id[item.client_order_id],
+                broker_order=item,
+                provider_request_id=None,
+                idempotent_reuse=False,
+            )
+            for item in broker_orders
+        ),
+    )
+    paper_submission_path = daily / "paper-batch-submission.json"
+    paper_submission.write(paper_submission_path)
+    submit_observation_paths = []
+    for path in broker_observation_paths:
+        submit_path = daily / "submission-observations" / path.name
+        submit_path.parent.mkdir(parents=True, exist_ok=True)
+        submit_path.write_bytes(path.read_bytes())
+        submit_observation_paths.append(submit_path)
     reconciliation = PaperOrderReconciler().evaluate(
         evidence=evidence,
         broker_orders=broker_orders,
@@ -351,7 +427,7 @@ def _trade_source_workflow(
     reconciliation_path = daily / f"paper-reconciliation-{reconciliation.sha256}.json"
     reconciliation.write(reconciliation_path)
 
-    def handler(
+    def handler(  # noqa: PLR0911 - explicit workflow-stage fixture.
         _: DailyWorkflowState,
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
@@ -359,6 +435,14 @@ def _trade_source_workflow(
             return (strategy_path,)
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (frozen_path,)
+        if stage is WorkflowStage.EVALUATE_BREAKERS:
+            return (breaker_path,)
+        if stage is WorkflowStage.SUBMIT_PAPER_ORDERS:
+            return (
+                (paper_submission_path, *submit_observation_paths)
+                if capture_submission_observations
+                else (paper_submission_path,)
+            )
         if stage is WorkflowStage.CAPTURE_MARKET_EVENTS:
             return (quote_artifact.path,)
         if stage is WorkflowStage.REPLAY_ORDERS:
@@ -650,6 +734,25 @@ def test_daily_report_verifier_requires_raw_broker_observations(
     )
 
     with pytest.raises(ValueError, match="lacks exact raw broker observations"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_raw_submission_observations(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_submission_observations=False,
+    )
+
+    with pytest.raises(ValueError, match="submission lacks exact raw broker observations"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

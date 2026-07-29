@@ -12,6 +12,7 @@ import pytest
 from quant_earning_edge.data.clients import ProviderRequestError
 from quant_earning_edge.live import (
     AlpacaPaperClient,
+    PaperBatchSubmission,
     PaperBatchSubmitter,
     PaperOrderBatchSpec,
 )
@@ -134,6 +135,7 @@ def test_batch_resumes_by_client_id_after_mid_batch_provider_failure(tmp_path: P
     output = tmp_path / "batch.json"
     batch.write(output)
     batch.write(output)
+    assert PaperBatchSubmission.load(output) == batch
     assert (
         json.loads(output.read_bytes())["breaker_decision_sha256"] == batch.breaker_decision_sha256
     )

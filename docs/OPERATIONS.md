@@ -949,6 +949,10 @@ If the process fails after some orders reach Alpaca, rerunning the same command
 verifies and reuses those client IDs before continuing. The batch artifact is
 written only after every planned order is accounted for. An empty `orders` list
 is valid and creates explicit no-trade evidence without calling the broker.
+The command also emits every canonical Bronze response path. The workflow
+captures those raw files; terminal verification requires the batch requests to
+equal the frozen plan, the batch breaker hash to equal the captured non-halted
+decision, and every stored broker order to reproduce from its raw response.
 
 After the close, construct a reconciliation spec with the replay evidence paths
 and Alpaca order resources, then run:

@@ -335,6 +335,7 @@ class DailyWorkflowSpecGenerator:
                             "--output",
                             str(paper_submission),
                         ),
+                        artifact_json_keys=("broker_observation_paths",),
                     ),
                 ),
                 output_files=(paper_submission,),

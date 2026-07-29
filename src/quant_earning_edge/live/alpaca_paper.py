@@ -231,7 +231,9 @@ class PaperBatchSubmission:
     def __post_init__(self) -> None:
         if self.schema_version != 1:
             raise ValueError("unsupported paper batch schema version")
-        if len(self.breaker_decision_sha256) != 64:
+        if len(self.breaker_decision_sha256) != 64 or any(
+            item not in "0123456789abcdef" for item in self.breaker_decision_sha256
+        ):
             raise ValueError("paper batch breaker digest must be SHA-256")
         client_ids = tuple(item.request.client_order_id for item in self.submissions)
         if client_ids != tuple(sorted(set(client_ids))):
@@ -276,6 +278,60 @@ class PaperBatchSubmission:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"paper-batch evidence collision at {output}") from None
+
+    @classmethod
+    def load(cls, path: Path) -> PaperBatchSubmission:
+        """Reload one strict canonical complete-session submission."""
+        try:
+            raw = json.loads(path.read_bytes())
+            batch = _PaperBatchSubmissionSpec.model_validate(raw).to_domain()
+        except (
+            json.JSONDecodeError,
+            OSError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as error:
+            raise ValueError(f"invalid paper batch submission: {path}") from error
+        if json.loads(batch.canonical_bytes) != raw:
+            raise ValueError("paper batch submission is not canonical")
+        return batch
+
+
+class _PaperSubmissionSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    request: PaperOrderRequest
+    broker_order: BrokerOrder
+    provider_request_id: str | None
+    idempotent_reuse: bool
+
+    def to_domain(self) -> PaperSubmission:
+        return PaperSubmission(
+            schema_version=self.schema_version,
+            request=self.request,
+            broker_order=self.broker_order,
+            provider_request_id=self.provider_request_id,
+            idempotent_reuse=self.idempotent_reuse,
+        )
+
+
+class _PaperBatchSubmissionSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    session_date: date
+    breaker_decision_sha256: str
+    submissions: tuple[_PaperSubmissionSpec, ...]
+
+    def to_domain(self) -> PaperBatchSubmission:
+        return PaperBatchSubmission(
+            schema_version=self.schema_version,
+            session_date=self.session_date,
+            breaker_decision_sha256=self.breaker_decision_sha256,
+            submissions=tuple(item.to_domain() for item in self.submissions),
+        )
 
 
 class PaperBatchSubmitter:

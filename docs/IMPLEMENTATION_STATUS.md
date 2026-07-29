@@ -80,7 +80,7 @@ reproducible through `uv.lock`.
 | Locked 90-session Phase 6 hard gate | Complete | independent order replay and daily-report reconstruction, required clean paper-reconciliation stage, Sharpe CI/config, fills, global slippage, uptime, ordered daily-report hashes, CLI |
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 | Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
-| Immutable paper submission/reconciliation evidence | Complete | CLI records, workflow-captured raw Alpaca observations, exact paper/replay reconstruction, non-gating divergence |
+| Immutable paper submission/reconciliation evidence | Complete | frozen requests and breaker-bound submission plus reconciliation independently checked against workflow-captured raw Alpaca observations; paper divergence remains non-gating |
 | Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts |
 | Fail-closed paper submission boundary | Complete | fresh non-halted breaker decision required before any broker request |
 | Restart-safe daily workflow state machine | Complete | ordered stages, leases, retries, hash-chained revisions, artifact verification |

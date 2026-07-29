@@ -2833,17 +2833,19 @@ def submit_paper_batch(
             base_url=environment.alpaca_trading_base_url,
             timeout=environment.http_timeout_seconds,
         ) as http_client:
-            batch = PaperBatchSubmitter(
-                AlpacaPaperClient(
-                    api_key_id=api_key_id,
-                    secret_key=secret_key,
-                    http_client=http_client,
-                    bronze_writer=BronzeWriter(layout),
-                )
-            ).submit(
+            client = AlpacaPaperClient(
+                api_key_id=api_key_id,
+                secret_key=secret_key,
+                http_client=http_client,
+                bronze_writer=BronzeWriter(layout),
+            )
+            batch = PaperBatchSubmitter(client).submit(
                 spec,
                 breaker_decision=decision,
                 evaluated_at=datetime.now(UTC),
+            )
+            broker_observation_paths = tuple(
+                item.path.resolve() for item in client.observation_artifacts
             )
         batch.write(output)
     except (OSError, ValidationError, ValueError, RuntimeError) as error:
@@ -2855,6 +2857,7 @@ def submit_paper_batch(
             "session_date": batch.session_date,
             "order_count": len(batch.submissions),
             "idempotent_reuse_count": sum(item.idempotent_reuse for item in batch.submissions),
+            "broker_observation_paths": [str(path) for path in broker_observation_paths],
         }
     )
 

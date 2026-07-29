@@ -22,6 +22,7 @@ from quant_earning_edge.evaluation.replay_session import (
 )
 from quant_earning_edge.live import (
     BrokerOrder,
+    PaperBatchSubmission,
     PaperOrderReconciler,
     PaperReconciliationReport,
 )
@@ -70,6 +71,7 @@ class Phase6DailyReportVerifier:
             raise ValueError("frozen orders and daily replay report dates differ")
         strategy_path = self._strategy_artifact(state=state, frozen=frozen)
         strategy = load_strategy_config(strategy_path)
+        self._verify_paper_submission(state=state, frozen=frozen)
         replay_stage = self._stage(state, WorkflowStage.REPLAY_ORDERS)
         manifest_path = self._unique_named_artifact(
             replay_stage,
@@ -205,6 +207,71 @@ class Phase6DailyReportVerifier:
         return evidence
 
     @staticmethod
+    def _verify_paper_submission(
+        *,
+        state: DailyWorkflowState,
+        frozen: FrozenDailyOrders,
+    ) -> None:
+        from quant_earning_edge.monitoring.breakers import (  # noqa: PLC0415
+            CircuitBreakerDecision,
+        )
+
+        breaker_stage = Phase6DailyReportVerifier._stage(
+            state,
+            WorkflowStage.EVALUATE_BREAKERS,
+        )
+        submit_stage = Phase6DailyReportVerifier._stage(
+            state,
+            WorkflowStage.SUBMIT_PAPER_ORDERS,
+        )
+        if (
+            breaker_stage.status is not StageStatus.SUCCEEDED
+            or submit_stage.status is not StageStatus.SUCCEEDED
+        ):
+            raise ValueError("paper submission controls are not complete")
+        breaker_path = Phase6DailyReportVerifier._unique_named_artifact(
+            breaker_stage,
+            "breaker-decision.json",
+        )
+        submission_path = Phase6DailyReportVerifier._unique_named_artifact(
+            submit_stage,
+            "paper-batch-submission.json",
+        )
+        breaker = CircuitBreakerDecision.load(breaker_path)
+        submission = PaperBatchSubmission.load(submission_path)
+        if breaker.halt_new_orders:
+            raise ValueError("paper submission used a halted breaker decision")
+        if (
+            breaker.session_date != frozen.trade_date
+            or submission.session_date != frozen.trade_date
+            or submission.breaker_decision_sha256 != breaker.sha256
+        ):
+            raise ValueError("paper submission date or breaker binding differs")
+        requests = {item.client_order_id: item for item in frozen.paper_batch.orders}
+        submitted = {item.request.client_order_id: item for item in submission.submissions}
+        if set(submitted) != set(requests):
+            raise ValueError("paper submission identities differ from frozen orders")
+        observation_paths = tuple(
+            Path(item.path).resolve()
+            for item in submit_stage.output_artifacts
+            if Path(item.path).suffix == ".json" and Path(item.path).resolve() != submission_path
+        )
+        if len(observation_paths) != len(submission.submissions):
+            raise ValueError("workflow paper submission lacks exact raw broker observations")
+        observed = {
+            order.client_order_id: order
+            for order in (
+                Phase6DailyReportVerifier._load_raw_broker_observation(path)
+                for path in observation_paths
+            )
+        }
+        if len(observed) != len(observation_paths) or set(observed) != set(requests):
+            raise ValueError("raw broker submission identities differ from frozen orders")
+        for order_id, record in submitted.items():
+            if record.request != requests[order_id] or record.broker_order != observed[order_id]:
+                raise ValueError("paper submission differs from frozen or raw broker evidence")
+
+    @staticmethod
     def _verify_paper_reconciliation(
         *,
         state: DailyWorkflowState,
@@ -254,29 +321,34 @@ class Phase6DailyReportVerifier:
         )
         if len(observation_paths) != len(report.orders):
             raise ValueError("workflow paper reconciliation lacks exact raw broker observations")
-        broker_orders = []
-        for path in observation_paths:
-            encoded = path.read_bytes()
-            raw = json.loads(encoded)
-            if (
-                json.dumps(
-                    raw,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-                != encoded
-            ):
-                raise ValueError("raw broker observation is not canonical")
-            broker_orders.append(BrokerOrder.model_validate(raw))
+        broker_orders = tuple(
+            Phase6DailyReportVerifier._load_raw_broker_observation(path)
+            for path in observation_paths
+        )
         reproduced = PaperOrderReconciler().evaluate(
             evidence=evidence,
-            broker_orders=tuple(broker_orders),
+            broker_orders=broker_orders,
             session_date=report.session_date,
             evaluated_at=report.evaluated_at,
         )
         if reproduced.canonical_bytes != report.canonical_bytes:
             raise ValueError("paper reconciliation differs from raw broker observations")
+
+    @staticmethod
+    def _load_raw_broker_observation(path: Path) -> BrokerOrder:
+        encoded = path.read_bytes()
+        raw = json.loads(encoded)
+        if (
+            json.dumps(
+                raw,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            != encoded
+        ):
+            raise ValueError("raw broker observation is not canonical")
+        return BrokerOrder.model_validate(raw)
 
     @staticmethod
     def _reproduce_order_evidence(

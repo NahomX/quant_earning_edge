@@ -33,9 +33,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 390 automated tests pass.
+- 392 automated tests pass.
 - Ruff formatting and lint pass.
-- Mypy strict checking passes across 98 source files.
+- Mypy strict checking passes across 99 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
@@ -63,7 +63,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   itself reproduce from captured probability-free live source data, the exact
   production-model evidence and booster, and feature artifacts independently
   regenerated from exact candidate/daily-bar/minute-bar/earnings inputs and
-  raw Polygon aggregate observations;
+  raw Polygon aggregate observations plus raw Finnhub earnings responses;
   compatibility-mode or hand-scored planning cannot enter terminal proof. The
   live source must independently reproduce from its candidate file,
   authoritative calendar, raw Alpaca paper-account response, raw Polygon

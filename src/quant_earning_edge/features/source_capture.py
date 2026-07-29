@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 import pyarrow.parquet as pq
 
 from quant_earning_edge.data.clients import PolygonClient
+from quant_earning_edge.data.earnings_source import (
+    EarningsSourceCapture,
+    EarningsSourceManifest,
+)
 from quant_earning_edge.data.silver import SilverWriter
 from quant_earning_edge.features.inputs import (
     DailyBarsFeatureLoader,
@@ -66,8 +70,10 @@ class FeatureSourceManifest:
             "feature_file",
             "source_files",
             "provider_observations",
+            "earnings_source_manifests",
+            "earnings_provider_observations",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 3:
             raise ValueError("feature source manifest schema mismatch")
         if (
             not isinstance(raw["feature_file"], dict)
@@ -84,26 +90,42 @@ class FeatureSourceManifest:
                 or not raw["provider_observations"][name]
                 for name in _PROVIDER_GROUPS
             )
+            or not isinstance(raw["earnings_source_manifests"], list)
+            or not raw["earnings_source_manifests"]
+            or not isinstance(raw["earnings_provider_observations"], list)
+            or not raw["earnings_provider_observations"]
         ):
             raise ValueError("feature source manifest collections are invalid")
         entries = (
             raw["feature_file"],
             *(entry for name in _INPUT_GROUPS for entry in raw["source_files"][name]),
             *(entry for name in _PROVIDER_GROUPS for entry in raw["provider_observations"][name]),
+            *raw["earnings_source_manifests"],
+            *raw["earnings_provider_observations"],
         )
         for entry in entries:
             _validate_entry(entry)
         identities = tuple(entry["path"] for entry in entries)
         if len(identities) != len(set(identities)):
             raise ValueError("feature source manifest paths are duplicated")
-        if any(
-            tuple(raw["source_files"][name])
-            != tuple(sorted(raw["source_files"][name], key=lambda item: item["path"]))
-            for name in _INPUT_GROUPS
-        ) or any(
-            tuple(raw["provider_observations"][name])
-            != tuple(sorted(raw["provider_observations"][name], key=lambda item: item["path"]))
-            for name in _PROVIDER_GROUPS
+        if (
+            any(
+                tuple(raw["source_files"][name])
+                != tuple(sorted(raw["source_files"][name], key=lambda item: item["path"]))
+                for name in _INPUT_GROUPS
+            )
+            or any(
+                tuple(raw["provider_observations"][name])
+                != tuple(sorted(raw["provider_observations"][name], key=lambda item: item["path"]))
+                for name in _PROVIDER_GROUPS
+            )
+            or any(
+                tuple(raw[name]) != tuple(sorted(raw[name], key=lambda item: item["path"]))
+                for name in (
+                    "earnings_source_manifests",
+                    "earnings_provider_observations",
+                )
+            )
         ):
             raise ValueError("feature source manifest inputs are not sorted")
         try:
@@ -147,6 +169,13 @@ class FeatureSourceManifest:
             entry for name in _PROVIDER_GROUPS for entry in self.raw["provider_observations"][name]
         )
 
+    @property
+    def earnings_lineage_entries(self) -> tuple[dict[str, str], ...]:
+        return (
+            *self.raw["earnings_source_manifests"],
+            *self.raw["earnings_provider_observations"],
+        )
+
     def feature_path(self, *, data_lake_root: Path) -> Path:
         return _resolve_entries(
             (self.raw["feature_file"],),
@@ -158,6 +187,12 @@ class FeatureSourceManifest:
 
     def provider_paths(self, *, data_lake_root: Path) -> tuple[Path, ...]:
         return _resolve_entries(self.provider_entries, data_lake_root=data_lake_root)
+
+    def earnings_lineage_paths(self, *, data_lake_root: Path) -> tuple[Path, ...]:
+        return _resolve_entries(
+            self.earnings_lineage_entries,
+            data_lake_root=data_lake_root,
+        )
 
     def grouped_input_paths(
         self,
@@ -227,6 +262,21 @@ class FeatureSourceCapture:
             or not minute_observations
         ):
             raise ValueError("feature source provider observations are incomplete")
+        earnings_manifests = EarningsSourceCapture.find_for_files(
+            earnings_files,
+            data_lake_root=self._layout.root,
+        )
+        earnings_provider_paths = tuple(
+            sorted(
+                {
+                    path
+                    for manifest in earnings_manifests
+                    for path in manifest.provider_paths(
+                        data_lake_root=self._layout.root,
+                    )
+                }
+            )
+        )
         table = pq.ParquetFile(feature_file.path).read()  # type: ignore[no-untyped-call]
         rows = table.to_pylist()
         if (
@@ -239,7 +289,7 @@ class FeatureSourceCapture:
         ):
             raise ValueError("feature artifact differs from source metadata")
         raw = {
-            "schema_version": 2,
+            "schema_version": 3,
             "trade_date": trade_date.isoformat(),
             "asof_date": asof_date.isoformat(),
             "observed_at": observed_at.isoformat(),
@@ -255,6 +305,10 @@ class FeatureSourceCapture:
                 "daily_bar_observations": self._entries(item.path for item in daily_observations),
                 "minute_bar_observations": self._entries(item.path for item in minute_observations),
             },
+            "earnings_source_manifests": self._entries(
+                manifest.path for manifest in earnings_manifests
+            ),
+            "earnings_provider_observations": self._entries(earnings_provider_paths),
         }
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(encoded).hexdigest()
@@ -280,6 +334,7 @@ class FeatureSourceCapture:
             if manifest.feature_path(data_lake_root=data_lake_root) == feature_file.resolve():
                 manifest.input_paths(data_lake_root=data_lake_root)
                 manifest.provider_paths(data_lake_root=data_lake_root)
+                manifest.earnings_lineage_paths(data_lake_root=data_lake_root)
                 matches.append(manifest)
         if not matches:
             raise ValueError("feature file lacks retained source lineage")
@@ -307,6 +362,12 @@ class FeatureSourceCapture:
             trade_date=trade_date,
             daily_bar_files=daily_bar_files,
             minute_bar_files=minute_bar_files,
+        )
+        FeatureSourceCapture._reproduce_earnings_silver(
+            manifest,
+            data_lake_root=data_lake_root,
+            output_layout=output_layout,
+            earnings_files=earnings_files,
         )
         contexts = DailyBarsFeatureLoader().load(
             daily_bar_files,
@@ -395,6 +456,37 @@ class FeatureSourceCapture:
             minute_bar_files
         ):
             raise ValueError("feature Silver inputs differ from retained Polygon observations")
+
+    @staticmethod
+    def _reproduce_earnings_silver(
+        manifest: FeatureSourceManifest,
+        *,
+        data_lake_root: Path,
+        output_layout: LakehouseLayout,
+        earnings_files: tuple[Path, ...],
+    ) -> None:
+        lineage_paths = manifest.earnings_lineage_paths(data_lake_root=data_lake_root)
+        manifest_count = len(manifest.raw["earnings_source_manifests"])
+        source_manifests = tuple(
+            EarningsSourceManifest.load(path) for path in lineage_paths[:manifest_count]
+        )
+        retained_providers = set(lineage_paths[manifest_count:])
+        if {
+            path
+            for source in source_manifests
+            for path in source.provider_paths(data_lake_root=data_lake_root)
+        } != retained_providers or {
+            path
+            for source in source_manifests
+            for path in source.silver_paths(data_lake_root=data_lake_root)
+        } != set(earnings_files):
+            raise ValueError("feature earnings lineage differs from its Silver inputs")
+        for source in source_manifests:
+            EarningsSourceCapture.reproduce(
+                source,
+                data_lake_root=data_lake_root,
+                output_layout=output_layout,
+            )
 
     def _entries(self, paths: Iterable[Path]) -> list[dict[str, str]]:
         return [self._entry(path) for path in sorted(paths)]

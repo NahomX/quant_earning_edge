@@ -27,7 +27,9 @@ uv run qee ingest minute-bars `
 ```
 
 These commands write the raw response to bronze before writing validated,
-partitioned silver Parquet.
+partitioned silver Parquet. Earnings ingestion also writes a strict source
+manifest binding each Silver output to the exact retained Finnhub observations
+that reproduce it.
 
 The corporate-action command uses Polygon/Massive's current `/stocks/v1/splits`
 and `/stocks/v1/dividends` endpoints. Splits partition by execution date and
@@ -628,8 +630,9 @@ aggregated. The verifier first requires schema-v2 scored-planning evidence. It
 reloads the exact captured probability-free live source and production-model
 evidence/booster. Every long-form live feature file must carry a strict source
 manifest binding its candidate, daily-bar, premarket-minute, and earnings
-inputs plus the raw Polygon daily/minute aggregate pages. The verifier first
-regenerates the market Silver and then the feature Parquet byte-for-byte
+inputs plus the raw Polygon daily/minute aggregate pages and raw Finnhub
+earnings responses. The verifier first regenerates the market and earnings
+Silver and then the feature Parquet byte-for-byte
 before rerunning model inference and requiring the scored planning bytes to match. Compatibility
 planning without that production lineage is ineligible for terminal proof.
 Next, it locates the captured canonical planning input whose SHA-256 is embedded

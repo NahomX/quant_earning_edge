@@ -16,6 +16,7 @@ from quant_earning_edge.data import (
     BronzeWriter,
     DuckDBStore,
     EarningsIngestor,
+    EarningsSourceCapture,
     LakehouseLayout,
     SilverWriter,
 )
@@ -142,6 +143,7 @@ def test_earnings_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> 
         result = EarningsIngestor(
             client=client,
             silver_writer=SilverWriter(layout),
+            source_capture=EarningsSourceCapture(layout),
         ).ingest(
             start_date=date(2026, 7, 28),
             end_date=date(2026, 7, 28),
@@ -150,6 +152,7 @@ def test_earnings_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> 
 
     assert result.event_count == 1
     assert len(result.silver_artifacts) == 1
+    assert result.source_manifest is not None
     assert len(list((tmp_path / "bronze").rglob("*.json"))) == 1
     silver = pq.read_table(  # type: ignore[no-untyped-call]
         result.silver_artifacts[0].path

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from datetime import date, datetime
+    from datetime import date
+    from pathlib import Path
 
     from quant_earning_edge.data.clients.finnhub import FinnhubClient
     from quant_earning_edge.data.clients.polygon import PolygonClient
+    from quant_earning_edge.data.earnings_source import EarningsSourceCapture
     from quant_earning_edge.data.silver import SilverArtifact, SilverWriter
 
 
@@ -21,6 +24,7 @@ class EarningsIngestionResult:
     end_date: date
     event_count: int
     silver_artifacts: tuple[SilverArtifact, ...]
+    source_manifest: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -62,9 +66,16 @@ class MarketEventsIngestionResult:
 class EarningsIngestor:
     """Fetch validated events and persist them to the silver tier."""
 
-    def __init__(self, *, client: FinnhubClient, silver_writer: SilverWriter) -> None:
+    def __init__(
+        self,
+        *,
+        client: FinnhubClient,
+        silver_writer: SilverWriter,
+        source_capture: EarningsSourceCapture | None = None,
+    ) -> None:
         self._client = client
         self._silver_writer = silver_writer
+        self._source_capture = source_capture
 
     def ingest(
         self,
@@ -74,20 +85,36 @@ class EarningsIngestor:
         ingested_at: datetime | None = None,
     ) -> EarningsIngestionResult:
         """Ingest an inclusive date range and return its durable artifacts."""
+        observation_start = len(self._client.earnings_observation_artifacts)
+        effective_ingested_at = ingested_at or datetime.now(UTC)
         events = self._client.earnings_calendar(
             start_date=start_date,
             end_date=end_date,
         )
         artifacts = self._silver_writer.write_earnings(
             events,
-            ingested_at=ingested_at,
+            ingested_at=effective_ingested_at,
             empty_partition_date=end_date,
+        )
+        source_manifest = (
+            self._source_capture.write(
+                start_date=start_date,
+                end_date=end_date,
+                ingested_at=effective_ingested_at,
+                silver_files=artifacts,
+                provider_observations=self._client.earnings_observation_artifacts[
+                    observation_start:
+                ],
+            )
+            if self._source_capture is not None
+            else None
         )
         return EarningsIngestionResult(
             start_date=start_date,
             end_date=end_date,
             event_count=len(events),
             silver_artifacts=artifacts,
+            source_manifest=(source_manifest.path if source_manifest is not None else None),
         )
 
 

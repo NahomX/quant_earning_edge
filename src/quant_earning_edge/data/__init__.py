@@ -13,6 +13,7 @@ from quant_earning_edge.data.backfill import (
 from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 from quant_earning_edge.data.calendar import SessionFile, SessionFileStore
 from quant_earning_edge.data.calendar_source import CalendarSourceCapture, CalendarSourceManifest
+from quant_earning_edge.data.earnings_source import EarningsSourceCapture, EarningsSourceManifest
 from quant_earning_edge.data.frozen_market_events import (
     FrozenMarketEventArtifact,
     FrozenMarketEventsIngestor,
@@ -80,6 +81,8 @@ __all__ = [
     "DuckDBStore",
     "EarningsIngestionResult",
     "EarningsIngestor",
+    "EarningsSourceCapture",
+    "EarningsSourceManifest",
     "FrozenMarketEventArtifact",
     "FrozenMarketEventsIngestor",
     "FrozenMarketEventsManifest",

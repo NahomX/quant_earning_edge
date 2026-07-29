@@ -14,6 +14,7 @@ from quant_earning_edge.data import (
     CalendarSourceCapture,
     CorporateActionsIngestor,
     EarningsIngestor,
+    EarningsSourceCapture,
     SessionFileStore,
     SilverWriter,
 )
@@ -215,6 +216,7 @@ class DailyInputPreparer:
         earnings = EarningsIngestor(
             client=self._finnhub,
             silver_writer=SilverWriter(self._layout),
+            source_capture=EarningsSourceCapture(self._layout),
         ).ingest(
             start_date=prior_date,
             end_date=trade_date,

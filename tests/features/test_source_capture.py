@@ -10,7 +10,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from quant_earning_edge.data import BronzeWriter, LakehouseLayout, SilverWriter
+from quant_earning_edge.data import (
+    BronzeWriter,
+    EarningsSourceCapture,
+    LakehouseLayout,
+    SilverWriter,
+)
 from quant_earning_edge.data.clients import EarningsEvent, EquityBar, MinuteBar
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
@@ -121,21 +126,36 @@ def _fixture(tmp_path: Path) -> tuple[FeatureSourceManifest, Path]:
             received_at=OBSERVED_AT,
         ),
     )
+    earnings_raw = {
+        "earningsCalendar": [
+            {
+                "date": (ASOF_DATE - timedelta(days=70)).isoformat(),
+                "symbol": "AAA",
+                "hour": "amc",
+                "year": 2026,
+                "quarter": 1,
+                "epsActual": 1.2,
+                "epsEstimate": 1.0,
+            }
+        ]
+    }
     earnings = writer.write_earnings(
-        (
-            EarningsEvent.model_validate(
-                {
-                    "date": ASOF_DATE - timedelta(days=70),
-                    "symbol": "AAA",
-                    "hour": "amc",
-                    "year": 2026,
-                    "quarter": 1,
-                    "epsActual": 1.2,
-                    "epsEstimate": 1.0,
-                }
-            ),
-        ),
+        (EarningsEvent.model_validate(earnings_raw["earningsCalendar"][0]),),
         ingested_at=OBSERVED_AT,
+    )
+    earnings_observation = bronze.write_json(
+        earnings_raw,
+        source="finnhub",
+        dataset="earnings-calendar",
+        event_date=ASOF_DATE - timedelta(days=70),
+        received_at=OBSERVED_AT,
+    )
+    EarningsSourceCapture(layout).write(
+        start_date=ASOF_DATE - timedelta(days=70),
+        end_date=ASOF_DATE - timedelta(days=70),
+        ingested_at=OBSERVED_AT,
+        silver_files=earnings,
+        provider_observations=(earnings_observation,),
     )
     candidate = layout.root / "gold" / "event-candidates" / "candidate.parquet"
     candidate.parent.mkdir(parents=True)

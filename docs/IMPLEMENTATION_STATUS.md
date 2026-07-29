@@ -23,6 +23,7 @@ reproducible through `uv.lock`.
 | Polygon aggregate-bars client and pagination | Complete | `data/clients/polygon.py`, contract tests |
 | Polygon pre-market minute aggregates | Complete | adjusted minute client/silver schema/cutoff tests |
 | Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
+| Provider-source earnings reconstruction | Complete | every production/CLI Finnhub ingestion emits a strict raw-to-Silver manifest; historical live-feature inputs require unique manifest coverage and byte-exact reproduction |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
 | US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
 | Resumable historical backfill tooling | Complete | `data/backfill.py`, resume tests |
@@ -96,7 +97,7 @@ reproducible through `uv.lock`.
 | Persistent workflow inbox worker | Complete | continuous scan/resume, cycle heartbeats, invalid-spec isolation, CLI |
 | Continuous next-session proof queue | Complete | one deployment spec, authoritative calendar order, immutable input discovery, proof-start staging, replay-gated advancement |
 | Provider-backed daily input preparation | Complete | T-1 universe/events, explicit empty-event evidence, candidate bar history, causal pre-open minute features, automatic queue handoff |
-| Source-bound live feature regeneration | Complete | strict candidate/daily-bar/minute-bar/earnings lineage plus raw Polygon aggregate pages; byte-exact market Silver and feature rebuild; queue and terminal Phase 6 require captured causal inputs |
+| Source-bound live feature regeneration | Complete | strict candidate/daily-bar/minute-bar/earnings lineage plus raw Polygon aggregate pages and Finnhub earnings responses; byte-exact market/earnings Silver and feature rebuild; queue and terminal Phase 6 require captured causal inputs |
 | Worker deployment packaging | Complete | hardened restarting systemd unit, self-restarting Windows supervisor, deployment asset tests |
 | Workflow-backed Phase 6 uptime gate | Complete | exact calendar/range binding; terminal reconstruction from append-only state chains and captured artifacts; scheduled intact completions only |
 | Silver-to-replay specification materialization | Complete | frozen orders/snapshots, source hashes, interval filtering audits, CLI |

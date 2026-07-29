@@ -301,6 +301,16 @@ class Phase6DailyReportVerifier:
                 )
             ):
                 raise ValueError("feature generation lacks captured provider observations")
+            earnings_lineage_paths = manifest.earnings_lineage_paths(data_lake_root=source_root)
+            if any(
+                path not in paths_by_sha.get(entry["sha256"], [])
+                for path, entry in zip(
+                    earnings_lineage_paths,
+                    manifest.earnings_lineage_entries,
+                    strict=True,
+                )
+            ):
+                raise ValueError("feature generation lacks captured Finnhub lineage")
             with TemporaryDirectory(prefix="qee-feature-reconstruction-") as temporary:
                 FeatureSourceCapture.reproduce(
                     manifest,

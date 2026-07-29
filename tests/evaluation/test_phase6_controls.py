@@ -23,6 +23,7 @@ from quant_earning_edge.cli import app
 from quant_earning_edge.data import (
     BronzeWriter,
     CalendarSourceCapture,
+    EarningsSourceCapture,
     LakehouseLayout,
     ReplayEvidenceIndex,
     ReplayManifestRunner,
@@ -160,7 +161,7 @@ def _write_scored_planning(
     )
 
 
-def _write_live_source_capture(
+def _write_live_source_capture(  # noqa: PLR0915 - complete source fixture.
     daily: Path,
     *,
     trade_date: date,
@@ -414,6 +415,13 @@ def _write_live_source_capture(
         dividend_files=dividends,
         earnings_observations=earnings_observations,
         corporate_action_observations=action_observations,
+    )
+    EarningsSourceCapture(candidate_layout).write(
+        start_date=prior_date,
+        end_date=trade_date,
+        ingested_at=captured_at,
+        silver_files=earnings,
+        provider_observations=earnings_observations,
     )
     candidate = EventCandidateJob(candidate_layout).run(
         trade_date=trade_date,
@@ -1101,6 +1109,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         feature_source.path,
         *feature_source.input_paths(data_lake_root=feature_layout.root),
         *feature_source.provider_paths(data_lake_root=feature_layout.root),
+        *feature_source.earnings_lineage_paths(data_lake_root=feature_layout.root),
     )
     planning, planning_sources, planning_evidence_path = _write_scored_planning(
         daily,

@@ -38,6 +38,7 @@ from quant_earning_edge.data import (
     CorporateActionsIngestor,
     DuckDBStore,
     EarningsIngestor,
+    EarningsSourceCapture,
     FrozenMarketEventsIngestor,
     FrozenMarketEventsManifest,
     LakehouseLayout,
@@ -3663,6 +3664,9 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                         *manifest.provider_paths(
                             data_lake_root=environment.data_lake_root,
                         ),
+                        *manifest.earnings_lineage_paths(
+                            data_lake_root=environment.data_lake_root,
+                        ),
                     )
                 )
             )
@@ -4399,22 +4403,30 @@ def ingest_earnings(
     start_date = _parse_date(start, option="--start")
     end_date = _parse_date(end, option="--end")
     layout = LakehouseLayout(environment.data_lake_root)
+    ingested_at = datetime.now(UTC)
     with httpx.Client(
         base_url=environment.finnhub_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
+        client = FinnhubClient(
+            api_key=api_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        )
         result = EarningsIngestor(
-            client=FinnhubClient(
-                api_key=api_key,
-                http_client=http_client,
-                bronze_writer=BronzeWriter(layout),
-            ),
+            client=client,
             silver_writer=SilverWriter(layout),
-        ).ingest(start_date=start_date, end_date=end_date)
+            source_capture=EarningsSourceCapture(layout),
+        ).ingest(
+            start_date=start_date,
+            end_date=end_date,
+            ingested_at=ingested_at,
+        )
     _echo_json(
         {
             "event_count": result.event_count,
             "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
+            "source_manifest": str(result.source_manifest),
         }
     )
 

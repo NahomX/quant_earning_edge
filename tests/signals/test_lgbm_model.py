@@ -35,6 +35,7 @@ def _dataset(path: Path) -> None:
                 "asof_date": session,
                 "horizon_end_date": session + timedelta(days=5),
                 "forward_1d_close": label_sign * 0.01,
+                "forward_1d_open_to_close": label_sign * 0.01,
             }
             row.update(
                 {

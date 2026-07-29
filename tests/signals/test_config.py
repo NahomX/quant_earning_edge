@@ -22,6 +22,7 @@ def test_committed_strategy_config_matches_registered_features() -> None:
     assert set(config.features) == {item.name for item in FEATURE_REGISTRY.values()}
     assert config.walkforward.embargo_days >= 5
     assert config.model.hyperparam_search.n_trials <= 200
+    assert config.label.column_name == "forward_1d_open_to_close"
 
 
 def test_unknown_feature_is_rejected(tmp_path: Path) -> None:

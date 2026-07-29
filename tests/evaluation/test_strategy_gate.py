@@ -140,7 +140,7 @@ def _walkforward_run(predictions: tuple[OosPrediction, ...]) -> WalkForwardModel
         plan_sha256="a" * 64,
         dataset_sha256=("b" * 64,),
         feature_names=("signal",),
-        label_name="forward_1d_close",
+        label_name="forward_1d_open_to_close",
         threshold=0.0,
         seed=20260427,
         hyperparameter_study_sha256="c" * 64,

@@ -1107,7 +1107,7 @@ def tune_walkforward_model(
         plan = WalkForwardPlanner.load(split_plan)
         search = OptunaLightgbmSearch(
             feature_names=config.features,
-            label_name="forward_1d_close",
+            label_name=config.label.column_name,
             threshold=config.label.threshold,
             seed=config.seed,
             early_stopping_rounds=config.model.early_stopping_rounds,
@@ -1176,7 +1176,7 @@ def train_walkforward_model(
             dataset_files=dataset_files,
             plan=plan,
             feature_names=config.features,
-            label_name="forward_1d_close",
+            label_name=config.label.column_name,
             threshold=config.label.threshold,
             seed=config.seed,
             top_k=config.portfolio.top_k,
@@ -1184,7 +1184,7 @@ def train_walkforward_model(
         )
         trainer = LightgbmWalkForwardTrainer(
             feature_names=config.features,
-            label_name="forward_1d_close",
+            label_name=config.label.column_name,
             threshold=config.label.threshold,
             seed=config.seed,
             early_stopping_rounds=config.model.early_stopping_rounds,
@@ -1270,7 +1270,7 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
             dataset_files=dataset_files,
             plan=plan,
             feature_names=config.features,
-            label_name="forward_1d_close",
+            label_name=config.label.column_name,
             threshold=config.label.threshold,
             seed=config.seed,
             top_k=config.portfolio.top_k,
@@ -1280,7 +1280,7 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
             raise ValueError("Phase 4 gate differs from the selected Optuna study")
         trainer = ProductionModelTrainer(
             feature_names=config.features,
-            label_name="forward_1d_close",
+            label_name=config.label.column_name,
             threshold=config.label.threshold,
             seed=config.seed,
             early_stopping_rounds=config.model.early_stopping_rounds,
@@ -1582,7 +1582,7 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
             raise ValueError("walk-forward run lacks an Optuna study binding")
         if (
             model_run.feature_names != config.features
-            or model_run.label_name != "forward_1d_close"
+            or model_run.label_name != config.label.column_name
             or model_run.threshold != config.label.threshold
             or model_run.seed != config.seed
         ):
@@ -3297,9 +3297,14 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 evidence_path=model_evidence,
                 model_path=model_file,
             )
-            if model.feature_names != strategy.features:
+            if (
+                model.feature_names != strategy.features
+                or model.label_name != strategy.label.column_name
+                or model.threshold != strategy.label.threshold
+                or model.seed != strategy.seed
+            ):
                 raise ValueError(
-                    "production model features differ from the workflow strategy config"
+                    "production model contract differs from the workflow strategy config"
                 )
             scored = LivePlanningAssembler().assemble(
                 source=source,
@@ -3330,9 +3335,14 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 evidence_path=model_evidence,
                 model_path=model_file,
             )
-            if model.feature_names != strategy.features:
+            if (
+                model.feature_names != strategy.features
+                or model.label_name != strategy.label.column_name
+                or model.threshold != strategy.label.threshold
+                or model.seed != strategy.seed
+            ):
                 raise ValueError(
-                    "production model features differ from the workflow strategy config"
+                    "production model contract differs from the workflow strategy config"
                 )
             candidate_symbols = LiveSourceCaptureAssembler.candidate_symbols(candidate_file)
             if candidate_symbols and not feature_files:

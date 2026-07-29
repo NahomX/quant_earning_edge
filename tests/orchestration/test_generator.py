@@ -405,7 +405,7 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
         row: dict[str, object] = {
             "asof_date": first + timedelta(days=index),
             "horizon_end_date": first + timedelta(days=index + 2),
-            "forward_1d_close": sign * 0.01,
+            "forward_1d_open_to_close": sign * 0.01,
         }
         row.update({name: sign + offset / 100 for offset, name in enumerate(strategy.features)})
         training_rows.append(row)
@@ -415,6 +415,7 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
     )
     model = ProductionModelTrainer(
         feature_names=strategy.features,
+        label_name=strategy.label.column_name,
         threshold=strategy.label.threshold,
         seed=strategy.seed,
         early_stopping_rounds=10,

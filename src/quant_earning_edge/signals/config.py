@@ -40,8 +40,13 @@ class EventSpec(StrictModel):
 
 
 class LabelSpec(StrictModel):
-    horizon: Literal["d1_close"]
+    horizon: Literal["d1_open_to_close"]
     threshold: float
+
+    @property
+    def column_name(self) -> Literal["forward_1d_open_to_close"]:
+        """Return the training target aligned with the executed holding window."""
+        return "forward_1d_open_to_close"
 
 
 class WalkForwardSpec(StrictModel):

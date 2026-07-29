@@ -180,8 +180,13 @@ class NextWorkflowQueuer:
         model_age_at_end = (deployment.proof_end - model.training_cutoff).days
         if model_age_at_end > deployment.maximum_model_age_calendar_days:
             raise ValueError("workflow loop model will be stale before proof end")
-        if model.feature_names != strategy.features:
-            raise ValueError("workflow loop model features differ from strategy config")
+        if (
+            model.feature_names != strategy.features
+            or model.label_name != strategy.label.column_name
+            or model.threshold != strategy.label.threshold
+            or model.seed != strategy.seed
+        ):
+            raise ValueError("workflow loop model contract differs from strategy config")
         now = self._aware_now()
 
         for index, session in enumerate(sessions):

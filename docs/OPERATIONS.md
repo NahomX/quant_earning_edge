@@ -302,6 +302,11 @@ with the split plan. The immutable study artifact records every completed or
 pruned trial, package versions, complete training contract, winner, selected
 parameters, and their hashes. Training rejects a study from different data,
 plan, feature order, label, threshold, seed, top-K, or trial count.
+For `earnings_v1`, the strategy config selects
+`forward_1d_open_to_close`: the next session's adjusted close divided by that
+same session's adjusted open, minus one. This exactly matches the event
+backtest's next-open to next-close holding window. The workflow and proof queue
+reject a model trained against a different label, even if its features match.
 
 Each fold reserves the latest 20% of its training sessions for early stopping
 and purges an additional five sessions plus overlapping label horizons before

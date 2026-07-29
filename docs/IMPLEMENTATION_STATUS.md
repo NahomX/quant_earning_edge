@@ -40,7 +40,7 @@ reproducible through `uv.lock`.
 | Typed feature registry with code hashes and PIT input boundary | Complete | `features/registry.py`, active property tests |
 | Baseline causal feature set | 16 scalar features complete | price, gap, Kalman volume, momentum, and earnings-event features |
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
-| Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, explicit-offset tests |
+| Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, including next-session open-to-close target and explicit-offset tests |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
 | Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
@@ -55,7 +55,7 @@ reproducible through `uv.lock`.
 | Fold-level walk-forward gate evidence | Complete | ordered OOS folds and explicit 75% positive-Sharpe gate |
 | Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
 | Fractional-Kelly portfolio constructor | Complete | causal 60-trade history, integer shares, all hard caps |
-| Strict earnings-v1 strategy configuration | Complete | registry feature match and cross-field risk/cost validation |
+| Strict earnings-v1 strategy configuration | Complete | registry feature match, next-open-to-next-close target alignment, and cross-field risk/cost validation |
 | Deterministic nested Optuna search | Complete | seeded TPE, median pruning, resumable SQLite, mean purged-validation Sharpe, 200-trial cap |
 | Immutable hyperparameter-selection evidence | Complete | full trial ledger, exact data/plan/config binding, canonical winner and parameter hashes |
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, model hashes |

@@ -20,6 +20,7 @@ from quant_earning_edge.signals import (
     LightgbmWalkForwardTrainer,
     WalkForwardModelRun,
 )
+from quant_earning_edge.signals.walkforward_source import WalkForwardModelSourceCapture
 
 
 def _dataset(path: Path) -> None:
@@ -233,3 +234,9 @@ def test_walk_forward_training_cli_persists_models(tmp_path: Path) -> None:
         payload["hyperparameter_study_sha256"] == json.loads(tune_result.stdout)["artifact_sha256"]
     )
     assert len(tuple(output.glob("fold-*.txt"))) == 2
+    source_manifest = WalkForwardModelSourceCapture.find_for_run(next(output.glob("run-*.json")))
+    assert Path(payload["source_manifest"]) == source_manifest.path
+    assert WalkForwardModelSourceCapture.reproduce(source_manifest).sha256 == payload["run_sha256"]
+    source_manifest.fold_model_paths()[0].write_text("changed", encoding="utf-8")
+    with pytest.raises(ValueError, match="missing or differs"):
+        WalkForwardModelSourceCapture.reproduce(source_manifest)

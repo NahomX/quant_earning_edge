@@ -65,6 +65,7 @@ reproducible through `uv.lock`.
 | Immutable hyperparameter-selection evidence | Complete | full trial ledger, exact data/plan/config binding, canonical winner and parameter hashes |
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, per-row information cutoffs, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
+| Source-bound walk-forward reconstruction | Complete | content-addressed datasets/split/strategy/study/run/fold lineage; independent exact OOS fold retraining; production refit requires the attested run |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 | OOS prediction-to-Phase 4 provenance | Complete | canonical run reload, exact probability checks, complete row coverage, shared Optuna/run hashes |
 | Reproducible historical Phase 4 assembly | Complete | exact OOS/candidate key join, premarket-aware decision cutoffs, authoritative sessions/bars, chained equity/outcomes, source-and-plan manifest, gate-time byte-exact rebuild |

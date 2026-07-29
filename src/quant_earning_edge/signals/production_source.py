@@ -19,6 +19,7 @@ from quant_earning_edge.signals.production_model import (
     ProductionModelArtifact,
     ProductionModelTrainer,
 )
+from quant_earning_edge.signals.walkforward_source import WalkForwardModelSourceCapture
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -163,7 +164,13 @@ class ProductionModelSourceCapture:
             report_path=phase4_gate,
             aggregation_spec=phase4_aggregation,
         )
-        phase4_sources = reproduction.source_paths[1:]
+        walkforward_source = WalkForwardModelSourceCapture.find_for_run(
+            reproduction.walkforward_run_path
+        )
+        phase4_sources = (
+            *reproduction.source_paths[1:],
+            *walkforward_source.lineage_paths,
+        )
         raw = {
             "schema_version": 1,
             "model_evidence": _entry(model_evidence),
@@ -219,8 +226,22 @@ class ProductionModelSourceCapture:
             model_path=model_file,
         )
         phase4_gate = manifest.phase4_gate_path()
-        if manifest.phase4_source_paths() != tuple(sorted(reproduction.source_paths[1:])):
+        walkforward_source = WalkForwardModelSourceCapture.find_for_run(
+            reproduction.walkforward_run_path
+        )
+        expected_phase4_sources = tuple(
+            sorted(
+                {
+                    *reproduction.source_paths[1:],
+                    *walkforward_source.lineage_paths,
+                }
+            )
+        )
+        if manifest.phase4_source_paths() != expected_phase4_sources:
             raise ValueError("production model Phase 4 lineage is incomplete")
+        walkforward_run = WalkForwardModelSourceCapture.reproduce(walkforward_source)
+        if walkforward_run.sha256 != reproduction.report.walkforward_run_sha256:
+            raise ValueError("production model Phase 4 gate differs from reconstructed OOS run")
         promotion = Phase4PromotionEvidence.load(phase4_gate)
         strategy = reproduction.strategy
         strategy_path = reproduction.strategy_path

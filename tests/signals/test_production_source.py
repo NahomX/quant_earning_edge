@@ -24,6 +24,7 @@ from quant_earning_edge.signals.production_source import (
     ProductionModelSourceCapture,
     ProductionModelSourceManifest,
 )
+from quant_earning_edge.signals.walkforward_source import WalkForwardModelSourceCapture
 
 if TYPE_CHECKING:
     from pytest import MonkeyPatch
@@ -81,6 +82,11 @@ def _fixture(
     split_plan.write_bytes(b"split")
     study_path = tmp_path / "study.json"
     study_path.write_bytes(b"study")
+    walkforward_run = tmp_path / "walkforward-run.json"
+    walkforward_run.write_bytes(b"run")
+    walkforward_manifest = tmp_path / "walkforward-source.json"
+    walkforward_manifest.write_bytes(b"source")
+    walkforward_sha256 = "a" * 64
     reproduction = type(
         "Reproduction",
         (),
@@ -88,6 +94,22 @@ def _fixture(
             "strategy": strategy,
             "strategy_path": strategy_path,
             "source_paths": (aggregation.resolve(), assembly.resolve(), strategy_path),
+            "walkforward_run_path": walkforward_run.resolve(),
+            "report": type(
+                "Report",
+                (),
+                {"walkforward_run_sha256": walkforward_sha256},
+            )(),
+        },
+    )()
+    walkforward_source = type(
+        "WalkForwardSource",
+        (),
+        {
+            "lineage_paths": (
+                walkforward_manifest.resolve(),
+                walkforward_run.resolve(),
+            )
         },
     )()
     promotion = type(
@@ -107,6 +129,16 @@ def _fixture(
         Phase4GateVerifier,
         "verify",
         staticmethod(lambda **_: reproduction),
+    )
+    monkeypatch.setattr(
+        WalkForwardModelSourceCapture,
+        "find_for_run",
+        staticmethod(lambda path: walkforward_source),
+    )
+    monkeypatch.setattr(
+        WalkForwardModelSourceCapture,
+        "reproduce",
+        staticmethod(lambda manifest: type("Run", (), {"sha256": walkforward_sha256})()),
     )
     monkeypatch.setattr(
         Phase4PromotionEvidence,

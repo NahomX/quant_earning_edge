@@ -35,7 +35,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 - 395 automated tests pass.
 - Ruff formatting and lint pass.
-- Mypy strict checking passes across 101 source files.
+- Mypy strict checking passes across 102 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
@@ -50,6 +50,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Production refit independently rebuilds those plans, replays the complete OOS
   fold map, and requires the supplied passing Phase 4 report to match the
   reconstructed metrics, cohorts, bootstrap intervals, and verdict bytes.
+- Every walk-forward training run binds its datasets, split plan, strategy,
+  Optuna study, fold boosters, and OOS evidence in a source manifest; all folds
+  must retrain byte-for-byte before that run can support production refit.
 - Each production refit emits a content-addressed source manifest binding the
   model/evidence, training datasets, reconstructed Phase 4 sources, split plan,
   and Optuna study; replaying it must reproduce the exact booster and evidence.

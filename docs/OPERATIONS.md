@@ -325,6 +325,12 @@ Every booster is stored separately under its model hash. Canonical run JSON
 records the plan and dataset hashes, exact feature order, threshold, seed,
 Optuna study and parameter hashes, LightGBM version, best iterations, partition
 counts, and OOS row keys.
+Training also emits `walkforward-source-<hash>.json`, binding the datasets,
+split plan, strategy, Optuna study, run evidence, and every fold booster.
+Writing the manifest independently retrains all folds and requires exact model,
+probability, attribution, and run-evidence equality. Production refit rejects a
+Phase 4 walk-forward run without exactly one intact adjacent source manifest
+and repeats that reconstruction as part of its own attestation.
 Each fold also records mean absolute SHAP contribution per feature, calculated
 only from that fold's OOS rows. The expected feature-plus-bias contribution
 shape is validated before evidence is written.

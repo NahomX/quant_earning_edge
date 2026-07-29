@@ -172,6 +172,7 @@ from quant_earning_edge.signals.production_source import (
     ProductionModelSourceCapture,
     ProductionModelSourceManifest,
 )
+from quant_earning_edge.signals.walkforward_source import WalkForwardModelSourceCapture
 from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
@@ -1210,11 +1211,20 @@ def train_walkforward_model(
         )
         run = trainer.run(dataset_files=dataset_files, plan=plan)
         trainer.write(run, output_dir)
+        source_manifest = WalkForwardModelSourceCapture.write(
+            output_directory=output_dir,
+            run=run,
+            dataset_files=dataset_files,
+            split_plan=split_plan,
+            strategy_config=strategy_config,
+            hyperparameter_study=hyperparameter_study,
+        )
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="model inputs") from error
     _echo_json(
         {
             "output_dir": str(output_dir.resolve()),
+            "source_manifest": str(source_manifest.path),
             "run_sha256": run.sha256,
             "plan_sha256": run.plan_sha256,
             "hyperparameter_study_sha256": run.hyperparameter_study_sha256,

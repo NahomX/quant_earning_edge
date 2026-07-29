@@ -624,13 +624,16 @@ authoritative sessions, and no reconciliation breaks. Paper-broker P&L is not
 an input.
 
 Every included daily replay report is independently reconstructed before it is
-aggregated. The verifier loads the workflow-captured frozen orders, strategy,
-normalized NBBO/trade files, materialization manifest, replay specs, evidence
-index, and order evidence. It rebuilds the replay specs from those market
-sources, re-runs every order into a temporary evidence set, requires the
-manifest, specs, index, and evidence hashes to match, then re-aggregates the
-daily report and requires its canonical bytes to match. Re-hashing a hand-edited
-daily P&L, fill, or slippage summary cannot enter the 90-session verdict.
+aggregated. The verifier first locates the one captured canonical planning input
+whose SHA-256 is embedded in the frozen orders, reruns the portfolio/order
+planner with the captured strategy, and requires the regenerated frozen bytes
+to match. It then loads normalized NBBO/trade files, the materialization
+manifest, replay specs, evidence index, and order evidence. It rebuilds the
+replay specs from those market sources, re-runs every order into a temporary
+evidence set, requires the manifest, specs, index, and evidence hashes to match,
+then re-aggregates the daily report and requires its canonical bytes to match.
+Re-hashing hand-edited orders, P&L, fills, or slippage cannot enter the
+90-session verdict.
 
 The verifier also requires that session's workflow
 `reconcile_session` stage to have succeeded. Its one captured,

@@ -77,7 +77,7 @@ reproducible through `uv.lock`.
 | Daily replay lifecycle reconciliation | Complete | exact entry/exit mapping, partial-fill breaks, commission/net P&L |
 | Immutable daily Phase 6 report and CLI | Complete | evidence hashes, fill/slippage percentiles, stable no-trade canonicalization, collision-safe JSON |
 | No-trade operational session evidence | Complete | explicit zero return, no invented orders or fill-rate denominator |
-| Locked 90-session Phase 6 hard gate | Complete | independent order replay and daily-report reconstruction, required clean paper-reconciliation stage, Sharpe CI/config, fills, global slippage, uptime, ordered daily-report hashes, CLI |
+| Locked 90-session Phase 6 hard gate | Complete | independent frozen-order, order-replay, and daily-report reconstruction; required clean paper-reconciliation stage; Sharpe CI/config, fills, global slippage, uptime, ordered daily-report hashes, CLI |
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 | Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
 | Immutable paper submission/reconciliation evidence | Complete | frozen requests and breaker-bound submission plus reconciliation independently checked against workflow-captured raw Alpaca observations; paper divergence remains non-gating |
@@ -95,7 +95,7 @@ reproducible through `uv.lock`.
 | Worker deployment packaging | Complete | hardened restarting systemd unit, self-restarting Windows supervisor, deployment asset tests |
 | Workflow-backed Phase 6 uptime gate | Complete | exact calendar/range binding; terminal reconstruction from append-only state chains and captured artifacts; scheduled intact completions only |
 | Silver-to-replay specification materialization | Complete | frozen orders/snapshots, source hashes, interval filtering audits, CLI |
-| Live-safe frozen daily order artifact | Complete | decision-only scores/sizing/NBBO; linked intended and paper order IDs |
+| Live-safe frozen daily order artifact | Complete | decision-only scores/sizing/NBBO; linked intended and paper order IDs; independent regeneration from the captured canonical planning input and strategy |
 | Frozen-order-to-replay linkage | Complete | strategy hash check, silver symbol grouping, direct causal materialization CLI |
 | Manifest-wide replay execution | Complete | canonical manifest reload, exact spec/hash verification, immutable evidence index, no-trade support |
 | Frozen-order broker reconciliation | Complete | exact replay/frozen field match, per-client-ID Alpaca fetch, automatic immutable report |

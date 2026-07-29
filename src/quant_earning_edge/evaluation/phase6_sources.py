@@ -55,7 +55,9 @@ class Phase6DailyReportVerifier:
     ) -> ReplaySessionReport:
         """Return a report only after byte-exact source reconstruction."""
         from quant_earning_edge.signals.config import load_strategy_config  # noqa: PLC0415
-        from quant_earning_edge.signals.live_orders import FrozenDailyOrders  # noqa: PLC0415
+        from quant_earning_edge.signals.live_orders import (  # noqa: PLC0415
+            FrozenDailyOrders,
+        )
 
         resolved_report = report_path.resolve()
         report = ReplaySessionReport.load(resolved_report)
@@ -73,6 +75,11 @@ class Phase6DailyReportVerifier:
             raise ValueError("frozen orders and daily replay report dates differ")
         strategy_path = self._strategy_artifact(state=state, frozen=frozen)
         strategy = load_strategy_config(strategy_path)
+        self._verify_frozen_orders(
+            state=state,
+            frozen=frozen,
+            strategy_path=strategy_path,
+        )
         self._verify_paper_submission(state=state, frozen=frozen)
         replay_stage = self._stage(state, WorkflowStage.REPLAY_ORDERS)
         manifest_path = self._unique_named_artifact(
@@ -124,6 +131,37 @@ class Phase6DailyReportVerifier:
                 f"daily replay report differs from independent reconstruction (fields={fields})"
             )
         return report
+
+    @staticmethod
+    def _verify_frozen_orders(
+        *,
+        state: DailyWorkflowState,
+        frozen: FrozenDailyOrders,
+        strategy_path: Path,
+    ) -> None:
+        from quant_earning_edge.signals.config import load_strategy_config  # noqa: PLC0415
+        from quant_earning_edge.signals.live_orders import (  # noqa: PLC0415
+            DailyOrderPlanningSpec,
+            LiveOrderPlanner,
+            strategy_file_sha256,
+        )
+
+        paths = Phase6DailyReportVerifier._artifact_paths_by_sha(state).get(
+            frozen.input_sha256,
+            [],
+        )
+        if len(paths) != 1:
+            raise ValueError("frozen daily orders must bind to exactly one captured planning input")
+        encoded = paths[0].read_bytes()
+        planning = DailyOrderPlanningSpec.model_validate_json(encoded)
+        if planning.canonical_bytes != encoded:
+            raise ValueError("captured daily planning input is not canonical")
+        reproduced = LiveOrderPlanner(
+            load_strategy_config(strategy_path),
+            strategy_sha256=strategy_file_sha256(strategy_path),
+        ).plan(planning)
+        if reproduced.canonical_bytes != frozen.canonical_bytes:
+            raise ValueError("frozen daily orders differ from captured planning input")
 
     @staticmethod
     def _stage(

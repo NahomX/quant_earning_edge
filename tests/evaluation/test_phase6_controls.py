@@ -191,56 +191,58 @@ def _no_trade_replay_sources(
 ) -> dict[str, Path]:
     strategy = Path("configs/strategies/earnings_v1.yaml").resolve()
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
+    planning_path = daily / "daily-order-planning.json"
     frozen_path = daily / "frozen-daily-orders.json"
+    planning = DailyOrderPlanningSpec(
+        trade_date=session_date,
+        decision_at=datetime(
+            session_date.year,
+            session_date.month,
+            session_date.day,
+            12,
+            tzinfo=UTC,
+        ),
+        equity=100_000,
+        candidates=(),
+        outcomes=(),
+        entry_submitted_at=datetime(
+            session_date.year,
+            session_date.month,
+            session_date.day,
+            14,
+            30,
+            tzinfo=UTC,
+        ),
+        entry_expires_at=datetime(
+            session_date.year,
+            session_date.month,
+            session_date.day,
+            14,
+            35,
+            tzinfo=UTC,
+        ),
+        exit_submitted_at=datetime(
+            session_date.year,
+            session_date.month,
+            session_date.day,
+            20,
+            tzinfo=UTC,
+        ),
+        exit_expires_at=datetime(
+            session_date.year,
+            session_date.month,
+            session_date.day,
+            20,
+            1,
+            tzinfo=UTC,
+        ),
+    )
+    planning_path.parent.mkdir(parents=True, exist_ok=True)
+    planning_path.write_bytes(planning.canonical_bytes)
     frozen = LiveOrderPlanner(
         load_strategy_config(strategy),
         strategy_sha256=strategy_file_sha256(strategy),
-    ).plan(
-        DailyOrderPlanningSpec(
-            trade_date=session_date,
-            decision_at=datetime(
-                session_date.year,
-                session_date.month,
-                session_date.day,
-                12,
-                tzinfo=UTC,
-            ),
-            equity=100_000,
-            candidates=(),
-            outcomes=(),
-            entry_submitted_at=datetime(
-                session_date.year,
-                session_date.month,
-                session_date.day,
-                14,
-                30,
-                tzinfo=UTC,
-            ),
-            entry_expires_at=datetime(
-                session_date.year,
-                session_date.month,
-                session_date.day,
-                14,
-                35,
-                tzinfo=UTC,
-            ),
-            exit_submitted_at=datetime(
-                session_date.year,
-                session_date.month,
-                session_date.day,
-                20,
-                tzinfo=UTC,
-            ),
-            exit_expires_at=datetime(
-                session_date.year,
-                session_date.month,
-                session_date.day,
-                20,
-                1,
-                tzinfo=UTC,
-            ),
-        )
-    )
+    ).plan(planning)
     frozen.write(frozen_path)
     breaker_evaluated_at = datetime.now(UTC)
     breaker_observation = CircuitBreakerObservation(
@@ -319,6 +321,7 @@ def _no_trade_replay_sources(
     ).write(report_path)
     return {
         "strategy": strategy,
+        "planning": planning_path,
         "frozen": frozen_path,
         "breaker": breaker_path,
         "breaker_spec": breaker_spec_path,
@@ -349,7 +352,7 @@ def _complete_source_workflow(
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
         if stage is WorkflowStage.FREEZE_INPUTS:
-            return (sources["strategy"],)
+            return (sources["strategy"], sources["planning"])
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (sources["frozen"],)
         if stage is WorkflowStage.EVALUATE_BREAKERS:
@@ -396,6 +399,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_breaker_auxiliary: bool = True,
     capture_freshness_payloads: bool = True,
     capture_reconciliation_age_sources: bool = True,
+    capture_planning_input: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -412,33 +416,35 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         last_trade_price=100,
         last_trade_at=decision_at - timedelta(seconds=1),
     )
+    planning = DailyOrderPlanningSpec(
+        trade_date=session_date,
+        decision_at=decision_at,
+        equity=100_000,
+        candidates=(
+            LiveCandidateSpec(
+                symbol="AAA",
+                sector="Technology",
+                probability_up=0.75,
+                sizing_price=100,
+                sizing_price_observed_at=decision_at,
+                frozen_average_daily_volume_shares=1_000_000,
+                decision_snapshot=snapshot,
+            ),
+        ),
+        outcomes=(),
+        entry_submitted_at=entry_at,
+        entry_expires_at=entry_at + timedelta(minutes=1),
+        exit_submitted_at=exit_at,
+        exit_expires_at=exit_at + timedelta(minutes=1),
+    )
     frozen = LiveOrderPlanner(
         strategy,
         strategy_sha256=strategy_file_sha256(strategy_path),
-    ).plan(
-        DailyOrderPlanningSpec(
-            trade_date=session_date,
-            decision_at=decision_at,
-            equity=100_000,
-            candidates=(
-                LiveCandidateSpec(
-                    symbol="AAA",
-                    sector="Technology",
-                    probability_up=0.75,
-                    sizing_price=100,
-                    sizing_price_observed_at=decision_at,
-                    frozen_average_daily_volume_shares=1_000_000,
-                    decision_snapshot=snapshot,
-                ),
-            ),
-            outcomes=(),
-            entry_submitted_at=entry_at,
-            entry_expires_at=entry_at + timedelta(minutes=1),
-            exit_submitted_at=exit_at,
-            exit_expires_at=exit_at + timedelta(minutes=1),
-        )
-    )
+    ).plan(planning)
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
+    planning_path = daily / "daily-order-planning.json"
+    planning_path.parent.mkdir(parents=True, exist_ok=True)
+    planning_path.write_bytes(planning.canonical_bytes)
     frozen_path = daily / "frozen-daily-orders.json"
     frozen.write(frozen_path)
     breaker_observation = CircuitBreakerObservation(
@@ -608,7 +614,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
         if stage is WorkflowStage.FREEZE_INPUTS:
-            return (strategy_path,)
+            return (strategy_path, planning_path) if capture_planning_input else (strategy_path,)
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (frozen_path,)
         if stage is WorkflowStage.EVALUATE_BREAKERS:
@@ -1019,6 +1025,25 @@ def test_daily_report_verifier_requires_reconciliation_age_sources(
     )
 
     with pytest.raises(ValueError, match="exactly one captured calendar"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_captured_planning_input(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_planning_input=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly one captured planning input"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

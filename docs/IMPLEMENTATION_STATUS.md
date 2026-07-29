@@ -82,6 +82,7 @@ reproducible through `uv.lock`.
 | Unattended workflow health evidence | Complete | durable trigger provenance, authoritative sessions, uptime, five-run gate |
 | Non-secret command execution receipts | Complete | exit/timing and stream digests, argument hash, success/failure persistence |
 | Persistent workflow inbox worker | Complete | continuous scan/resume, cycle heartbeats, invalid-spec isolation, CLI |
+| Continuous next-session proof queue | Complete | one deployment spec, authoritative calendar order, immutable input discovery, proof-start staging, replay-gated advancement |
 | Worker deployment packaging | Complete | hardened systemd unit, Windows launcher, deployment asset tests |
 | Workflow-backed Phase 6 uptime gate | Complete | exact calendar/range binding; scheduled intact completions, not report presence |
 | Silver-to-replay specification materialization | Complete | frozen orders/snapshots, source hashes, interval filtering audits, CLI |
@@ -145,11 +146,13 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Close the remaining upstream daily candidate/feature preparation boundary and
-make the persistent worker queue the next authoritative session without an
-operator-authored inbox file. After the credentialed historical/strategy gates
-pass, train the gate-bound production model, use proof-start admission, and
-begin the real 90-session run.
+Close the remaining provider-backed upstream daily candidate/feature
+preparation boundary. The persistent worker now discovers those immutable
+artifacts and queues the next authoritative session without an
+operator-authored inbox file; it deliberately waits rather than inventing a
+candidate or feature artifact. After the credentialed historical/strategy
+gates pass, train the gate-bound production model, use proof-start admission,
+and begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

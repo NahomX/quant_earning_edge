@@ -105,6 +105,7 @@ from quant_earning_edge.orchestration import (
     DailyWorkflowSpecGenerator,
     DailyWorkflowState,
     DailyWorkflowStore,
+    NextWorkflowQueuer,
     NoTradeSmokeEvidence,
     OperationalReadinessEvaluator,
     OperationalReadinessReport,
@@ -975,15 +976,6 @@ def score_live_planning(  # noqa: PLR0917 - explicit immutable input/output boun
         Path,
         typer.Option(exists=True, dir_okay=False, help="Linked production booster."),
     ],
-    feature_files: Annotated[
-        list[Path],
-        typer.Option(
-            "--feature-file",
-            exists=True,
-            dir_okay=False,
-            help="Long-form decision-time feature artifact; repeat as needed.",
-        ),
-    ],
     planning_output: Annotated[
         Path,
         typer.Option(dir_okay=False, help="Generated DailyOrderPlanningSpec JSON."),
@@ -992,6 +984,15 @@ def score_live_planning(  # noqa: PLR0917 - explicit immutable input/output boun
         Path,
         typer.Option(dir_okay=False, help="Model and feature lineage evidence JSON."),
     ],
+    feature_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--feature-file",
+            exists=True,
+            dir_okay=False,
+            help="Long-form decision-time feature artifact; required when candidates exist.",
+        ),
+    ] = None,
 ) -> None:
     """Generate model scores and a live order-planning input without manual probabilities."""
     try:
@@ -1003,7 +1004,7 @@ def score_live_planning(  # noqa: PLR0917 - explicit immutable input/output boun
         artifact = LivePlanningAssembler().assemble(
             source=source,
             model=model,
-            feature_files=feature_files,
+            feature_files=tuple(feature_files or ()),
         )
         LivePlanningAssembler.write(
             artifact,
@@ -2706,17 +2707,18 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
             planning = DailyOrderPlanningSpec.model_validate_json(resolved_planning.read_bytes())
             planning_evidence_output: Path | None = None
         elif candidate_file is None:
-            if (
-                planning_source is None
-                or model_evidence is None
-                or model_file is None
-                or not feature_files
-            ):
+            if planning_source is None or model_evidence is None or model_file is None:
                 raise ValueError(
                     "provide --planning-spec or all of --planning-source, "
-                    "--model-evidence, --model-file, and --feature-file"
+                    "--model-evidence, and --model-file"
                 )
             source = LivePlanningSourceSpec.model_validate_json(planning_source.read_bytes())
+            if source.observations and not feature_files:
+                raise ValueError("scored planning requires --feature-file when observations exist")
+            if not source.observations and feature_files:
+                raise ValueError(
+                    "scored planning must omit --feature-file when no observations exist"
+                )
             model = ProductionModelArtifact.load(
                 evidence_path=model_evidence,
                 model_path=model_file,
@@ -2728,7 +2730,7 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
             scored = LivePlanningAssembler().assemble(
                 source=source,
                 model=model,
-                feature_files=feature_files,
+                feature_files=tuple(feature_files or ()),
             )
             resolved_planning = control_root / f"scored-planning-{scored.sha256[:20]}.json"
             planning_evidence_output = (
@@ -2745,10 +2747,10 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 raise ValueError(
                     "--candidate-file and --planning-source are exclusive planning modes"
                 )
-            if model_evidence is None or model_file is None or not feature_files:
+            if model_evidence is None or model_file is None:
                 raise ValueError(
                     "worker-time planning requires --candidate-file, --model-evidence, "
-                    "--model-file, and --feature-file"
+                    "and --model-file"
                 )
             model = ProductionModelArtifact.load(
                 evidence_path=model_evidence,
@@ -2758,7 +2760,15 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 raise ValueError(
                     "production model features differ from the workflow strategy config"
                 )
-            LiveSourceCaptureAssembler.candidate_symbols(candidate_file)
+            candidate_symbols = LiveSourceCaptureAssembler.candidate_symbols(candidate_file)
+            if candidate_symbols and not feature_files:
+                raise ValueError(
+                    "worker-time planning requires --feature-file when candidates exist"
+                )
+            if not candidate_symbols and feature_files:
+                raise ValueError(
+                    "worker-time planning must omit --feature-file when no candidates exist"
+                )
             earlier_sessions = tuple(
                 item for item in calendar.sessions if item.session_date < selected_date
             )
@@ -2791,7 +2801,7 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 session_file=session_file,
                 model_evidence=model_evidence,
                 model_file=model_file,
-                feature_files=tuple(feature_files),
+                feature_files=tuple(feature_files or ()),
                 prior_replay_files=tuple(prior_replay_files or ()),
                 initial_cash=initial_cash,
                 capture_not_before=capture_not_before,
@@ -3422,7 +3432,7 @@ def audit_workflow_readiness(  # noqa: PLR0917 - explicit deployment audit bound
 
 
 @workflow_app.command("worker")
-def run_workflow_worker(
+def run_workflow_worker(  # noqa: PLR0917 - persistent loop deployment contract.
     inbox: Annotated[
         Path,
         typer.Option(exists=True, file_okay=False, help="Directory of immutable run specs."),
@@ -3436,21 +3446,44 @@ def run_workflow_worker(
         bool,
         typer.Option(help="Run one scan for verification instead of polling continuously."),
     ] = False,
+    loop_spec: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Persistent proof-loop config used to discover and queue each next session.",
+        ),
+    ] = None,
     env_file: EnvFileOption = None,
 ) -> None:
-    """Continuously resume every workflow specification in an inbox."""
+    """Continuously queue and resume authoritative proof workflows."""
     environment = _environment(env_file)
     try:
+        command_executor = partial(
+            execute_qee_command,
+            environment=load_subprocess_environment(env_file=env_file),
+        )
         worker = WorkflowInboxWorker(
             data_lake_root=environment.data_lake_root,
             worker_id=worker_id,
             clock=lambda: datetime.now(UTC),
-            executor=partial(
-                execute_qee_command,
-                environment=load_subprocess_environment(env_file=env_file),
-            ),
+            executor=command_executor,
+        )
+        queuer = (
+            NextWorkflowQueuer(
+                data_lake_root=environment.data_lake_root,
+                clock=lambda: datetime.now(UTC),
+                executor=command_executor,
+            )
+            if loop_spec is not None
+            else None
         )
         while True:
+            queue_result = (
+                queuer.run_once(loop_spec=loop_spec, inbox=inbox)
+                if queuer is not None and loop_spec is not None
+                else None
+            )
             report, report_path = worker.run_once(inbox)
             _echo_json(
                 {
@@ -3460,10 +3493,20 @@ def run_workflow_worker(
                     "spec_count": len(report.results),
                     "complete_count": sum(item.complete for item in report.results),
                     "all_complete": report.all_complete,
+                    "queue_status": queue_result.status if queue_result else None,
+                    "queue_trade_date": queue_result.trade_date if queue_result else None,
+                    "queue_workflow_spec": (
+                        str(queue_result.workflow_spec)
+                        if queue_result and queue_result.workflow_spec is not None
+                        else None
+                    ),
+                    "queue_detail": queue_result.detail if queue_result else None,
                 }
             )
             if once:
-                if not report.all_complete:
+                if not report.all_complete or (
+                    queue_result is not None and queue_result.requires_attention
+                ):
                     raise typer.Exit(code=1)
                 return
             time.sleep(poll_seconds)

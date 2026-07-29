@@ -145,6 +145,27 @@ def test_live_planning_rejects_features_computed_after_decision(tmp_path: Path) 
         )
 
 
+def test_no_candidate_live_planning_requires_no_feature_artifact(tmp_path: Path) -> None:
+    training = tmp_path / "training.parquet"
+    decision = datetime(2025, 3, 4, 22, tzinfo=UTC)
+    _training(training)
+    model = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
+        dataset_files=(training,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
+    )
+    source = _source(decision).model_copy(update={"observations": ()})
+
+    artifact = LivePlanningAssembler().assemble(
+        source=source,
+        model=model,
+        feature_files=(),
+    )
+
+    assert artifact.planning.candidates == ()
+    assert artifact.feature_file_sha256 == ()
+
+
 def test_live_planning_cli_writes_linked_planning_and_evidence(tmp_path: Path) -> None:
     training = tmp_path / "training.parquet"
     features = tmp_path / "features.parquet"

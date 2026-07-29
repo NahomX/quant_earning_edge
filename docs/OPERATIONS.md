@@ -987,6 +987,30 @@ uv run qee workflow worker `
   --poll-seconds 10
 ```
 
+For the proof, copy
+`configs/workflow/phase6_loop.example.json`, replace the content-addressed
+calendar/model paths and proof dates, then attach it to the same persistent
+worker:
+
+```powershell
+uv run qee workflow worker `
+  --inbox .\workflow-inbox `
+  --worker-id paper-worker-1 `
+  --loop-spec .\configs\workflow\phase6_loop.json `
+  --poll-seconds 10 `
+  --env-file .\.env
+```
+
+This is a state-driven loop, not a wall-clock schedule. On every cycle it finds
+the first unfinished authoritative proof session, requires the prior session
+to be complete, discovers exactly one immutable event-candidate artifact and
+the latest complete causal feature artifact, prepares the rolling controls,
+and writes the dated inbox specification. It stages the first proof session
+outside the inbox for `admit-proof-start`; after admission, later sessions are
+queued automatically. Missing inputs produce a visible `waiting_for_inputs`
+heartbeat and no synthetic substitute. A valid zero-candidate earnings day is
+queued without a fake feature artifact.
+
 Before starting a real unattended proof, run the fail-closed deployment audit:
 
 ```powershell

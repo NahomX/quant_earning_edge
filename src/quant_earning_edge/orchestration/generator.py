@@ -184,8 +184,6 @@ class DailyWorkflowSpecGenerator:
         freeze_not_before = order_controls_not_before
         if automated_planning is not None:
             automatic = automated_planning
-            if not automatic.feature_files:
-                raise ValueError("automated planning requires live feature files")
             capture_arguments = [
                 "model",
                 "capture-live-source",

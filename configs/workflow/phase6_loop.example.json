@@ -1,0 +1,17 @@
+{
+  "artifact_root": "../../workflow-artifacts",
+  "command_timeout_seconds": 1800,
+  "feature_group": "earnings-v1",
+  "freshness_symbol": "SPY",
+  "initial_cash": 100000,
+  "lease_seconds": 900,
+  "model_evidence": "../../data/models/earnings-v1-production/production-<hash>.json",
+  "model_file": "../../data/models/earnings-v1-production/production-<hash>.txt",
+  "proof_end": "2026-12-02",
+  "proof_start": "2026-07-30",
+  "schema_version": 1,
+  "session_file": "../../data/manifests/market-calendar/sessions-<hash>.json",
+  "staging_directory": "../../workflow-staging",
+  "strategy_config": "../strategies/earnings_v1.yaml",
+  "worker_id": "paper-worker-1"
+}

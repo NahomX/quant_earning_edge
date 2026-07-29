@@ -123,13 +123,18 @@ class LivePlanningAssembler:
     ) -> ScoredPlanningArtifact:
         if model.training_cutoff > source.feature_asof_date:
             raise ValueError("production model cutoff is after the live feature as-of date")
-        vectors, hashes = self._load_vectors(
-            feature_files=feature_files,
-            asof_date=source.feature_asof_date,
-            decision_at=source.decision_at,
-            feature_names=model.feature_names,
-        )
         observation_symbols = tuple(item.symbol for item in source.observations)
+        if observation_symbols:
+            vectors, hashes = self._load_vectors(
+                feature_files=feature_files,
+                asof_date=source.feature_asof_date,
+                decision_at=source.decision_at,
+                feature_names=model.feature_names,
+            )
+        else:
+            if feature_files:
+                raise ValueError("no-candidate live planning must not bind feature artifacts")
+            vectors, hashes = {}, ()
         if tuple(sorted(vectors)) != observation_symbols:
             raise ValueError("live feature and market-observation symbol sets differ")
         candidates = tuple(

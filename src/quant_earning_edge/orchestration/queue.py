@@ -1,0 +1,457 @@
+"""Discover immutable daily inputs and queue the next authoritative workflow."""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime fields.
+from enum import StrEnum
+from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime fields.
+from typing import TYPE_CHECKING, Self
+
+import pyarrow.parquet as pq
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from quant_earning_edge.data.calendar import SessionFileStore
+from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
+from quant_earning_edge.orchestration.commands import (
+    CommandExecutor,
+    WorkflowRunSpec,
+    execute_qee_command,
+)
+from quant_earning_edge.orchestration.workflow import DailyWorkflowStore
+from quant_earning_edge.universe.events import EVENT_CANDIDATE_SCHEMA
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from quant_earning_edge.data.clients import MarketSession
+
+
+class WorkflowQueueStatus(StrEnum):
+    """One persistent-loop attempt to advance the proof queue."""
+
+    WAITING_FOR_INPUTS = "waiting_for_inputs"
+    ADMISSION_REQUIRED = "admission_required"
+    QUEUED = "queued"
+    ALREADY_QUEUED = "already_queued"
+    PROOF_COMPLETE = "proof_complete"
+
+
+@dataclass(frozen=True)
+class WorkflowQueueResult:
+    """Observable outcome of one next-session queue attempt."""
+
+    status: WorkflowQueueStatus
+    trade_date: date | None
+    workflow_spec: Path | None
+    detail: str
+
+    @property
+    def requires_attention(self) -> bool:
+        return self.status in {
+            WorkflowQueueStatus.WAITING_FOR_INPUTS,
+            WorkflowQueueStatus.ADMISSION_REQUIRED,
+        }
+
+
+class WorkflowLoopSpec(BaseModel):
+    """Stable deployment inputs reused across every proof session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: int = 1
+    session_file: Path
+    strategy_config: Path
+    model_evidence: Path
+    model_file: Path
+    proof_start: date
+    proof_end: date
+    initial_cash: float = Field(gt=0)
+    artifact_root: Path
+    staging_directory: Path
+    worker_id: str = Field(min_length=1)
+    feature_group: str = Field(default="earnings-v1", min_length=1)
+    freshness_symbol: str = Field(default="SPY", min_length=1)
+    lease_seconds: int = Field(default=900, ge=1, le=3600)
+    command_timeout_seconds: float = Field(default=1800, gt=0, le=7200)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> WorkflowLoopSpec:
+        if self.schema_version != 1:
+            raise ValueError("workflow loop schema_version must be 1")
+        if self.proof_end < self.proof_start:
+            raise ValueError("workflow loop proof_end precedes proof_start")
+        if not self.worker_id.strip():
+            raise ValueError("workflow loop worker_id must not be blank")
+        return self
+
+    @classmethod
+    def load(cls, path: Path) -> Self:
+        """Load a loop spec and resolve deployment paths against its directory."""
+        spec = cls.model_validate_json(path.read_bytes())
+        base = path.resolve().parent
+        updates = {
+            field: _resolve(getattr(spec, field), relative_to=base)
+            for field in (
+                "session_file",
+                "strategy_config",
+                "model_evidence",
+                "model_file",
+                "artifact_root",
+                "staging_directory",
+            )
+        }
+        return spec.model_copy(update=updates)
+
+
+class NextWorkflowQueuer:
+    """Advance at most one authoritative proof session per worker cycle."""
+
+    def __init__(
+        self,
+        *,
+        data_lake_root: Path,
+        clock: Callable[[], datetime],
+        executor: CommandExecutor = execute_qee_command,
+    ) -> None:
+        self._data_lake_root = data_lake_root.resolve()
+        self._store = DailyWorkflowStore(self._data_lake_root)
+        self._clock = clock
+        self._executor = executor
+
+    def run_once(  # noqa: PLR0911 - each status is a distinct fail-closed boundary.
+        self,
+        *,
+        loop_spec: Path,
+        inbox: Path,
+    ) -> WorkflowQueueResult:
+        """Discover, prepare, and queue the first unfinished proof session."""
+        deployment = WorkflowLoopSpec.load(loop_spec)
+        resolved_inbox = inbox.resolve()
+        if not resolved_inbox.is_dir():
+            raise ValueError(f"workflow inbox is not a directory: {resolved_inbox}")
+        calendar = SessionFileStore.load(deployment.session_file)
+        sessions = self._proof_sessions(
+            calendar.sessions,
+            proof_start=deployment.proof_start,
+            proof_end=deployment.proof_end,
+        )
+        # Lazy imports avoid an evaluation -> orchestration -> signals ->
+        # evaluation cycle while the CLI package graph is initializing.
+        from quant_earning_edge.signals.config import (  # noqa: PLC0415
+            load_strategy_config,
+        )
+        from quant_earning_edge.signals.production_model import (  # noqa: PLC0415
+            ProductionModelArtifact,
+        )
+
+        strategy = load_strategy_config(deployment.strategy_config)
+        model = ProductionModelArtifact.load(
+            evidence_path=deployment.model_evidence,
+            model_path=deployment.model_file,
+        )
+        if model.feature_names != strategy.features:
+            raise ValueError("workflow loop model features differ from strategy config")
+        now = self._aware_now()
+
+        for index, session in enumerate(sessions):
+            trade_date = session.session_date
+            inbox_path = resolved_inbox / f"{trade_date.isoformat()}.json"
+            staged_path = deployment.staging_directory.resolve() / f"{trade_date.isoformat()}.json"
+            state = self._store.load_latest(trade_date)
+            if inbox_path.is_file():
+                self._validate_daily_spec(inbox_path, trade_date=trade_date)
+                if state is not None and state.complete:
+                    continue
+                return WorkflowQueueResult(
+                    status=WorkflowQueueStatus.ALREADY_QUEUED,
+                    trade_date=trade_date,
+                    workflow_spec=inbox_path,
+                    detail="the next proof session is already in the worker inbox",
+                )
+            if state is not None and state.complete:
+                continue
+            if index and not self._prior_complete(sessions[index - 1].session_date):
+                return WorkflowQueueResult(
+                    status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
+                    trade_date=trade_date,
+                    workflow_spec=None,
+                    detail="the prior authoritative proof session is not complete",
+                )
+            if index == 0 and staged_path.is_file():
+                self._validate_daily_spec(staged_path, trade_date=trade_date)
+                return WorkflowQueueResult(
+                    status=WorkflowQueueStatus.ADMISSION_REQUIRED,
+                    trade_date=trade_date,
+                    workflow_spec=staged_path,
+                    detail="the first proof workflow is staged and requires proof-start admission",
+                )
+            prior_session = self._prior_session(calendar.sessions, trade_date=trade_date)
+            if now < prior_session.close_at:
+                return WorkflowQueueResult(
+                    status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
+                    trade_date=trade_date,
+                    workflow_spec=None,
+                    detail="the authoritative prior session has not closed",
+                )
+            candidate_file = self._candidate_file(trade_date)
+            if candidate_file is None:
+                return WorkflowQueueResult(
+                    status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
+                    trade_date=trade_date,
+                    workflow_spec=None,
+                    detail="the immutable event-candidate artifact is not available",
+                )
+            symbols = self._candidate_symbols(candidate_file)
+            feature_files = self._feature_files(
+                feature_group=deployment.feature_group,
+                asof_date=prior_session.session_date,
+                symbols=symbols,
+                feature_names=model.feature_names,
+                observed_at=now,
+                target_open=session.open_at,
+            )
+            if symbols and not feature_files:
+                return WorkflowQueueResult(
+                    status=WorkflowQueueStatus.WAITING_FOR_INPUTS,
+                    trade_date=trade_date,
+                    workflow_spec=None,
+                    detail="a complete causal live-feature artifact is not available",
+                )
+            output = staged_path if index == 0 else inbox_path
+            self._prepare(
+                deployment=deployment,
+                trade_date=trade_date,
+                candidate_file=candidate_file,
+                feature_files=feature_files,
+                prior_replay_files=self._prior_replays(
+                    deployment.artifact_root,
+                    sessions=sessions[:index],
+                ),
+                output=output,
+                stage_for_admission=index == 0,
+                working_directory=loop_spec.resolve().parent,
+            )
+            self._validate_daily_spec(output, trade_date=trade_date)
+            return WorkflowQueueResult(
+                status=(
+                    WorkflowQueueStatus.ADMISSION_REQUIRED
+                    if index == 0
+                    else WorkflowQueueStatus.QUEUED
+                ),
+                trade_date=trade_date,
+                workflow_spec=output,
+                detail=(
+                    "the first proof workflow is staged and requires proof-start admission"
+                    if index == 0
+                    else "the next authoritative proof session was queued"
+                ),
+            )
+
+        return WorkflowQueueResult(
+            status=WorkflowQueueStatus.PROOF_COMPLETE,
+            trade_date=None,
+            workflow_spec=None,
+            detail="every authoritative proof session is complete",
+        )
+
+    @staticmethod
+    def _proof_sessions(
+        sessions: Sequence[MarketSession],
+        *,
+        proof_start: date,
+        proof_end: date,
+    ) -> tuple[MarketSession, ...]:
+        selected = tuple(item for item in sessions if proof_start <= item.session_date <= proof_end)
+        if (
+            not selected
+            or selected[0].session_date != proof_start
+            or selected[-1].session_date != proof_end
+        ):
+            raise ValueError("workflow loop proof boundaries are absent from the session file")
+        return selected
+
+    @staticmethod
+    def _prior_session(
+        sessions: Sequence[MarketSession],
+        *,
+        trade_date: date,
+    ) -> MarketSession:
+        earlier = tuple(item for item in sessions if item.session_date < trade_date)
+        if not earlier:
+            raise ValueError("workflow loop requires the prior authoritative session")
+        return earlier[-1]
+
+    def _prior_complete(self, trade_date: date) -> bool:
+        state = self._store.load_latest(trade_date)
+        return state is not None and state.complete
+
+    def _candidate_file(self, trade_date: date) -> Path | None:
+        root = (
+            self._data_lake_root
+            / "gold"
+            / "event-candidates"
+            / f"for_trade_date={trade_date.isoformat()}"
+        )
+        candidates = tuple(sorted(root.glob("candidates-*.parquet")))
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            raise ValueError(
+                f"multiple event-candidate artifacts exist for {trade_date}; "
+                "the authoritative revision is ambiguous"
+            )
+        self._candidate_symbols(candidates[0])
+        return candidates[0].resolve()
+
+    @staticmethod
+    def _candidate_symbols(path: Path) -> tuple[str, ...]:
+        if pq.read_schema(path) != EVENT_CANDIDATE_SCHEMA:  # type: ignore[no-untyped-call]
+            raise ValueError("workflow queue candidate artifact schema mismatch")
+        rows = pq.read_table(path, columns=["symbol"]).to_pylist()  # type: ignore[no-untyped-call]
+        symbols = tuple(str(row["symbol"]).strip().upper() for row in rows)
+        if symbols != tuple(sorted(set(symbols))):
+            raise ValueError("workflow queue candidate symbols must be unique and sorted")
+        return symbols
+
+    def _feature_files(
+        self,
+        *,
+        feature_group: str,
+        asof_date: date,
+        symbols: tuple[str, ...],
+        feature_names: tuple[str, ...],
+        observed_at: datetime,
+        target_open: datetime,
+    ) -> tuple[Path, ...]:
+        if not symbols:
+            return ()
+        month = asof_date.isoformat()[:7]
+        root = self._data_lake_root / "gold" / f"feature_group={feature_group}" / f"month={month}"
+        matches: list[tuple[datetime, Path]] = []
+        expected_keys = {
+            (symbol, feature_name) for symbol in symbols for feature_name in feature_names
+        }
+        for path in sorted(root.glob("part-*.parquet")):
+            if pq.read_schema(path) != FEATURE_VALUE_SCHEMA:  # type: ignore[no-untyped-call]
+                continue
+            rows = [
+                row
+                for row in pq.read_table(path).to_pylist()  # type: ignore[no-untyped-call]
+                if row["asof_date"] == asof_date
+            ]
+            keys = {(str(row["symbol"]).strip().upper(), str(row["feature_name"])) for row in rows}
+            computed = {row["computed_at"] for row in rows}
+            if (
+                keys == expected_keys
+                and len(rows) == len(expected_keys)
+                and len(computed) == 1
+                and (computed_at := next(iter(computed))) <= observed_at
+                and computed_at < target_open
+            ):
+                matches.append((computed_at, path.resolve()))
+        if not matches:
+            return ()
+        latest = max(item[0] for item in matches)
+        latest_paths = tuple(path for computed_at, path in matches if computed_at == latest)
+        if len(latest_paths) > 1:
+            raise ValueError("latest causal live-feature artifact is ambiguous")
+        return latest_paths
+
+    @staticmethod
+    def _prior_replays(
+        artifact_root: Path,
+        *,
+        sessions: Sequence[MarketSession],
+    ) -> tuple[Path, ...]:
+        paths = tuple(
+            artifact_root.resolve()
+            / f"trade_date={session.session_date.isoformat()}"
+            / "replay-session.json"
+            for session in sessions
+        )
+        missing = tuple(path for path in paths if not path.is_file())
+        if missing:
+            raise ValueError(f"prior proof replay is missing: {missing[0]}")
+        return paths
+
+    def _prepare(
+        self,
+        *,
+        deployment: WorkflowLoopSpec,
+        trade_date: date,
+        candidate_file: Path,
+        feature_files: tuple[Path, ...],
+        prior_replay_files: tuple[Path, ...],
+        output: Path,
+        stage_for_admission: bool,
+        working_directory: Path,
+    ) -> None:
+        arguments = [
+            sys.executable,
+            "-m",
+            "quant_earning_edge.cli",
+            "workflow",
+            "prepare",
+            "--trade-date",
+            trade_date.isoformat(),
+            "--candidate-file",
+            str(candidate_file),
+            "--model-evidence",
+            str(deployment.model_evidence),
+            "--model-file",
+            str(deployment.model_file),
+            "--strategy-config",
+            str(deployment.strategy_config),
+            "--session-file",
+            str(deployment.session_file),
+            "--proof-start",
+            deployment.proof_start.isoformat(),
+            "--proof-end",
+            deployment.proof_end.isoformat(),
+            "--initial-cash",
+            str(deployment.initial_cash),
+            "--artifact-root",
+            str(deployment.artifact_root),
+            "--output",
+            str(output.resolve()),
+            "--worker-id",
+            deployment.worker_id,
+            "--freshness-symbol",
+            deployment.freshness_symbol,
+            "--lease-seconds",
+            str(deployment.lease_seconds),
+            "--command-timeout-seconds",
+            str(deployment.command_timeout_seconds),
+        ]
+        for path in feature_files:
+            arguments.extend(("--feature-file", str(path)))
+        for path in prior_replay_files:
+            arguments.extend(("--prior-replay-file", str(path)))
+        if stage_for_admission:
+            arguments.append("--stage-for-admission")
+        result = self._executor(
+            tuple(arguments),
+            cwd=working_directory,
+            timeout_seconds=deployment.command_timeout_seconds,
+        )
+        if result.return_code:
+            detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            raise RuntimeError(f"workflow prepare exited {result.return_code}: {detail[:1000]}")
+
+    @staticmethod
+    def _validate_daily_spec(path: Path, *, trade_date: date) -> None:
+        spec = WorkflowRunSpec.model_validate_json(path.read_bytes())
+        if spec.trade_date != trade_date:
+            raise ValueError("queued workflow spec trade date differs from its session")
+
+    def _aware_now(self) -> datetime:
+        value = self._clock()
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("workflow queue clock must be timezone-aware")
+        return value
+
+
+def _resolve(path: Path, *, relative_to: Path) -> Path:
+    return path.resolve() if path.is_absolute() else (relative_to / path).resolve()

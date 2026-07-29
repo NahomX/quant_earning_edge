@@ -221,12 +221,13 @@ def test_after_close_order_fetch_is_captured_in_bronze(tmp_path: Path) -> None:
     )
     layout = LakehouseLayout(tmp_path / "lake")
     with http_client:
-        order = AlpacaPaperClient(
+        client = AlpacaPaperClient(
             api_key_id="key",
             secret_key="secret",
             http_client=http_client,
             bronze_writer=BronzeWriter(layout),
-        ).get_by_client_order_id("qee-entry-1")
+        )
+        order = client.get_by_client_order_id("qee-entry-1")
 
     artifacts = tuple(
         layout.bronze(
@@ -236,6 +237,7 @@ def test_after_close_order_fetch_is_captured_in_bronze(tmp_path: Path) -> None:
         ).glob("*.json")
     )
     assert len(artifacts) == 1
+    assert tuple(item.path for item in client.observation_artifacts) == artifacts
     assert json.loads(artifacts[0].read_bytes())["client_order_id"] == "qee-entry-1"
 
 

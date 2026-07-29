@@ -446,7 +446,7 @@ class DailyWorkflowSpecGenerator:
                             "--output-directory",
                             str(root),
                         ),
-                        artifact_json_keys=("output",),
+                        artifact_json_keys=("output", "broker_observation_paths"),
                         artifact_bindings=(
                             ArtifactArgumentBinding(
                                 source_stage=WorkflowStage.REPLAY_ORDERS,

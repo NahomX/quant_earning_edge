@@ -165,7 +165,10 @@ def test_generate_cli_writes_complete_bound_workflow(tmp_path: Path) -> None:
         "paper",
         "reconcile-frozen-revision",
     )
-    assert spec.stages[6].commands[0].artifact_json_keys == ("output",)
+    assert spec.stages[6].commands[0].artifact_json_keys == (
+        "output",
+        "broker_observation_paths",
+    )
 
 
 def test_generate_cli_can_refresh_breakers_inside_preopen_stage(tmp_path: Path) -> None:

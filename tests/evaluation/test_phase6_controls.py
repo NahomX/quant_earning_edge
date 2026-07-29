@@ -197,6 +197,7 @@ def _trade_source_workflow(
     store: DailyWorkflowStore,
     tmp_path: Path,
     session_date: date,
+    capture_broker_observations: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -323,6 +324,24 @@ def _trade_source_workflow(
         )
         for item in evidence
     )
+    broker_observation_paths = []
+    for broker_order in broker_orders:
+        observation_path = (
+            daily
+            / "source=alpaca-paper"
+            / "dataset=orders"
+            / f"{broker_order.client_order_id}.json"
+        )
+        observation_path.parent.mkdir(parents=True, exist_ok=True)
+        observation_path.write_text(
+            json.dumps(
+                broker_order.model_dump(mode="json", by_alias=True),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        broker_observation_paths.append(observation_path)
     reconciliation = PaperOrderReconciler().evaluate(
         evidence=evidence,
         broker_orders=broker_orders,
@@ -351,7 +370,11 @@ def _trade_source_workflow(
                 report_path,
             )
         if stage is WorkflowStage.RECONCILE_SESSION:
-            return (reconciliation_path,)
+            return (
+                (reconciliation_path, *broker_observation_paths)
+                if capture_broker_observations
+                else (reconciliation_path,)
+            )
         output = tmp_path / "trade-stage-artifacts" / f"{stage.value}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text("{}", encoding="utf-8")
@@ -612,3 +635,22 @@ def test_daily_report_verifier_rebuilds_trade_report_from_market_sources(
     assert verified.intended_order_count == 2
     assert verified.fully_filled_order_count == 2
     assert verified.reconciliation_break_count == 0
+
+
+def test_daily_report_verifier_requires_raw_broker_observations(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_broker_observations=False,
+    )
+
+    with pytest.raises(ValueError, match="lacks exact raw broker observations"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )

@@ -2932,7 +2932,7 @@ def reconcile_frozen_paper_orders(
 ) -> None:
     """Fetch frozen orders from Alpaca paper and reconcile them to replay."""
     try:
-        report = _frozen_paper_reconciliation(
+        report, broker_observation_paths = _frozen_paper_reconciliation(
             frozen_orders=frozen_orders,
             evidence_files=tuple(evidence_files or ()),
             env_file=env_file,
@@ -2957,6 +2957,7 @@ def reconcile_frozen_paper_orders(
             "reconciliation_break_count": report.reconciliation_break_count,
             "all_orders_terminal": report.all_orders_terminal,
             "paper_pnl_is_gate_input": report.paper_pnl_is_gate_input,
+            "broker_observation_paths": [str(path) for path in broker_observation_paths],
         }
     )
     if report.reconciliation_break_count:
@@ -2986,7 +2987,7 @@ def reconcile_frozen_paper_order_revision(
 ) -> None:
     """Write a content-addressed reconciliation revision safe for later retries."""
     try:
-        report = _frozen_paper_reconciliation(
+        report, broker_observation_paths = _frozen_paper_reconciliation(
             frozen_orders=frozen_orders,
             evidence_files=tuple(evidence_files or ()),
             env_file=env_file,
@@ -3012,6 +3013,7 @@ def reconcile_frozen_paper_order_revision(
             "reconciliation_break_count": report.reconciliation_break_count,
             "all_orders_terminal": report.all_orders_terminal,
             "paper_pnl_is_gate_input": report.paper_pnl_is_gate_input,
+            "broker_observation_paths": [str(path) for path in broker_observation_paths],
         }
     )
     if report.reconciliation_break_count:
@@ -3023,7 +3025,7 @@ def _frozen_paper_reconciliation(
     frozen_orders: Path,
     evidence_files: tuple[Path, ...],
     env_file: Path | None,
-) -> PaperReconciliationReport:
+) -> tuple[PaperReconciliationReport, tuple[Path, ...]]:
     frozen = FrozenDailyOrders.load(frozen_orders)
     evidence = tuple(NbboReplayEvidence.load(path) for path in evidence_files)
     reconciler = PaperOrderReconciler()
@@ -3031,11 +3033,14 @@ def _frozen_paper_reconciliation(
     if not frozen.intended_orders:
         if evidence:
             raise ValueError("no-trade frozen orders must not have replay evidence")
-        return reconciler.evaluate(
-            evidence=(),
-            broker_orders=(),
-            session_date=frozen.trade_date,
-            evaluated_at=evaluated_at,
+        return (
+            reconciler.evaluate(
+                evidence=(),
+                broker_orders=(),
+                session_date=frozen.trade_date,
+                evaluated_at=evaluated_at,
+            ),
+            (),
         )
     environment = _environment(env_file)
     api_key_id, secret_key = environment.require_alpaca_credentials()
@@ -3044,18 +3049,20 @@ def _frozen_paper_reconciliation(
         base_url=environment.alpaca_trading_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
-        return reconciler.fetch_and_evaluate(
+        client = AlpacaPaperClient(
+            api_key_id=api_key_id,
+            secret_key=secret_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        )
+        report = reconciler.fetch_and_evaluate(
             evidence=evidence,
             intended_orders=tuple(item.to_domain() for item in frozen.intended_orders),
-            order_lookup=AlpacaPaperClient(
-                api_key_id=api_key_id,
-                secret_key=secret_key,
-                http_client=http_client,
-                bronze_writer=BronzeWriter(layout),
-            ),
+            order_lookup=client,
             session_date=frozen.trade_date,
             evaluated_at=evaluated_at,
         )
+        return report, tuple(item.path.resolve() for item in client.observation_artifacts)
 
 
 @workflow_app.command("prepare-session-inputs")

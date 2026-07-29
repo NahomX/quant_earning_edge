@@ -19,7 +19,7 @@ from quant_earning_edge.data.clients.errors import ProviderRequestError, Provide
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from quant_earning_edge.data.bronze import BronzeWriter
+    from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
     from quant_earning_edge.monitoring import CircuitBreakerDecision
 
 _PAPER_BASE_URL = "https://paper-api.alpaca.markets"
@@ -331,6 +331,12 @@ class AlpacaPaperClient:
         self._secret_key = secret_key
         self._http = http_client
         self._bronze_writer = bronze_writer
+        self._observation_artifacts: list[BronzeArtifact] = []
+
+    @property
+    def observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return raw provider observations captured by this client instance."""
+        return tuple(self._observation_artifacts)
 
     def submit(self, request: PaperOrderRequest) -> PaperSubmission:
         """Reuse an identical client ID or place exactly one new paper order."""
@@ -356,11 +362,13 @@ class AlpacaPaperClient:
         broker_order = self._broker_order(raw)
         self._validate_match(request, broker_order)
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="alpaca-paper",
-                dataset="orders",
-                event_date=broker_order.submitted_at.date(),
+            self._observation_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="alpaca-paper",
+                    dataset="orders",
+                    event_date=broker_order.submitted_at.date(),
+                )
             )
         return PaperSubmission(
             schema_version=1,
@@ -384,11 +392,13 @@ class AlpacaPaperClient:
         raw = self._decode(response)
         broker_order = self._broker_order(raw)
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="alpaca-paper",
-                dataset="orders",
-                event_date=broker_order.submitted_at.date(),
+            self._observation_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="alpaca-paper",
+                    dataset="orders",
+                    event_date=broker_order.submitted_at.date(),
+                )
             )
         return broker_order
 

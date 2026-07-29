@@ -331,7 +331,7 @@ def test_content_addressed_reconciliation_can_resolve_on_later_retry(
     monkeypatch.setattr(
         cli_module,
         "_frozen_paper_reconciliation",
-        lambda **_: next(reports),
+        lambda **_: (next(reports), ()),
     )
     frozen_path = tmp_path / "frozen.json"
     frozen_path.write_text("{}", encoding="utf-8")

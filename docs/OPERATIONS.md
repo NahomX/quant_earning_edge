@@ -636,8 +636,12 @@ The verifier also requires that session's workflow
 `reconcile_session` stage to have succeeded. Its one captured,
 content-addressed paper-reconciliation revision must be terminal, have no
 operational breaks, reference exactly the captured replay-evidence hashes, and
-reconcile its order identities and replay fields to that evidence. Paper fill
-prices and P&L remain diagnostic only; they do not enter performance metrics.
+reconcile its order identities and replay fields to that evidence. The
+reconciliation command also emits every immutable Bronze Alpaca-order
+observation path; the workflow captures those files, and terminal verification
+reloads the raw provider JSON and reproduces the reconciliation report
+byte-for-byte. Paper fill prices and P&L remain diagnostic only; they do not
+enter performance metrics.
 
 Cost attribution begins at gross P&L between entry/exit arrival midpoints. It
 then subtracts modeled spread, modeled square-root impact, the realized
@@ -973,8 +977,9 @@ uv run qee paper reconcile-frozen `
 Before any Alpaca request, this command requires the replay evidence IDs and
 complete intended-order fields to exactly equal the frozen artifact. It queries
 only those verified client IDs from the canonical paper host, writes the same
-non-gating reconciliation report, and exits `1` for operational breaks. An
-explicit frozen no-trade day needs no evidence files or broker credentials.
+non-gating reconciliation report, emits the canonical Bronze observation paths
+for workflow capture, and exits `1` for operational breaks. An explicit frozen
+no-trade day needs no evidence files or broker credentials.
 
 The generated unattended workflow writes content-addressed revisions so a
 nonterminal order can be observed again later without overwriting its first

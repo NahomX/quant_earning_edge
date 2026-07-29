@@ -20,7 +20,11 @@ from quant_earning_edge.evaluation.replay_session import (
     ReplaySessionAggregator,
     ReplaySessionReport,
 )
-from quant_earning_edge.live import PaperReconciliationReport
+from quant_earning_edge.live import (
+    BrokerOrder,
+    PaperOrderReconciler,
+    PaperReconciliationReport,
+)
 from quant_earning_edge.orchestration.workflow import (
     DailyWorkflowStore,
     StageStatus,
@@ -243,6 +247,36 @@ class Phase6DailyReportVerifier:
                 or paper.replay_fill_price != replay.fill_price
             ):
                 raise ValueError("paper reconciliation fields differ from replay evidence")
+        observation_paths = tuple(
+            Path(item.path).resolve()
+            for item in stage.output_artifacts
+            if Path(item.path).suffix == ".json" and Path(item.path).resolve() != paths[0]
+        )
+        if len(observation_paths) != len(report.orders):
+            raise ValueError("workflow paper reconciliation lacks exact raw broker observations")
+        broker_orders = []
+        for path in observation_paths:
+            encoded = path.read_bytes()
+            raw = json.loads(encoded)
+            if (
+                json.dumps(
+                    raw,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+                != encoded
+            ):
+                raise ValueError("raw broker observation is not canonical")
+            broker_orders.append(BrokerOrder.model_validate(raw))
+        reproduced = PaperOrderReconciler().evaluate(
+            evidence=evidence,
+            broker_orders=tuple(broker_orders),
+            session_date=report.session_date,
+            evaluated_at=report.evaluated_at,
+        )
+        if reproduced.canonical_bytes != report.canonical_bytes:
+            raise ValueError("paper reconciliation differs from raw broker observations")
 
     @staticmethod
     def _reproduce_order_evidence(

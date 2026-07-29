@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 361 automated tests pass.
+- 362 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 94 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -63,8 +63,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   evidence before Phase 6 aggregation; a re-hashed edited P&L/fill/slippage
   summary is rejected.
 - Every included daily report also requires a succeeded, captured paper
-  reconciliation bound to the same replay evidence; unresolved operational
-  breaks cannot enter the terminal verdict.
+  reconciliation bound to the same replay evidence and workflow-captured raw
+  Alpaca order observations; unresolved or unreproducible operational breaks
+  cannot enter the terminal verdict.
 - A worker accepts a post-completion marker only after independently
   reproducing its workflow health, rolling controls, daily source evidence,
   and terminal gate bytes; hash-consistent arbitrary JSON cannot suppress

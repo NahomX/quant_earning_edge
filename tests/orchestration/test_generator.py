@@ -75,6 +75,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
         json.dumps(
             {
                 "session_file": "sessions.json",
+                "workflow_store_root": "workflow-store",
                 "workflow_health_file": "health.json",
                 "proof_start": "2026-07-28",
                 "proof_end": "2026-07-28",

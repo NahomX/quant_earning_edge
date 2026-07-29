@@ -85,6 +85,7 @@ def test_prepare_phase6_controls_includes_current_future_output_path(
     spec = Phase6AggregationSpec.model_validate_json(aggregation_output.read_bytes())
     expected_current = (artifact_root / "trade_date=2026-07-28" / "replay-session.json").resolve()
     assert spec.session_report_files == (prior_report.resolve(), expected_current)
+    assert spec.workflow_store_root == (tmp_path / "lake").resolve()
     assert not expected_current.exists()
     health = WorkflowHealthReport.load(health_output)
     assert health.missing_dates == dates
@@ -137,6 +138,7 @@ def test_finalize_phase6_refreshes_health_after_workflow_completion(
         json.dumps(
             {
                 "session_file": str(calendar.path),
+                "workflow_store_root": str(data_lake),
                 "workflow_health_file": "pre-run-health.json",
                 "proof_start": session_date.isoformat(),
                 "proof_end": session_date.isoformat(),

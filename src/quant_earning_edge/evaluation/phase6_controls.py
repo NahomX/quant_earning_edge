@@ -36,6 +36,7 @@ class Phase6ControlBuilder:
         *,
         calendar: SessionFile,
         session_file: Path,
+        workflow_store_root: Path,
         workflow_health: WorkflowHealthReport,
         proof_start: date,
         proof_end: date,
@@ -69,6 +70,7 @@ class Phase6ControlBuilder:
                 report_files.append(path)
         spec = Phase6AggregationSpec(
             session_file=session_file.resolve(),
+            workflow_store_root=workflow_store_root.resolve(),
             workflow_health_file=health_output.resolve(),
             proof_start=proof_start,
             proof_end=proof_end,
@@ -109,6 +111,7 @@ class Phase6ControlBuilder:
         controls = self.prepare(
             calendar=calendar,
             session_file=session_file,
+            workflow_store_root=workflow_store.root,
             workflow_health=health,
             proof_start=proof_start,
             proof_end=proof_end,

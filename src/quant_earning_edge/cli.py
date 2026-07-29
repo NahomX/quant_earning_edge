@@ -2052,6 +2052,19 @@ def evaluate_phase6_gate(
             else aggregation_spec.parent / spec.workflow_health_file
         )
         workflow_health = WorkflowHealthReport.load(health_path)
+        workflow_store_root = (
+            spec.workflow_store_root
+            if spec.workflow_store_root.is_absolute()
+            else aggregation_spec.parent / spec.workflow_store_root
+        )
+        reproduced_health = WorkflowHealthEvaluator().evaluate(
+            calendar=calendar,
+            store=DailyWorkflowStore(workflow_store_root),
+            start_date=spec.proof_start,
+            end_date=spec.proof_end,
+        )
+        if reproduced_health.canonical_bytes != workflow_health.canonical_bytes:
+            raise ValueError("workflow health does not reproduce from the bound workflow store")
         reports = tuple(
             ReplaySessionReport.load(
                 configured_path
@@ -2066,7 +2079,7 @@ def evaluate_phase6_gate(
         )
         report = evaluator.evaluate(
             calendar=calendar,
-            workflow_health=workflow_health,
+            workflow_health=reproduced_health,
             reports=reports,
             proof_start=spec.proof_start,
             proof_end=spec.proof_end,

@@ -549,6 +549,11 @@ class DailyWorkflowStore:
     def __init__(self, root: Path) -> None:
         self._root = root.resolve()
 
+    @property
+    def root(self) -> Path:
+        """Return the durable root needed to reproduce workflow evidence."""
+        return self._root
+
     def write(self, state: DailyWorkflowState) -> DailyWorkflowState:
         partition = self._partition(state.trade_date)
         partition.mkdir(parents=True, exist_ok=True)

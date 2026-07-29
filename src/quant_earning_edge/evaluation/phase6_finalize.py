@@ -88,6 +88,14 @@ class Phase6CompletionFinalizer:
         workflow_store: DailyWorkflowStore,
     ) -> Phase6FinalizationArtifacts:
         original = Phase6AggregationSpec.model_validate_json(original_aggregation_spec.read_bytes())
+        configured_workflow_root = _resolve(
+            original.workflow_store_root,
+            relative_to=original_aggregation_spec.parent,
+        )
+        if configured_workflow_root != workflow_store.root:
+            raise ValueError(
+                "Phase 6 aggregation workflow store differs from the active workflow store"
+            )
         session_path = _resolve(
             original.session_file,
             relative_to=original_aggregation_spec.parent,
@@ -109,6 +117,7 @@ class Phase6CompletionFinalizer:
         controls = Phase6ControlBuilder().prepare(
             calendar=calendar,
             session_file=session_path,
+            workflow_store_root=workflow_store.root,
             workflow_health=health,
             proof_start=original.proof_start,
             proof_end=original.proof_end,

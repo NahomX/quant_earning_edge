@@ -93,7 +93,7 @@ reproducible through `uv.lock`.
 | Continuous next-session proof queue | Complete | one deployment spec, authoritative calendar order, immutable input discovery, proof-start staging, replay-gated advancement |
 | Provider-backed daily input preparation | Complete | T-1 universe/events, explicit empty-event evidence, candidate bar history, causal pre-open minute features, automatic queue handoff |
 | Worker deployment packaging | Complete | hardened restarting systemd unit, self-restarting Windows supervisor, deployment asset tests |
-| Workflow-backed Phase 6 uptime gate | Complete | exact calendar/range binding; scheduled intact completions, not report presence |
+| Workflow-backed Phase 6 uptime gate | Complete | exact calendar/range binding; terminal reconstruction from append-only state chains and captured artifacts; scheduled intact completions only |
 | Silver-to-replay specification materialization | Complete | frozen orders/snapshots, source hashes, interval filtering audits, CLI |
 | Live-safe frozen daily order artifact | Complete | decision-only scores/sizing/NBBO; linked intended and paper order IDs |
 | Frozen-order-to-replay linkage | Complete | strategy hash check, silver symbol grouping, direct causal materialization CLI |

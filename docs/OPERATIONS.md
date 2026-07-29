@@ -584,6 +584,7 @@ all available daily replay reports:
 ```json
 {
   "session_file": "sessions-<hash>.json",
+  "workflow_store_root": "../data",
   "workflow_health_file": "workflow-health-<hash>.json",
   "proof_start": "2026-07-28",
   "proof_end": "2026-12-02",
@@ -606,6 +607,13 @@ Missing authoritative sessions count as downtime and zero return. A daily
 reconciliation break makes performance metrics unavailable and fails the gate;
 it is not converted to a zero return. Daily starting capital must equal the
 prior resolved equity, preventing hidden account resets.
+
+Before any metrics are evaluated, `phase6-gate` replays the workflow-health
+classification from `workflow_store_root`. It validates each session's complete
+append-only revision chain and every captured stage artifact, then requires the
+reconstructed canonical health report to equal `workflow_health_file`. A
+self-consistent but hand-authored uptime summary cannot enter the terminal
+verdict.
 
 The final verdict requires all of: net Sharpe above 0.8, bootstrap lower bound
 above 0.3, fully-filled intended-order rate above 90%, global 90th-percentile
@@ -1171,7 +1179,8 @@ category, excess retry attempts, scheduled uptime, source state hashes, and the
 calendar hash.
 
 The terminal `evaluation phase6-gate` aggregation spec must include
-`workflow_health_file`. Its calendar hash, start/end bounds, and complete
+`workflow_store_root` and `workflow_health_file`. The gate reconstructs the
+health report from that store; its calendar hash, start/end bounds, and complete
 authoritative session sequence must exactly match the Phase 6 calendar and
 proof window. The terminal uptime threshold is calculated from intact scheduled
 workflow completions; replay-report presence is tracked separately and cannot

@@ -19,7 +19,11 @@ from quant_earning_edge.evaluation import (
     ReplaySessionAggregator,
     ReplaySessionReport,
 )
-from quant_earning_edge.orchestration import WorkflowHealthReport
+from quant_earning_edge.orchestration import (
+    DailyWorkflowStore,
+    WorkflowHealthEvaluator,
+    WorkflowHealthReport,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -317,6 +321,7 @@ def test_phase6_gate_rejects_hidden_daily_capital_reset(tmp_path: Path) -> None:
 
 def test_phase6_cli_marks_short_fixture_as_insufficient(tmp_path: Path) -> None:
     calendar = _calendar(tmp_path, 2)
+    workflow_root = tmp_path / "workflow-store"
     report_paths = []
     for session in calendar.sessions:
         report = ReplaySessionAggregator().evaluate(
@@ -330,12 +335,18 @@ def test_phase6_cli_marks_short_fixture_as_insufficient(tmp_path: Path) -> None:
         report_paths.append(path.name)
     spec_path = tmp_path / "phase6.json"
     health_path = tmp_path / "workflow-health.json"
-    _health(calendar).write(health_path)
+    WorkflowHealthEvaluator().evaluate(
+        calendar=calendar,
+        store=DailyWorkflowStore(workflow_root),
+        start_date=calendar.sessions[0].session_date,
+        end_date=calendar.sessions[-1].session_date,
+    ).write(health_path)
     output = tmp_path / "gate.json"
     spec_path.write_text(
         json.dumps(
             {
                 "session_file": calendar.path.name,
+                "workflow_store_root": workflow_root.name,
                 "workflow_health_file": health_path.name,
                 "proof_start": calendar.sessions[0].session_date.isoformat(),
                 "proof_end": calendar.sessions[-1].session_date.isoformat(),
@@ -367,3 +378,48 @@ def test_phase6_cli_marks_short_fixture_as_insufficient(tmp_path: Path) -> None:
     assert command_result["verdict"] == "insufficient-evidence"
     assert not command_result["passes_phase6_gate"]
     assert report["required_session_count"] == 90
+
+
+def test_phase6_cli_rejects_forged_scheduled_uptime_summary(tmp_path: Path) -> None:
+    calendar = _calendar(tmp_path, 2)
+    workflow_root = tmp_path / "empty-workflow-store"
+    health_path = tmp_path / "forged-health.json"
+    _health(calendar).write(health_path)
+    relocated_calendar = tmp_path / calendar.path.name
+    relocated_calendar.write_bytes(calendar.path.read_bytes())
+    spec_path = tmp_path / "phase6-forged.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "session_file": relocated_calendar.name,
+                "workflow_store_root": workflow_root.name,
+                "workflow_health_file": health_path.name,
+                "proof_start": calendar.sessions[0].session_date.isoformat(),
+                "proof_end": calendar.sessions[-1].session_date.isoformat(),
+                "initial_cash": 100_000,
+                "session_report_files": [],
+                "bootstrap_resamples": 10,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "evaluation",
+            "phase6-gate",
+            "--aggregation-spec",
+            str(spec_path),
+            "--output",
+            str(tmp_path / "forged-gate.json"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    plain_output = "".join(
+        " " if "\u2500" <= character <= "\u257f" else character for character in result.output
+    )
+    assert "workflow health does not reproduce from the bound workflow store" in " ".join(
+        plain_output.split()
+    )

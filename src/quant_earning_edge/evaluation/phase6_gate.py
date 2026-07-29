@@ -33,6 +33,7 @@ class Phase6AggregationSpec(_StrictSpec):
     """Immutable daily files and calendar bounds for one terminal proof."""
 
     session_file: Path
+    workflow_store_root: Path
     workflow_health_file: Path
     proof_start: date
     proof_end: date

@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 388 automated tests pass.
+- 389 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 98 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -62,7 +62,8 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   from its exact canonical planning input and strategy. That planning input must
   itself reproduce from captured probability-free live source data, the exact
   production-model evidence and booster, and feature artifacts independently
-  regenerated from exact candidate/daily-bar/minute-bar/earnings inputs;
+  regenerated from exact candidate/daily-bar/minute-bar/earnings inputs and
+  raw Polygon aggregate observations;
   compatibility-mode or hand-scored planning cannot enter terminal proof. The
   live source must independently reproduce from its candidate file,
   authoritative calendar, raw Alpaca paper-account response, raw Polygon

@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from quant_earning_edge.data import LakehouseLayout, SilverWriter
+from quant_earning_edge.data import BronzeWriter, LakehouseLayout, SilverWriter
 from quant_earning_edge.data.clients import EarningsEvent, EquityBar, MinuteBar
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
@@ -32,44 +32,94 @@ def _fixture(tmp_path: Path) -> tuple[FeatureSourceManifest, Path]:
     layout = LakehouseLayout(tmp_path / "lake")
     writer = SilverWriter(layout)
     first = ASOF_DATE - timedelta(days=80)
-    daily = writer.write_daily_bars(
-        tuple(
-            EquityBar(
-                symbol="AAA",
-                timestamp=datetime.combine(
-                    first + timedelta(days=index),
-                    datetime.min.time(),
-                    tzinfo=UTC,
-                )
-                + timedelta(hours=20),
-                open=99 + index,
-                high=102 + index,
-                low=98 + index,
-                close=100 + index,
-                volume=1_000_000 + index * 1_000,
-                vwap=99.5 + index,
-                adjusted=True,
+    daily_models = tuple(
+        EquityBar(
+            symbol="AAA",
+            timestamp=datetime.combine(
+                first + timedelta(days=index),
+                datetime.min.time(),
+                tzinfo=UTC,
             )
-            for index in range(81)
-        ),
+            + timedelta(hours=20),
+            open=99 + index,
+            high=102 + index,
+            low=98 + index,
+            close=100 + index,
+            volume=1_000_000 + index * 1_000,
+            vwap=99.5 + index,
+            adjusted=True,
+        )
+        for index in range(81)
+    )
+    daily_raw = {
+        "ticker": "AAA",
+        "adjusted": True,
+        "status": "OK",
+        "results": [
+            {
+                "t": int(item.timestamp.timestamp() * 1000),
+                "o": item.open,
+                "h": item.high,
+                "l": item.low,
+                "c": item.close,
+                "v": item.volume,
+                "vw": item.vwap,
+            }
+            for item in daily_models
+        ],
+    }
+    daily = writer.write_daily_bars(
+        daily_models,
         ingested_at=OBSERVED_AT,
     )
+    minute_model = MinuteBar(
+        symbol="AAA",
+        timestamp=OBSERVED_AT - timedelta(minutes=2),
+        open=180,
+        high=181,
+        low=179,
+        close=180.5,
+        volume=10_000,
+        vwap=180.2,
+        adjusted=True,
+    )
+    minute_raw = {
+        "ticker": "AAA",
+        "adjusted": True,
+        "status": "OK",
+        "results": [
+            {
+                "t": int(minute_model.timestamp.timestamp() * 1000),
+                "o": minute_model.open,
+                "h": minute_model.high,
+                "l": minute_model.low,
+                "c": minute_model.close,
+                "v": minute_model.volume,
+                "vw": minute_model.vwap,
+            }
+        ],
+    }
     minute = writer.write_minute_bars(
-        (
-            MinuteBar(
-                symbol="AAA",
-                timestamp=OBSERVED_AT - timedelta(minutes=2),
-                open=180,
-                high=181,
-                low=179,
-                close=180.5,
-                volume=10_000,
-                vwap=180.2,
-                adjusted=True,
-            ),
-        ),
+        (minute_model,),
         event_date=TRADE_DATE,
         ingested_at=OBSERVED_AT,
+    )
+    bronze = BronzeWriter(layout)
+    provider_observations = (
+        bronze.write_json(
+            daily_raw,
+            source="polygon",
+            dataset="daily-aggregate-bars",
+            event_date=ASOF_DATE,
+            received_at=OBSERVED_AT,
+        ),
+        bronze.write_json(
+            minute_raw,
+            source="polygon",
+            dataset="minute-aggregate-bars",
+            event_date=TRADE_DATE,
+            received_at=OBSERVED_AT,
+        ),
     )
     earnings = writer.write_earnings(
         (
@@ -158,6 +208,7 @@ def _fixture(tmp_path: Path) -> tuple[FeatureSourceManifest, Path]:
         daily_bar_files=daily_paths,
         minute_bar_files=(minute.path,),
         earnings_files=earnings_paths,
+        provider_observations=provider_observations,
     )
     return manifest, feature.path
 
@@ -184,6 +235,19 @@ def test_feature_source_rejects_changed_causal_input(tmp_path: Path) -> None:
     manifest, _ = _fixture(tmp_path)
     input_path = manifest.input_paths(data_lake_root=tmp_path / "lake")[1]
     input_path.write_bytes(b"changed")
+
+    with pytest.raises(ValueError, match="missing or differs"):
+        FeatureSourceCapture.reproduce(
+            manifest,
+            data_lake_root=tmp_path / "lake",
+            output_layout=LakehouseLayout(tmp_path / "reproduced"),
+        )
+
+
+def test_feature_source_rejects_changed_provider_observation(tmp_path: Path) -> None:
+    manifest, _ = _fixture(tmp_path)
+    provider_path = manifest.provider_paths(data_lake_root=tmp_path / "lake")[0]
+    provider_path.write_bytes(b"{}")
 
     with pytest.raises(ValueError, match="missing or differs"):
         FeatureSourceCapture.reproduce(

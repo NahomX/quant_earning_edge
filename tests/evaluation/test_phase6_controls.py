@@ -966,48 +966,96 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     ) = live_capture_paths
     feature_layout = LakehouseLayout(daily / "candidate-lake")
     feature_writer = SilverWriter(feature_layout)
+    feature_bar_models = tuple(
+        EquityBar(
+            symbol="AAA",
+            timestamp=datetime(
+                day.year,
+                day.month,
+                day.day,
+                20,
+                tzinfo=UTC,
+            ),
+            open=close - 1,
+            high=close + 1,
+            low=close - 2,
+            close=close,
+            volume=1_000_000,
+            vwap=close - 0.5,
+            adjusted=True,
+        )
+        for day, close in (
+            (planning_source.feature_asof_date - timedelta(days=1), 99.0),
+            (planning_source.feature_asof_date, 100.0),
+        )
+    )
     feature_bars = feature_writer.write_daily_bars(
-        tuple(
-            EquityBar(
-                symbol="AAA",
-                timestamp=datetime(
-                    day.year,
-                    day.month,
-                    day.day,
-                    20,
-                    tzinfo=UTC,
-                ),
-                open=close - 1,
-                high=close + 1,
-                low=close - 2,
-                close=close,
-                volume=1_000_000,
-                vwap=close - 0.5,
-                adjusted=True,
-            )
-            for day, close in (
-                (planning_source.feature_asof_date - timedelta(days=1), 99.0),
-                (planning_source.feature_asof_date, 100.0),
-            )
-        ),
+        feature_bar_models,
         ingested_at=decision_at,
     )
+    feature_minute_model = MinuteBar(
+        symbol="AAA",
+        timestamp=decision_at - timedelta(minutes=2),
+        open=100,
+        high=101,
+        low=99,
+        close=100.5,
+        volume=10_000,
+        vwap=100.25,
+        adjusted=True,
+    )
     feature_minute = feature_writer.write_minute_bars(
-        (
-            MinuteBar(
-                symbol="AAA",
-                timestamp=decision_at - timedelta(minutes=2),
-                open=100,
-                high=101,
-                low=99,
-                close=100.5,
-                volume=10_000,
-                vwap=100.25,
-                adjusted=True,
-            ),
-        ),
+        (feature_minute_model,),
         event_date=session_date,
         ingested_at=decision_at,
+    )
+    feature_bronze = BronzeWriter(feature_layout)
+    feature_provider_observations = (
+        feature_bronze.write_json(
+            {
+                "ticker": "AAA",
+                "adjusted": True,
+                "status": "OK",
+                "results": [
+                    {
+                        "t": int(item.timestamp.timestamp() * 1000),
+                        "o": item.open,
+                        "h": item.high,
+                        "l": item.low,
+                        "c": item.close,
+                        "v": item.volume,
+                        "vw": item.vwap,
+                    }
+                    for item in feature_bar_models
+                ],
+            },
+            source="polygon",
+            dataset="daily-aggregate-bars",
+            event_date=planning_source.feature_asof_date,
+            received_at=decision_at,
+        ),
+        feature_bronze.write_json(
+            {
+                "ticker": "AAA",
+                "adjusted": True,
+                "status": "OK",
+                "results": [
+                    {
+                        "t": int(feature_minute_model.timestamp.timestamp() * 1000),
+                        "o": feature_minute_model.open,
+                        "h": feature_minute_model.high,
+                        "l": feature_minute_model.low,
+                        "c": feature_minute_model.close,
+                        "v": feature_minute_model.volume,
+                        "vw": feature_minute_model.vwap,
+                    }
+                ],
+            },
+            source="polygon",
+            dataset="minute-aggregate-bars",
+            event_date=session_date,
+            received_at=decision_at,
+        ),
     )
     bar_paths = tuple(item.path for item in feature_bars)
     contexts = DailyBarsFeatureLoader().load(
@@ -1047,10 +1095,12 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         daily_bar_files=bar_paths,
         minute_bar_files=(feature_minute.path,),
         earnings_files=(earnings_path,),
+        provider_observations=feature_provider_observations,
     )
     feature_lineage_paths = (
         feature_source.path,
         *feature_source.input_paths(data_lake_root=feature_layout.root),
+        *feature_source.provider_paths(data_lake_root=feature_layout.root),
     )
     planning, planning_sources, planning_evidence_path = _write_scored_planning(
         daily,

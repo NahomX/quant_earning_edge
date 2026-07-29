@@ -71,11 +71,12 @@ def test_daily_bars_paginates_validates_and_captures_each_page(tmp_path: Path) -
         transport=httpx.MockTransport(respond),
     )
     with http_client:
-        bars = PolygonClient(
+        client = PolygonClient(
             api_key="test-key",
             http_client=http_client,
             bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
-        ).daily_bars(
+        )
+        bars = client.daily_bars(
             symbol=" aapl ",
             start_date=date(2026, 7, 27),
             end_date=date(2026, 7, 28),
@@ -85,6 +86,7 @@ def test_daily_bars_paginates_validates_and_captures_each_page(tmp_path: Path) -
     assert [bar.session_date for bar in bars] == [date(2026, 7, 27), date(2026, 7, 28)]
     assert bars[1].close == 101.5
     assert bars[0].adjusted
+    assert len(client.feature_observation_artifacts) == 2
     assert len(list((tmp_path / "bronze").rglob("*.json"))) == 2
 
 

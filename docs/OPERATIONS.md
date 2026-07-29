@@ -628,7 +628,8 @@ aggregated. The verifier first requires schema-v2 scored-planning evidence. It
 reloads the exact captured probability-free live source and production-model
 evidence/booster. Every long-form live feature file must carry a strict source
 manifest binding its candidate, daily-bar, premarket-minute, and earnings
-Silver inputs; the verifier regenerates the feature Parquet byte-for-byte
+inputs plus the raw Polygon daily/minute aggregate pages. The verifier first
+regenerates the market Silver and then the feature Parquet byte-for-byte
 before rerunning model inference and requiring the scored planning bytes to match. Compatibility
 planning without that production lineage is ineligible for terminal proof.
 Next, it locates the captured canonical planning input whose SHA-256 is embedded

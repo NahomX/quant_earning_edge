@@ -485,6 +485,7 @@ class PolygonClient:
         self._decision_snapshot_artifacts: list[BronzeArtifact] = []
         self._universe_observation_artifacts: list[BronzeArtifact] = []
         self._corporate_action_observation_artifacts: list[BronzeArtifact] = []
+        self._feature_observation_artifacts: list[BronzeArtifact] = []
 
     @property
     def decision_snapshot_artifacts(self) -> tuple[BronzeArtifact, ...]:
@@ -500,6 +501,11 @@ class PolygonClient:
     def corporate_action_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
         """Return raw split and dividend responses retained by this client."""
         return tuple(self._corporate_action_observation_artifacts)
+
+    @property
+    def feature_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return raw daily/minute aggregate pages retained for live features."""
+        return tuple(self._feature_observation_artifacts)
 
     @classmethod
     def stock_splits_from_payloads(
@@ -596,6 +602,47 @@ class PolygonClient:
         if timestamps != tuple(sorted(set(timestamps))):
             raise ProviderResponseError("Polygon aggregate payload timestamps are not unique")
         return bars
+
+    @classmethod
+    def minute_bars_from_payloads(
+        cls,
+        raws: tuple[Any, ...],
+        *,
+        symbol: str,
+    ) -> tuple[MinuteBar, ...]:
+        """Reconstruct retained minute aggregate pages without requests."""
+        normalized = symbol.strip().upper()
+        bars: list[MinuteBar] = []
+        timestamps: set[datetime] = set()
+        for raw in raws:
+            page = cls._validate_page(raw, expected_symbol=normalized)
+            for aggregate in page.results:
+                timestamp = datetime.fromtimestamp(aggregate.timestamp_ms / 1000, tz=UTC)
+                if timestamp in timestamps:
+                    raise ProviderResponseError(
+                        f"Polygon returned duplicate minute timestamp: {timestamp.isoformat()}"
+                    )
+                timestamps.add(timestamp)
+                try:
+                    bars.append(
+                        MinuteBar(
+                            symbol=normalized,
+                            timestamp=timestamp,
+                            open=aggregate.open,
+                            high=aggregate.high,
+                            low=aggregate.low,
+                            close=aggregate.close,
+                            volume=aggregate.volume,
+                            vwap=aggregate.vwap,
+                            transactions=aggregate.transactions,
+                            adjusted=page.adjusted,
+                        )
+                    )
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon minute aggregate failed validation: {error}"
+                    ) from error
+        return tuple(sorted(bars, key=lambda item: item.timestamp))
 
     @staticmethod
     def ticker_details_from_payload(
@@ -698,14 +745,14 @@ class PolygonClient:
             response = self._request(url=url, params=params)
             raw = self._decode_json(response)
             if self._bronze_writer is not None:
-                self._universe_observation_artifacts.append(
-                    self._bronze_writer.write_json(
-                        raw,
-                        source="polygon",
-                        dataset="daily-aggregate-bars",
-                        event_date=start_date,
-                    )
+                artifact = self._bronze_writer.write_json(
+                    raw,
+                    source="polygon",
+                    dataset="daily-aggregate-bars",
+                    event_date=start_date,
                 )
+                self._universe_observation_artifacts.append(artifact)
+                self._feature_observation_artifacts.append(artifact)
             page = self._validate_page(raw, expected_symbol=normalized_symbol)
             for bar in self.daily_bars_from_payload(raw, symbol=normalized_symbol):
                 if bar.timestamp in seen_timestamps:
@@ -856,15 +903,18 @@ class PolygonClient:
             response = self._request(url=url, params=params)
             raw = self._decode_json(response)
             if self._bronze_writer is not None:
-                self._bronze_writer.write_json(
-                    raw,
-                    source="polygon",
-                    dataset="minute-aggregate-bars",
-                    event_date=start_utc.astimezone(_MARKET_TIMEZONE).date(),
+                self._feature_observation_artifacts.append(
+                    self._bronze_writer.write_json(
+                        raw,
+                        source="polygon",
+                        dataset="minute-aggregate-bars",
+                        event_date=start_utc.astimezone(_MARKET_TIMEZONE).date(),
+                    )
                 )
+            page_bars = self.minute_bars_from_payloads((raw,), symbol=normalized_symbol)
             page = self._validate_page(raw, expected_symbol=normalized_symbol)
-            for aggregate in page.results:
-                timestamp = datetime.fromtimestamp(aggregate.timestamp_ms / 1000, tz=UTC)
+            for item in page_bars:
+                timestamp = item.timestamp
                 if timestamp in timestamps:
                     raise ProviderResponseError(
                         f"Polygon returned duplicate minute timestamp: {timestamp.isoformat()}"
@@ -872,25 +922,7 @@ class PolygonClient:
                 if not start_utc <= timestamp <= end_utc:
                     raise ProviderResponseError("Polygon returned a minute bar out of range")
                 timestamps.add(timestamp)
-                try:
-                    bars.append(
-                        MinuteBar(
-                            symbol=normalized_symbol,
-                            timestamp=timestamp,
-                            open=aggregate.open,
-                            high=aggregate.high,
-                            low=aggregate.low,
-                            close=aggregate.close,
-                            volume=aggregate.volume,
-                            vwap=aggregate.vwap,
-                            transactions=aggregate.transactions,
-                            adjusted=page.adjusted,
-                        )
-                    )
-                except ValidationError as error:
-                    raise ProviderResponseError(
-                        f"Polygon minute aggregate failed validation: {error}"
-                    ) from error
+                bars.append(item)
             if page.next_url is None:
                 return tuple(sorted(bars, key=lambda item: item.timestamp))
             url = self._validated_next_url(page.next_url)

@@ -291,6 +291,16 @@ class Phase6DailyReportVerifier:
                 for path, entry in zip(input_paths, manifest.input_entries, strict=True)
             ):
                 raise ValueError("feature generation lacks exact captured causal inputs")
+            provider_paths = manifest.provider_paths(data_lake_root=source_root)
+            if any(
+                path not in paths_by_sha.get(entry["sha256"], [])
+                for path, entry in zip(
+                    provider_paths,
+                    manifest.provider_entries,
+                    strict=True,
+                )
+            ):
+                raise ValueError("feature generation lacks captured provider observations")
             with TemporaryDirectory(prefix="qee-feature-reconstruction-") as temporary:
                 FeatureSourceCapture.reproduce(
                     manifest,

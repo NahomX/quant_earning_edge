@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 import pyarrow.parquet as pq
 
+from quant_earning_edge.data.clients import PolygonClient
+from quant_earning_edge.data.silver import SilverWriter
 from quant_earning_edge.features.inputs import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -25,7 +27,9 @@ from quant_earning_edge.features.store import (
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from quant_earning_edge.data.bronze import BronzeArtifact
     from quant_earning_edge.data.layout import LakehouseLayout
+    from quant_earning_edge.data.silver import SilverArtifact
     from quant_earning_edge.features.store import FeatureArtifact
 
 _INPUT_GROUPS = (
@@ -34,6 +38,7 @@ _INPUT_GROUPS = (
     "minute_bar_files",
     "earnings_files",
 )
+_PROVIDER_GROUPS = ("daily_bar_observations", "minute_bar_observations")
 
 
 @dataclass(frozen=True)
@@ -60,8 +65,9 @@ class FeatureSourceManifest:
             "feature_names",
             "feature_file",
             "source_files",
+            "provider_observations",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("feature source manifest schema mismatch")
         if (
             not isinstance(raw["feature_file"], dict)
@@ -71,11 +77,19 @@ class FeatureSourceManifest:
                 not isinstance(raw["source_files"][name], list) or not raw["source_files"][name]
                 for name in _INPUT_GROUPS
             )
+            or not isinstance(raw["provider_observations"], dict)
+            or set(raw["provider_observations"]) != set(_PROVIDER_GROUPS)
+            or any(
+                not isinstance(raw["provider_observations"][name], list)
+                or not raw["provider_observations"][name]
+                for name in _PROVIDER_GROUPS
+            )
         ):
             raise ValueError("feature source manifest collections are invalid")
         entries = (
             raw["feature_file"],
             *(entry for name in _INPUT_GROUPS for entry in raw["source_files"][name]),
+            *(entry for name in _PROVIDER_GROUPS for entry in raw["provider_observations"][name]),
         )
         for entry in entries:
             _validate_entry(entry)
@@ -86,6 +100,10 @@ class FeatureSourceManifest:
             tuple(raw["source_files"][name])
             != tuple(sorted(raw["source_files"][name], key=lambda item: item["path"]))
             for name in _INPUT_GROUPS
+        ) or any(
+            tuple(raw["provider_observations"][name])
+            != tuple(sorted(raw["provider_observations"][name], key=lambda item: item["path"]))
+            for name in _PROVIDER_GROUPS
         ):
             raise ValueError("feature source manifest inputs are not sorted")
         try:
@@ -123,6 +141,12 @@ class FeatureSourceManifest:
     def input_entries(self) -> tuple[dict[str, str], ...]:
         return tuple(entry for name in _INPUT_GROUPS for entry in self.raw["source_files"][name])
 
+    @property
+    def provider_entries(self) -> tuple[dict[str, str], ...]:
+        return tuple(
+            entry for name in _PROVIDER_GROUPS for entry in self.raw["provider_observations"][name]
+        )
+
     def feature_path(self, *, data_lake_root: Path) -> Path:
         return _resolve_entries(
             (self.raw["feature_file"],),
@@ -131,6 +155,9 @@ class FeatureSourceManifest:
 
     def input_paths(self, *, data_lake_root: Path) -> tuple[Path, ...]:
         return _resolve_entries(self.input_entries, data_lake_root=data_lake_root)
+
+    def provider_paths(self, *, data_lake_root: Path) -> tuple[Path, ...]:
+        return _resolve_entries(self.provider_entries, data_lake_root=data_lake_root)
 
     def grouped_input_paths(
         self,
@@ -167,6 +194,7 @@ class FeatureSourceCapture:
         daily_bar_files: Sequence[Path],
         minute_bar_files: Sequence[Path],
         earnings_files: Sequence[Path],
+        provider_observations: Sequence[BronzeArtifact],
     ) -> FeatureSourceManifest:
         normalized_symbols = tuple(sorted({item.strip().upper() for item in symbols}))
         normalized_names = tuple(sorted(set(feature_names)))
@@ -183,6 +211,22 @@ class FeatureSourceCapture:
         groups = (candidate_files, daily_bar_files, minute_bar_files, earnings_files)
         if any(not group for group in groups):
             raise ValueError("feature source input groups must not be empty")
+        daily_observations = tuple(
+            item
+            for item in provider_observations
+            if _dataset_from_path(item.path) == "daily-aggregate-bars"
+        )
+        minute_observations = tuple(
+            item
+            for item in provider_observations
+            if _dataset_from_path(item.path) == "minute-aggregate-bars"
+        )
+        if (
+            len(daily_observations) + len(minute_observations) != len(provider_observations)
+            or not daily_observations
+            or not minute_observations
+        ):
+            raise ValueError("feature source provider observations are incomplete")
         table = pq.ParquetFile(feature_file.path).read()  # type: ignore[no-untyped-call]
         rows = table.to_pylist()
         if (
@@ -195,7 +239,7 @@ class FeatureSourceCapture:
         ):
             raise ValueError("feature artifact differs from source metadata")
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "trade_date": trade_date.isoformat(),
             "asof_date": asof_date.isoformat(),
             "observed_at": observed_at.isoformat(),
@@ -206,6 +250,10 @@ class FeatureSourceCapture:
             "source_files": {
                 name: self._entries(paths)
                 for name, paths in zip(_INPUT_GROUPS, groups, strict=True)
+            },
+            "provider_observations": {
+                "daily_bar_observations": self._entries(item.path for item in daily_observations),
+                "minute_bar_observations": self._entries(item.path for item in minute_observations),
             },
         }
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
@@ -231,6 +279,7 @@ class FeatureSourceCapture:
             manifest = FeatureSourceManifest.load(path)
             if manifest.feature_path(data_lake_root=data_lake_root) == feature_file.resolve():
                 manifest.input_paths(data_lake_root=data_lake_root)
+                manifest.provider_paths(data_lake_root=data_lake_root)
                 matches.append(manifest)
         if not matches:
             raise ValueError("feature file lacks retained source lineage")
@@ -250,6 +299,15 @@ class FeatureSourceCapture:
         asof_date = date.fromisoformat(manifest.raw["asof_date"])
         trade_date = date.fromisoformat(manifest.raw["trade_date"])
         symbols = tuple(manifest.raw["symbols"])
+        FeatureSourceCapture._reproduce_market_silver(
+            manifest,
+            data_lake_root=data_lake_root,
+            output_layout=output_layout,
+            observed_at=observed_at,
+            trade_date=trade_date,
+            daily_bar_files=daily_bar_files,
+            minute_bar_files=minute_bar_files,
+        )
         contexts = DailyBarsFeatureLoader().load(
             daily_bar_files,
             symbols=symbols,
@@ -283,6 +341,61 @@ class FeatureSourceCapture:
             raise ValueError("feature artifact differs from retained causal inputs")
         return reproduced
 
+    @staticmethod
+    def _reproduce_market_silver(
+        manifest: FeatureSourceManifest,
+        *,
+        data_lake_root: Path,
+        output_layout: LakehouseLayout,
+        observed_at: datetime,
+        trade_date: date,
+        daily_bar_files: tuple[Path, ...],
+        minute_bar_files: tuple[Path, ...],
+    ) -> None:
+        provider_paths = manifest.provider_paths(data_lake_root=data_lake_root)
+        daily_count = len(manifest.raw["provider_observations"]["daily_bar_observations"])
+        daily_raws = tuple(json.loads(path.read_bytes()) for path in provider_paths[:daily_count])
+        minute_raws = tuple(json.loads(path.read_bytes()) for path in provider_paths[daily_count:])
+        daily_by_symbol = _group_polygon_payloads(daily_raws)
+        minute_by_symbol = _group_polygon_payloads(minute_raws)
+        expected_symbols = set(manifest.raw["symbols"])
+        if set(daily_by_symbol) != expected_symbols or set(minute_by_symbol) != expected_symbols:
+            raise ValueError("feature provider observations differ from captured symbols")
+        writer = SilverWriter(output_layout)
+        reproduced_daily: list[SilverArtifact] = []
+        reproduced_minute: list[SilverArtifact] = []
+        for symbol in manifest.raw["symbols"]:
+            daily = tuple(
+                bar
+                for raw in daily_by_symbol[symbol]
+                for bar in PolygonClient.daily_bars_from_payload(raw, symbol=symbol)
+            )
+            if len({bar.timestamp for bar in daily}) != len(daily):
+                raise ValueError("feature daily provider observations contain duplicate bars")
+            reproduced_daily.extend(
+                writer.write_daily_bars(
+                    tuple(sorted(daily, key=lambda item: item.timestamp)),
+                    ingested_at=observed_at,
+                )
+            )
+            minute = PolygonClient.minute_bars_from_payloads(
+                minute_by_symbol[symbol],
+                symbol=symbol,
+            )
+            reproduced_minute.append(
+                writer.write_minute_bars(
+                    minute,
+                    event_date=trade_date,
+                    ingested_at=observed_at,
+                )
+            )
+        if _byte_digests(item.path for item in reproduced_daily) != _byte_digests(
+            daily_bar_files
+        ) or _byte_digests(item.path for item in reproduced_minute) != _byte_digests(
+            minute_bar_files
+        ):
+            raise ValueError("feature Silver inputs differ from retained Polygon observations")
+
     def _entries(self, paths: Iterable[Path]) -> list[dict[str, str]]:
         return [self._entry(path) for path in sorted(paths)]
 
@@ -309,6 +422,33 @@ def _resolve_entries(
     ):
         raise ValueError("feature source file is missing or differs")
     return paths
+
+
+def _group_polygon_payloads(
+    raws: tuple[Any, ...],
+) -> dict[str, tuple[Any, ...]]:
+    grouped: dict[str, list[Any]] = {}
+    for raw in raws:
+        if not isinstance(raw, dict) or not isinstance(raw.get("ticker"), str):
+            raise ValueError("feature Polygon observation lacks a ticker")
+        symbol = raw["ticker"].strip().upper()
+        if not symbol:
+            raise ValueError("feature Polygon observation ticker is empty")
+        grouped.setdefault(symbol, []).append(raw)
+    return {symbol: tuple(items) for symbol, items in sorted(grouped.items())}
+
+
+def _byte_digests(paths: Iterable[Path]) -> tuple[str, ...]:
+    return tuple(sorted(_file_sha256(path) for path in paths))
+
+
+def _dataset_from_path(path: Path) -> str:
+    matches = tuple(
+        part.removeprefix("dataset=") for part in path.parts if part.startswith("dataset=")
+    )
+    if len(matches) != 1:
+        raise ValueError(f"feature provider observation dataset is ambiguous: {path}")
+    return matches[0]
 
 
 def _validate_entry(entry: object) -> None:

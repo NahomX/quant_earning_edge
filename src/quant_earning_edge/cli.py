@@ -3660,6 +3660,9 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                         *manifest.input_paths(
                             data_lake_root=environment.data_lake_root,
                         ),
+                        *manifest.provider_paths(
+                            data_lake_root=environment.data_lake_root,
+                        ),
                     )
                 )
             )

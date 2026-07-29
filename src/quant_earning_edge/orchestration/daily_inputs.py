@@ -310,6 +310,7 @@ class DailyInputPreparer:
         writer = SilverWriter(self._layout)
         bars_files: list[Path] = []
         minute_files: list[Path] = []
+        observation_start = len(self._polygon.feature_observation_artifacts)
         for symbol in symbols:
             bars = BarsIngestor(client=self._polygon, silver_writer=writer).ingest(
                 symbol=symbol,
@@ -377,6 +378,7 @@ class DailyInputPreparer:
             daily_bar_files=bars_files,
             minute_bar_files=minute_files,
             earnings_files=earnings_files,
+            provider_observations=self._polygon.feature_observation_artifacts[observation_start:],
         )
         return artifact.path.resolve()
 

@@ -61,8 +61,10 @@ reproducible through `uv.lock`.
 | Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
+| OOS prediction-to-Phase 4 provenance | Complete | canonical run reload, exact probability checks, complete row coverage, shared Optuna/run hashes |
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
+| Explicit event-model abstention sessions | Complete | zero-return ledgers preserve non-trading OOS dates in Phase 4 metrics |
 | Phase 4 multi-fold gate aggregation | Complete | capital continuity and both documented threshold sets |
 | Phase 4 cohort evidence and tearsheet | Complete | exact trade mapping; BMO/AMC, sector, and explicit IV-availability metrics in canonical JSON/HTML |
 | Causally bounded NBBO/trade replay engine | Complete | partial/missed fills, impact, limit queues, auction skew |

@@ -16,7 +16,9 @@ from pydantic import ValidationError
 
 from quant_earning_edge import __version__
 from quant_earning_edge.backtest import (
+    BacktestResult,
     BacktestSpec,
+    DailyLedger,
     NbboReplayEvidence,
     NbboReplaySpec,
     ReplayConfigSpec,
@@ -151,11 +153,14 @@ from quant_earning_edge.signals import (
     LivePlanningAssembler,
     LivePlanningSourceSpec,
     LiveSourceCaptureAssembler,
+    OosPrediction,
     OptunaLightgbmSearch,
     OptunaStudyArtifact,
+    PlannedEventTrades,
     ProductionModelArtifact,
     ProductionModelTrainer,
     TradeCohort,
+    WalkForwardModelRun,
     load_strategy_config,
     strategy_file_sha256,
 )
@@ -1271,6 +1276,8 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
             top_k=config.portfolio.top_k,
             requested_trials=config.model.hyperparam_search.n_trials,
         )
+        if study.sha256 != promotion.hyperparameter_study_sha256:
+            raise ValueError("Phase 4 gate differs from the selected Optuna study")
         trainer = ProductionModelTrainer(
             feature_names=config.features,
             label_name="forward_1d_close",
@@ -1553,6 +1560,14 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
         Path,
         typer.Option(dir_okay=False, help="Immutable standardized evaluation JSON."),
     ],
+    walkforward_run_evidence: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical walk-forward run containing the supplied OOS probabilities.",
+        ),
+    ],
     mlflow_experiment: Annotated[
         str,
         typer.Option(help="MLflow experiment receiving reproducibility evidence."),
@@ -1562,8 +1577,19 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
     """Create causal event trades and evaluate their timestamped executions."""
     try:
         config = load_strategy_config(strategy_config)
+        model_run = WalkForwardModelRun.load_evidence(walkforward_run_evidence)
+        if model_run.hyperparameter_study_sha256 is None:
+            raise ValueError("walk-forward run lacks an Optuna study binding")
+        if (
+            model_run.feature_names != config.features
+            or model_run.label_name != "forward_1d_close"
+            or model_run.threshold != config.label.threshold
+            or model_run.seed != config.seed
+        ):
+            raise ValueError("walk-forward run differs from the strategy configuration")
         spec = EventTradePlanningSpec.model_validate_json(planning_spec.read_bytes())
         equity, predictions, observations, outcomes = spec.domain_inputs()
+        model_run.validate_predictions(predictions)
         caps = config.portfolio.caps
         sizing = config.portfolio.sizing
         planner = EventTradePlanner(
@@ -1584,15 +1610,10 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
             observations=observations,
             outcomes=outcomes,
             equity=equity,
+            walkforward_run_sha256=model_run.sha256,
         )
-        if not plan.intents:
-            raise ValueError("event plan produced no trades")
         planner.write(plan, plan_output)
-        result = VectorbtIntradayEngine().run(
-            trades=plan.intents,
-            sessions=(plan.trade_date,),
-            initial_cash=equity,
-        )
+        result = _run_event_plan(plan)
         evaluator = PerformanceEvaluator()
         report = evaluator.evaluate(result)
         evaluator.write(report, evaluation_output)
@@ -1619,10 +1640,16 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
             session_count=report.session_count,
             bootstrap_resamples=10_000,
             seed=20260427,
-            source_files=(planning_spec, strategy_config, plan_output),
+            source_files=(
+                planning_spec,
+                strategy_config,
+                walkforward_run_evidence,
+                plan_output,
+            ),
             extra_parameters={
                 "plan_sha256": plan.sha256,
                 "strategy_sha256": strategy_file_sha256(strategy_config),
+                "walkforward_run_sha256": model_run.sha256,
             },
         )
     except (OSError, ValueError, RuntimeError) as error:
@@ -1675,8 +1702,17 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
     """Replay event plans and evaluate both documented strategy gates."""
     try:
         spec = Phase4AggregationSpec.model_validate_json(aggregation_spec.read_bytes())
+        run_path = (
+            spec.walkforward_run_evidence
+            if spec.walkforward_run_evidence.is_absolute()
+            else aggregation_spec.parent / spec.walkforward_run_evidence
+        )
+        model_run = WalkForwardModelRun.load_evidence(run_path)
+        if model_run.hyperparameter_study_sha256 is None:
+            raise ValueError("walk-forward run lacks an Optuna study binding")
         fold_results = []
         plan_paths: list[Path] = []
+        all_predictions: list[OosPrediction] = []
         for fold in spec.folds:
             results = []
             cohorts: list[TradeCohort] = []
@@ -1688,14 +1724,12 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                 )
                 plan_paths.append(plan_path)
                 plan = EventTradePlanner.load(plan_path)
+                if plan.walkforward_run_sha256 != model_run.sha256:
+                    raise ValueError("event plan differs from the Phase 4 walk-forward run")
+                model_run.validate_predictions(plan.source_predictions)
+                all_predictions.extend(plan.source_predictions)
                 cohorts.extend(plan.cohorts)
-                results.append(
-                    VectorbtIntradayEngine().run(
-                        trades=plan.intents,
-                        sessions=(plan.trade_date,),
-                        initial_cash=plan.portfolio.equity,
-                    )
-                )
+                results.append(_run_event_plan(plan))
             fold_results.append(
                 FoldBacktestResults(
                     fold_index=fold.fold_index,
@@ -1705,11 +1739,16 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                     cohorts=tuple(cohorts),
                 )
             )
+        model_run.validate_predictions(tuple(all_predictions), require_complete=True)
         evaluator = Phase4GateEvaluator(
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
         )
-        report = evaluator.evaluate(tuple(fold_results))
+        report = evaluator.evaluate(
+            tuple(fold_results),
+            walkforward_run_sha256=model_run.sha256,
+            hyperparameter_study_sha256=model_run.hyperparameter_study_sha256,
+        )
         evaluator.write(report, output)
         Phase4HtmlTearsheetWriter().write(report=report, output=tearsheet_output)
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
@@ -1735,7 +1774,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
             session_count=report.overall.session_count,
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
-            source_files=(aggregation_spec, *plan_paths),
+            source_files=(aggregation_spec, run_path, *plan_paths),
             artifact_files=(tearsheet_output,),
             extra_parameters={
                 "fold_count": len(report.walk_forward.folds),
@@ -4633,6 +4672,37 @@ def backfill_coverage(
     )
     if not report.ready:
         raise typer.Exit(code=1)
+
+
+def _run_event_plan(plan: PlannedEventTrades) -> BacktestResult:
+    if plan.intents:
+        return VectorbtIntradayEngine().run(
+            trades=plan.intents,
+            sessions=(plan.trade_date,),
+            initial_cash=plan.portfolio.equity,
+        )
+    equity = plan.portfolio.equity
+    return BacktestResult(
+        engine="event-no-trade",
+        input_sha256=plan.sha256,
+        initial_cash=equity,
+        trades=(),
+        daily=(
+            DailyLedger(
+                session_date=plan.trade_date,
+                gross_pnl=0.0,
+                commission=0.0,
+                half_spread=0.0,
+                market_impact=0.0,
+                borrow=0.0,
+                stop_slippage=0.0,
+                net_pnl=0.0,
+                gross_equity=equity,
+                net_equity=equity,
+                gross_exposure=0.0,
+            ),
+        ),
+    )
 
 
 def _environment(env_file: Path | None) -> RuntimeEnvironment:

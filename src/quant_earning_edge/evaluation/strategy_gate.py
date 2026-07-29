@@ -43,6 +43,7 @@ class Phase4AggregationSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    walkforward_run_evidence: Path
     folds: tuple[FoldArtifactSpec, ...]
 
 
@@ -79,6 +80,8 @@ class Phase4GateEvaluation:
     overall: PerformanceReport
     walk_forward: WalkForwardEvaluation
     cohorts: tuple[CohortPerformance, ...]
+    walkforward_run_sha256: str
+    hyperparameter_study_sha256: str
     passes_phase4_research_gate: bool
     passes_pre_paper_backtest_gate: bool
 
@@ -104,6 +107,8 @@ class Phase4PromotionEvidence:
     lower_sharpe: float
     max_drawdown: float
     positive_fold_gate: bool
+    walkforward_run_sha256: str
+    hyperparameter_study_sha256: str
 
     @classmethod
     def load(cls, path: Path) -> Phase4PromotionEvidence:
@@ -114,6 +119,8 @@ class Phase4PromotionEvidence:
             "overall",
             "walk_forward",
             "cohorts",
+            "walkforward_run_sha256",
+            "hyperparameter_study_sha256",
             "passes_phase4_research_gate",
             "passes_pre_paper_backtest_gate",
         }
@@ -130,6 +137,10 @@ class Phase4PromotionEvidence:
             lower_sharpe = float(bootstrap["sharpe"]["lower"])
             positive_fold_gate = bool(walk_forward["passes_positive_fold_gate"])
             _validate_promotion_cohorts(raw["cohorts"])
+            if not _is_sha256(str(raw["walkforward_run_sha256"])) or not _is_sha256(
+                str(raw["hyperparameter_study_sha256"])
+            ):
+                raise ValueError("Phase 4 model provenance digest is invalid")
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("invalid Phase 4 gate report") from error
         research = net_sharpe >= 0.8 and lower_sharpe >= 0.3 and max_drawdown <= 0.20
@@ -148,6 +159,8 @@ class Phase4PromotionEvidence:
             lower_sharpe=lower_sharpe,
             max_drawdown=max_drawdown,
             positive_fold_gate=positive_fold_gate,
+            walkforward_run_sha256=str(raw["walkforward_run_sha256"]),
+            hyperparameter_study_sha256=str(raw["hyperparameter_study_sha256"]),
         )
 
 
@@ -215,10 +228,18 @@ class Phase4GateEvaluator:
         )
         self._combiner = BacktestResultCombiner()
 
-    def evaluate(self, folds: Sequence[FoldBacktestResults]) -> Phase4GateEvaluation:
+    def evaluate(
+        self,
+        folds: Sequence[FoldBacktestResults],
+        *,
+        walkforward_run_sha256: str,
+        hyperparameter_study_sha256: str,
+    ) -> Phase4GateEvaluation:
         """Aggregate OOS folds and expose research/pre-paper decisions."""
         if not folds:
             raise ValueError("at least one fold result is required")
+        if not _is_sha256(walkforward_run_sha256) or not _is_sha256(hyperparameter_study_sha256):
+            raise ValueError("Phase 4 model provenance digest is invalid")
         fold_reports = []
         all_results: list[BacktestResult] = []
         all_cohorts: list[TradeCohort] = []
@@ -260,6 +281,8 @@ class Phase4GateEvaluator:
             overall=overall,
             walk_forward=walk_forward,
             cohorts=cohorts,
+            walkforward_run_sha256=walkforward_run_sha256,
+            hyperparameter_study_sha256=hyperparameter_study_sha256,
             passes_phase4_research_gate=phase4,
             passes_pre_paper_backtest_gate=pre_paper,
         )
@@ -399,3 +422,7 @@ def _validate_promotion_cohorts(raw: object) -> None:
         dimensions.add(dimension)
     if dimensions != {"event_timing", "sector", "iv_regime"}:
         raise ValueError("Phase 4 promotion requires all cohort dimensions")
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

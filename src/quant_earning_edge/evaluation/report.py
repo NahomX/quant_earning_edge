@@ -206,7 +206,7 @@ class PerformanceEvaluator:
             net_sharpe=net_sharpe,
             annualized_return=annualized_return,
             max_drawdown=_max_drawdown(net_equity, initial_cash=result.initial_cash),
-            hit_rate=float(np.mean(trade_returns > 0)),
+            hit_rate=(float(np.mean(trade_returns > 0)) if trade_returns.size else 0.0),
             payoff=(
                 float(np.mean(wins) / abs(np.mean(losses))) if wins.size and losses.size else None
             ),

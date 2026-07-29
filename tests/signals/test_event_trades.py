@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -20,11 +20,13 @@ from quant_earning_edge.portfolio import (
 from quant_earning_edge.signals import (
     EventExecutionObservation,
     EventTradePlanner,
+    FeatureAttribution,
+    FoldModelResult,
+    LightgbmHyperparameters,
     OosPrediction,
+    WalkForwardModelRun,
+    load_strategy_config,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _outcomes() -> tuple[TradeOutcome, ...]:
@@ -77,6 +79,36 @@ def _inputs() -> tuple[
     return predictions, observations
 
 
+def _write_run_evidence(path: Path, predictions: tuple[OosPrediction, ...]) -> WalkForwardModelRun:
+    feature_names = load_strategy_config(Path("configs/strategies/earnings_v1.yaml")).features
+    hyperparameters = LightgbmHyperparameters()
+    run = WalkForwardModelRun(
+        plan_sha256="a" * 64,
+        dataset_sha256=("b" * 64,),
+        feature_names=feature_names,
+        label_name="forward_1d_close",
+        threshold=0.0,
+        seed=20260427,
+        hyperparameter_study_sha256="c" * 64,
+        hyperparameters=hyperparameters,
+        hyperparameters_sha256=hyperparameters.sha256,
+        lightgbm_version="test",
+        folds=(
+            FoldModelResult(
+                fold_index=0,
+                model_sha256="d" * 64,
+                best_iteration=1,
+                fit_count=10,
+                validation_count=2,
+                predictions=predictions,
+                feature_attribution=tuple(FeatureAttribution(name, 0.0) for name in feature_names),
+            ),
+        ),
+    )
+    path.write_bytes(run.evidence_json_bytes())
+    return run
+
+
 def test_event_trade_plan_is_deterministic_and_long_only() -> None:
     predictions, observations = _inputs()
     planner = EventTradePlanner(
@@ -88,12 +120,14 @@ def test_event_trade_plan_is_deterministic_and_long_only() -> None:
         observations=observations,
         outcomes=_outcomes(),
         equity=100_000,
+        walkforward_run_sha256="f" * 64,
     )
     second = planner.plan(
         predictions=predictions,
         observations=observations,
         outcomes=_outcomes(),
         equity=100_000,
+        walkforward_run_sha256="f" * 64,
     )
 
     assert first == second
@@ -115,6 +149,7 @@ def test_future_labels_and_exit_prices_cannot_change_selection_or_size() -> None
         observations=observations,
         outcomes=_outcomes(),
         equity=100_000,
+        walkforward_run_sha256="f" * 64,
     )
     changed_predictions = tuple(
         replace(item, realized_label=1 - item.realized_label) for item in predictions
@@ -128,6 +163,7 @@ def test_future_labels_and_exit_prices_cannot_change_selection_or_size() -> None
         observations=changed_observations,
         outcomes=_outcomes(),
         equity=100_000,
+        walkforward_run_sha256="f" * 64,
     )
 
     assert baseline.portfolio == changed.portfolio
@@ -146,6 +182,7 @@ def test_planned_trades_persist_and_run_through_evaluation(tmp_path: Path) -> No
         observations=observations,
         outcomes=_outcomes(),
         equity=100_000,
+        walkforward_run_sha256="f" * 64,
     )
     artifact = tmp_path / "event-trades.json"
 
@@ -169,6 +206,8 @@ def test_event_backtest_cli_writes_plan_and_evaluation(tmp_path: Path) -> None:
     spec = tmp_path / "planning.json"
     plan_output = tmp_path / "plan.json"
     evaluation_output = tmp_path / "evaluation.json"
+    run_evidence = tmp_path / "walkforward-run.json"
+    _write_run_evidence(run_evidence, predictions)
     spec.write_text(
         json.dumps(
             {
@@ -195,11 +234,60 @@ def test_event_backtest_cli_writes_plan_and_evaluation(tmp_path: Path) -> None:
             str(plan_output),
             "--evaluation-output",
             str(evaluation_output),
+            "--walkforward-run-evidence",
+            str(run_evidence),
         ],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["trade_count"] == 2
     assert plan_output.exists()
     assert evaluation_output.exists()
+
+
+def test_event_backtest_cli_persists_model_abstention_session(tmp_path: Path) -> None:
+    predictions, observations = _inputs()
+    abstentions = tuple(replace(item, probability_up=0.4) for item in predictions)
+    spec = tmp_path / "planning.json"
+    plan_output = tmp_path / "plan.json"
+    evaluation_output = tmp_path / "evaluation.json"
+    run_evidence = tmp_path / "walkforward-run.json"
+    _write_run_evidence(run_evidence, abstentions)
+    spec.write_text(
+        json.dumps(
+            {
+                "equity": 100_000,
+                "predictions": [asdict(item) for item in abstentions],
+                "observations": [asdict(item) for item in observations],
+                "outcomes": [asdict(item) for item in _outcomes()],
+            },
+            default=lambda item: item.isoformat(),
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "model",
+            "plan-event-backtest",
+            "--planning-spec",
+            str(spec),
+            "--strategy-config",
+            "configs/strategies/earnings_v1.yaml",
+            "--plan-output",
+            str(plan_output),
+            "--evaluation-output",
+            str(evaluation_output),
+            "--walkforward-run-evidence",
+            str(run_evidence),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)
+    report = json.loads(evaluation_output.read_bytes())
+    assert payload["trade_count"] == 0
+    assert report["session_count"] == 1
+    assert report["hit_rate"] == 0.0

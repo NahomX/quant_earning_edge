@@ -173,6 +173,8 @@ class NextWorkflowQueuer:
             raise ValueError("workflow loop Phase 4 gate differs from production model")
         if model.hyperparameter_study_sha256 is None:
             raise ValueError("workflow loop production model lacks an Optuna study binding")
+        if promotion.hyperparameter_study_sha256 != model.hyperparameter_study_sha256:
+            raise ValueError("workflow loop Phase 4 Optuna study differs from production model")
         if model.training_cutoff > deployment.proof_start:
             raise ValueError("workflow loop model training cutoff follows proof start")
         model_age_at_end = (deployment.proof_end - model.training_cutoff).days

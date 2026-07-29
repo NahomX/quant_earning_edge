@@ -49,25 +49,27 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
         artifact_files=(tearsheet,),
     )
 
-    run = mlflow.MlflowClient(tracking_uri).get_run(reference.run_id)
+    client = mlflow.MlflowClient(
+        tracking_uri=tracking_uri,
+        registry_uri=tracking_uri,
+    )
+    run = client.get_run(reference.run_id)
     assert run.data.params["code_sha256"] == reference.code_sha256
     assert run.data.params["input_sha256"] == "b" * 64
     assert run.data.params["seed"] == "42"
     assert run.data.params["bootstrap_resamples"] == "10000"
     assert run.data.params["cost_impact_coefficient_bps"] == "5.0"
-    assert {
-        item.path for item in mlflow.MlflowClient(tracking_uri).list_artifacts(reference.run_id)
-    } == {
+    assert {item.path for item in client.list_artifacts(reference.run_id)} == {
         "performance-report.json",
         "source-manifest.json",
         "supplemental",
     }
-    supplemental = mlflow.MlflowClient(tracking_uri).list_artifacts(
+    supplemental = client.list_artifacts(
         reference.run_id,
         "supplemental",
     )
     assert {item.path for item in supplemental} == {"supplemental/tearsheet.html"}
-    downloaded = mlflow.MlflowClient(tracking_uri).download_artifacts(
+    downloaded = client.download_artifacts(
         reference.run_id,
         "performance-report.json",
         tmp_path / "download",

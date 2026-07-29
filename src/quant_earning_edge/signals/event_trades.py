@@ -181,12 +181,24 @@ class PlannedEventTrades:
     portfolio: PortfolioPlan
     intents: tuple[TradeIntent, ...]
     cohorts: tuple[TradeCohort, ...]
+    walkforward_run_sha256: str
+    source_predictions: tuple[OosPrediction, ...]
 
     def __post_init__(self) -> None:
         if tuple(item.trade_id for item in self.cohorts) != tuple(
             item.trade_id for item in self.intents
         ):
             raise ValueError("event-plan cohorts must align exactly with trade intents")
+        if not _is_sha256(self.walkforward_run_sha256):
+            raise ValueError("event plan walk-forward run digest is invalid")
+        row_indices = tuple(item.row_index for item in self.source_predictions)
+        if not row_indices or len(set(row_indices)) != len(row_indices):
+            raise ValueError("event plan source predictions must be nonempty and unique")
+        if row_indices != tuple(sorted(row_indices)):
+            raise ValueError("event plan source predictions must be ordered by row index")
+        prediction_symbols = {item.symbol for item in self.source_predictions}
+        if not {item.symbol for item in self.intents}.issubset(prediction_symbols):
+            raise ValueError("event plan intent has no source prediction")
 
     def to_json_bytes(self) -> bytes:
         """Serialize canonical decision and execution evidence."""
@@ -223,6 +235,7 @@ class EventTradePlanner:
         observations: Sequence[EventExecutionObservation],
         outcomes: Sequence[TradeOutcome],
         equity: float,
+        walkforward_run_sha256: str,
     ) -> PlannedEventTrades:
         """Create long-only event trades without sizing from future execution data."""
         if not predictions or not observations:
@@ -291,6 +304,8 @@ class EventTradePlanner:
             portfolio=portfolio,
             intents=tuple(intents),
             cohorts=tuple(cohorts),
+            walkforward_run_sha256=walkforward_run_sha256,
+            source_predictions=tuple(sorted(predictions, key=lambda item: item.row_index)),
         )
 
     @staticmethod
@@ -337,6 +352,11 @@ class EventTradePlanner:
                     for item in raw["intents"]
                 ),
                 cohorts=tuple(TradeCohort(**item) for item in raw["cohorts"]),
+                walkforward_run_sha256=str(raw["walkforward_run_sha256"]),
+                source_predictions=tuple(
+                    OosPredictionSpec.model_validate(item).to_domain()
+                    for item in raw["source_predictions"]
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid event-trade plan: {path}") from error
@@ -369,3 +389,7 @@ def _intent(
         entry_at=observation.entry_at,
         exit_at=observation.exit_at,
     )
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)

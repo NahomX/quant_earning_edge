@@ -10,6 +10,7 @@ import pytest
 
 from quant_earning_edge.backtest import (
     BacktestResult,
+    DailyLedger,
     DailyMark,
     TradeIntent,
     VectorbtBacktestEngine,
@@ -100,3 +101,36 @@ def test_report_persistence_is_content_addressed(tmp_path: Path) -> None:
     assert payload["trade_count"] == 2
     assert payload["bootstrap"]["seed"] == 7
     assert report.sha256
+
+
+def test_report_preserves_explicit_no_trade_session() -> None:
+    session = date(2025, 1, 2)
+    result = BacktestResult(
+        engine="no-trade",
+        input_sha256="a" * 64,
+        initial_cash=10_000,
+        trades=(),
+        daily=(
+            DailyLedger(
+                session,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                10_000,
+                10_000,
+                0.0,
+            ),
+        ),
+    )
+
+    report = PerformanceEvaluator(bootstrap_resamples=10).evaluate(result)
+
+    assert report.session_count == 1
+    assert report.trade_count == 0
+    assert report.hit_rate == 0.0
+    assert report.turnover == 0.0
+    assert report.bootstrap is None

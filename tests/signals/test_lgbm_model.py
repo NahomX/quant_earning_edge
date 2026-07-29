@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from typer.testing import CliRunner
 
 from quant_earning_edge.backtest import WalkForwardConfig, WalkForwardPlanner
 from quant_earning_edge.cli import app
 from quant_earning_edge.features import FEATURE_REGISTRY
-from quant_earning_edge.signals import LightgbmHyperparameters, LightgbmWalkForwardTrainer
+from quant_earning_edge.signals import (
+    LightgbmHyperparameters,
+    LightgbmWalkForwardTrainer,
+    WalkForwardModelRun,
+)
 
 
 def _dataset(path: Path) -> None:
@@ -88,6 +94,19 @@ def test_walk_forward_models_and_oos_predictions_are_deterministic(tmp_path: Pat
     assert len(models) == len(first.folds)
     assert json.loads(evidence[0].read_text(encoding="utf-8"))["seed"] == 20260427
     assert first.hyperparameters_sha256 == first.hyperparameters.sha256
+    loaded = WalkForwardModelRun.load_evidence(evidence[0])
+    assert loaded.evidence_json_bytes() == first.evidence_json_bytes()
+    loaded.validate_predictions(
+        tuple(item for fold in first.folds for item in fold.predictions),
+        require_complete=True,
+    )
+    one_prediction = first.folds[0].predictions[0]
+    with pytest.raises(ValueError, match="complete OOS prediction ledger"):
+        loaded.validate_predictions((one_prediction,), require_complete=True)
+    with pytest.raises(ValueError, match="differs from walk-forward"):
+        loaded.validate_predictions(
+            (replace(one_prediction, probability_up=1 - one_prediction.probability_up),)
+        )
 
 
 def test_walk_forward_run_binds_custom_hyperparameters(tmp_path: Path) -> None:

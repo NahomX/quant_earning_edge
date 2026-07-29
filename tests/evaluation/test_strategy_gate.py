@@ -25,7 +25,16 @@ from quant_earning_edge.evaluation import (
     Phase4PromotionEvidence,
 )
 from quant_earning_edge.portfolio import PortfolioPlan
-from quant_earning_edge.signals import EventTradePlanner, PlannedEventTrades, TradeCohort
+from quant_earning_edge.signals import (
+    EventTradePlanner,
+    FeatureAttribution,
+    FoldModelResult,
+    LightgbmHyperparameters,
+    OosPrediction,
+    PlannedEventTrades,
+    TradeCohort,
+    WalkForwardModelRun,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -125,6 +134,33 @@ def _promotion_cohort_rows() -> list[dict[str, object]]:
     ]
 
 
+def _walkforward_run(predictions: tuple[OosPrediction, ...]) -> WalkForwardModelRun:
+    hyperparameters = LightgbmHyperparameters()
+    return WalkForwardModelRun(
+        plan_sha256="a" * 64,
+        dataset_sha256=("b" * 64,),
+        feature_names=("signal",),
+        label_name="forward_1d_close",
+        threshold=0.0,
+        seed=20260427,
+        hyperparameter_study_sha256="c" * 64,
+        hyperparameters=hyperparameters,
+        hyperparameters_sha256=hyperparameters.sha256,
+        lightgbm_version="test",
+        folds=(
+            FoldModelResult(
+                fold_index=0,
+                model_sha256="d" * 64,
+                best_iteration=1,
+                fit_count=10,
+                validation_count=2,
+                predictions=predictions,
+                feature_attribution=(FeatureAttribution("signal", 0.0),),
+            ),
+        ),
+    )
+
+
 def test_phase4_report_is_deterministic_and_persisted(tmp_path: Path) -> None:
     results = _chained_results()
     folds = (
@@ -145,8 +181,16 @@ def test_phase4_report_is_deterministic_and_persisted(tmp_path: Path) -> None:
     )
     evaluator = Phase4GateEvaluator(bootstrap_resamples=100, seed=7)
 
-    first = evaluator.evaluate(folds)
-    second = evaluator.evaluate(folds)
+    first = evaluator.evaluate(
+        folds,
+        walkforward_run_sha256="e" * 64,
+        hyperparameter_study_sha256="f" * 64,
+    )
+    second = evaluator.evaluate(
+        folds,
+        walkforward_run_sha256="e" * 64,
+        hyperparameter_study_sha256="f" * 64,
+    )
     output = tmp_path / "phase4-gate.json"
     evaluator.write(first, output)
     evaluator.write(first, output)
@@ -189,7 +233,11 @@ def test_phase4_gate_rejects_missing_cohort_trade() -> None:
     )
 
     with pytest.raises(ValueError, match="does not cover every trade"):
-        Phase4GateEvaluator(bootstrap_resamples=10).evaluate(folds)
+        Phase4GateEvaluator(bootstrap_resamples=10).evaluate(
+            folds,
+            walkforward_run_sha256="e" * 64,
+            hyperparameter_study_sha256="f" * 64,
+        )
 
 
 def replace_result_initial(result: BacktestResult, value: float) -> BacktestResult:
@@ -204,7 +252,13 @@ def replace_result_initial(result: BacktestResult, value: float) -> BacktestResu
 
 def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
     first_date = date(2025, 1, 2)
+    second_date = first_date + timedelta(days=1)
     first_fixture = _result(first_date, initial_cash=100_000, pnl=100, index=0)
+    first_prediction = OosPrediction(0, "AAA", first_date, 0.8, 1)
+    second_prediction = OosPrediction(1, "AAA", second_date, 0.7, 1)
+    model_run = _walkforward_run((first_prediction, second_prediction))
+    run_path = tmp_path / "walkforward-run.json"
+    run_path.write_bytes(model_run.evidence_json_bytes())
     first_plan = PlannedEventTrades(
         trade_date=first_date,
         portfolio=PortfolioPlan(100_000, 20, 0.1, 0.025, (), 0.01, ()),
@@ -217,6 +271,8 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
                 "unavailable",
             ),
         ),
+        walkforward_run_sha256=model_run.sha256,
+        source_predictions=(first_prediction,),
     )
     first_path = tmp_path / "first.json"
     EventTradePlanner.write(first_plan, first_path)
@@ -225,7 +281,6 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
         sessions=(first_date,),
         initial_cash=first_plan.portfolio.equity,
     )
-    second_date = first_date + timedelta(days=1)
     second_fixture = _result(
         second_date,
         initial_cash=first_run.final_net_equity,
@@ -252,6 +307,8 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
                 "unavailable",
             ),
         ),
+        walkforward_run_sha256=model_run.sha256,
+        source_predictions=(second_prediction,),
     )
     second_path = tmp_path / "second.json"
     EventTradePlanner.write(second_plan, second_path)
@@ -261,6 +318,7 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
     spec.write_text(
         json.dumps(
             {
+                "walkforward_run_evidence": run_path.name,
                 "folds": [
                     {
                         "fold_index": 0,
@@ -274,7 +332,7 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
                         "test_end_date": second_date.isoformat(),
                         "event_plan_files": [second_path.name],
                     },
-                ]
+                ],
             }
         ),
         encoding="utf-8",
@@ -316,6 +374,8 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
         },
         "walk_forward": {"passes_positive_fold_gate": True},
         "cohorts": _promotion_cohort_rows(),
+        "walkforward_run_sha256": "e" * 64,
+        "hyperparameter_study_sha256": "f" * 64,
         "passes_phase4_research_gate": True,
         "passes_pre_paper_backtest_gate": True,
     }
@@ -327,6 +387,8 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
 
     assert promotion.report_sha256
     assert promotion.net_sharpe == 1.2
+    assert promotion.walkforward_run_sha256 == "e" * 64
+    assert promotion.hyperparameter_study_sha256 == "f" * 64
 
     report["overall"]["net_sharpe"] = 0.9
     failing = tmp_path / "inconsistent-gate.json"
@@ -344,6 +406,8 @@ def test_production_promotion_rejects_missing_cohort_evidence(tmp_path: Path) ->
         },
         "walk_forward": {"passes_positive_fold_gate": True},
         "cohorts": [],
+        "walkforward_run_sha256": "e" * 64,
+        "hyperparameter_study_sha256": "f" * 64,
         "passes_phase4_research_gate": True,
         "passes_pre_paper_backtest_gate": True,
     }

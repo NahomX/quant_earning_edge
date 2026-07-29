@@ -361,6 +361,7 @@ classification actually exists.
 uv run qee model plan-event-backtest `
   --planning-spec .\event-planning-input.json `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --walkforward-run-evidence .\data\models\earnings-v1\run-<hash>.json `
   --plan-output .\data\manifests\backtest\event-trades-2026-07-28.json `
   --evaluation-output .\data\manifests\backtest\event-evaluation-2026-07-28.json
 ```
@@ -371,12 +372,17 @@ outcomes closed before the trade date. Realized labels and exit prices cannot
 change selection or share counts. The command persists the immutable plan,
 runs its timestamped vectorbt orders, and writes the standardized reconciled
 evaluation. This is an OOS backtest path; it does not claim live fills.
+The supplied probabilities must exactly match rows in the canonical
+walk-forward run, which itself must be bound to an Optuna study. Every plan
+stores that run hash and all source predictions, including candidates below
+the trading threshold. A session where the model selects nothing persists as
+an explicit zero-return ledger rather than disappearing from evaluation.
 
 ## Aggregate the Phase 4 gates
 
-Create an aggregation JSON whose `folds` entries declare consecutive
-`fold_index`, test start/end dates, and ordered `event_plan_files`. Relative
-paths resolve from the aggregation file:
+Create an aggregation JSON with `walkforward_run_evidence` plus `folds`
+entries declaring consecutive `fold_index`, test start/end dates, and ordered
+`event_plan_files`. Relative paths resolve from the aggregation file:
 
 ```powershell
 uv run qee evaluation phase4-gate `
@@ -389,6 +395,10 @@ uv run qee evaluation phase4-gate `
 Every plan is replayed through the timestamped cost ledger. The next plan's
 starting equity must equal the prior plan's final net equity, preventing hidden
 capital resets. Sessions and folds must be increasing and non-overlapping.
+All event plans must bind the same walk-forward run, every stored probability
+must exactly match its OOS row, and the union of plans must cover the complete
+OOS prediction ledger exactly once. This prevents manual probability
+substitution and omission of model-abstention sessions.
 Every executed trade must have exactly one immutable cohort record. The
 canonical report and self-contained HTML include BMO/AMC, sector, and IV-regime
 tables with trade/session counts, net P&L, mean return, Sharpe, hit rate, and

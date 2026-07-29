@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -16,7 +17,6 @@ from quant_earning_edge.signals.lgbm_hyperparameters import LightgbmHyperparamet
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import date
     from pathlib import Path
 
     from quant_earning_edge.backtest import WalkForwardFold, WalkForwardPlan
@@ -52,7 +52,25 @@ class FoldModelResult:
     validation_count: int
     predictions: tuple[OosPrediction, ...]
     feature_attribution: tuple[FeatureAttribution, ...]
-    model_text: str = field(repr=False)
+    model_text: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        if self.fold_index < 0 or not _is_sha256(self.model_sha256):
+            raise ValueError("fold model identity is invalid")
+        if min(self.best_iteration, self.fit_count, self.validation_count) < 1:
+            raise ValueError("fold model counts must be positive")
+        attribution_names = tuple(item.feature_name for item in self.feature_attribution)
+        if (
+            not attribution_names
+            or len(set(attribution_names)) != len(attribution_names)
+            or any(
+                not item.feature_name.strip()
+                or item.mean_absolute_shap < 0
+                or not math.isfinite(item.mean_absolute_shap)
+                for item in self.feature_attribution
+            )
+        ):
+            raise ValueError("fold feature attribution is invalid")
 
 
 @dataclass(frozen=True)
@@ -71,6 +89,45 @@ class WalkForwardModelRun:
     lightgbm_version: str
     folds: tuple[FoldModelResult, ...]
 
+    def __post_init__(self) -> None:
+        if (
+            not _is_sha256(self.plan_sha256)
+            or not self.dataset_sha256
+            or not all(_is_sha256(value) for value in self.dataset_sha256)
+        ):
+            raise ValueError("walk-forward model source digest is invalid")
+        if self.hyperparameters.sha256 != self.hyperparameters_sha256:
+            raise ValueError("walk-forward hyperparameters do not match their SHA-256")
+        if (
+            not self.feature_names
+            or len(self.feature_names) > 20
+            or len(set(self.feature_names)) != len(self.feature_names)
+        ):
+            raise ValueError("walk-forward feature names must contain 1-20 unique values")
+        if self.hyperparameter_study_sha256 is not None and not _is_sha256(
+            self.hyperparameter_study_sha256
+        ):
+            raise ValueError("walk-forward hyperparameter study digest is invalid")
+        if tuple(item.fold_index for item in self.folds) != tuple(range(len(self.folds))):
+            raise ValueError("walk-forward model folds must be consecutive")
+        if any(
+            tuple(item.feature_name for item in fold.feature_attribution) != self.feature_names
+            for fold in self.folds
+        ):
+            raise ValueError("walk-forward fold attribution does not match feature order")
+        predictions = tuple(item for fold in self.folds for item in fold.predictions)
+        row_indices = tuple(item.row_index for item in predictions)
+        if len(set(row_indices)) != len(row_indices):
+            raise ValueError("walk-forward OOS prediction row indices must be unique")
+        if any(
+            item.row_index < 0
+            or not item.symbol.strip()
+            or not 0 <= item.probability_up <= 1
+            or item.realized_label not in {0, 1}
+            for item in predictions
+        ):
+            raise ValueError("walk-forward OOS prediction is invalid")
+
     def evidence_json_bytes(self) -> bytes:
         """Serialize canonical evidence while models remain separate artifacts."""
         payload = asdict(self)
@@ -86,6 +143,67 @@ class WalkForwardModelRun:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.evidence_json_bytes()).hexdigest()
+
+    @classmethod
+    def load_evidence(cls, path: Path) -> WalkForwardModelRun:
+        """Strictly reload canonical run evidence without loading boosters."""
+        encoded = path.read_bytes()
+        raw = json.loads(encoded)
+        expected = {
+            "plan_sha256",
+            "dataset_sha256",
+            "feature_names",
+            "label_name",
+            "threshold",
+            "seed",
+            "hyperparameter_study_sha256",
+            "hyperparameters",
+            "hyperparameters_sha256",
+            "lightgbm_version",
+            "folds",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected:
+            raise ValueError("walk-forward model run evidence schema mismatch")
+        try:
+            folds = tuple(_fold_from_evidence(item) for item in raw["folds"])
+            run = cls(
+                plan_sha256=str(raw["plan_sha256"]),
+                dataset_sha256=tuple(str(item) for item in raw["dataset_sha256"]),
+                feature_names=tuple(str(item) for item in raw["feature_names"]),
+                label_name=str(raw["label_name"]),
+                threshold=float(raw["threshold"]),
+                seed=int(raw["seed"]),
+                hyperparameter_study_sha256=(
+                    None
+                    if raw["hyperparameter_study_sha256"] is None
+                    else str(raw["hyperparameter_study_sha256"])
+                ),
+                hyperparameters=LightgbmHyperparameters.from_dict(raw["hyperparameters"]),
+                hyperparameters_sha256=str(raw["hyperparameters_sha256"]),
+                lightgbm_version=str(raw["lightgbm_version"]),
+                folds=folds,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("invalid walk-forward model run evidence") from error
+        if run.evidence_json_bytes() != encoded:
+            raise ValueError("walk-forward model run evidence is not canonical")
+        return run
+
+    def validate_predictions(
+        self,
+        predictions: Sequence[OosPrediction],
+        *,
+        require_complete: bool = False,
+    ) -> None:
+        """Prove supplied probabilities are an exact subset or full run ledger."""
+        expected = {item.row_index: item for fold in self.folds for item in fold.predictions}
+        supplied = {item.row_index: item for item in predictions}
+        if not supplied or len(supplied) != len(tuple(predictions)):
+            raise ValueError("OOS prediction evidence is empty or contains duplicate rows")
+        if any(expected.get(row_index) != item for row_index, item in supplied.items()):
+            raise ValueError("supplied probability differs from walk-forward OOS evidence")
+        if require_complete and set(supplied) != set(expected):
+            raise ValueError("Phase 4 plans do not cover the complete OOS prediction ledger")
 
 
 class LightgbmWalkForwardTrainer:
@@ -328,3 +446,57 @@ def _import_lightgbm() -> Any:
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _fold_from_evidence(raw: object) -> FoldModelResult:
+    expected = {
+        "fold_index",
+        "model_sha256",
+        "best_iteration",
+        "fit_count",
+        "validation_count",
+        "predictions",
+        "feature_attribution",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise ValueError("walk-forward fold evidence schema mismatch")
+    predictions = tuple(_prediction_from_evidence(item) for item in raw["predictions"])
+    attributions = tuple(_attribution_from_evidence(item) for item in raw["feature_attribution"])
+    return FoldModelResult(
+        fold_index=int(raw["fold_index"]),
+        model_sha256=str(raw["model_sha256"]),
+        best_iteration=int(raw["best_iteration"]),
+        fit_count=int(raw["fit_count"]),
+        validation_count=int(raw["validation_count"]),
+        predictions=predictions,
+        feature_attribution=attributions,
+    )
+
+
+def _prediction_from_evidence(raw: object) -> OosPrediction:
+    expected = {
+        "row_index",
+        "symbol",
+        "asof_date",
+        "probability_up",
+        "realized_label",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise ValueError("walk-forward prediction evidence schema mismatch")
+    return OosPrediction(
+        row_index=int(raw["row_index"]),
+        symbol=str(raw["symbol"]),
+        asof_date=date.fromisoformat(str(raw["asof_date"])),
+        probability_up=float(raw["probability_up"]),
+        realized_label=int(raw["realized_label"]),
+    )
+
+
+def _attribution_from_evidence(raw: object) -> FeatureAttribution:
+    expected = {"feature_name", "mean_absolute_shap"}
+    if not isinstance(raw, dict) or set(raw) != expected:
+        raise ValueError("walk-forward feature-attribution schema mismatch")
+    return FeatureAttribution(
+        feature_name=str(raw["feature_name"]),
+        mean_absolute_shap=float(raw["mean_absolute_shap"]),
+    )

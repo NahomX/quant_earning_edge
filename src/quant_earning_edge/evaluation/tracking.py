@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,7 +42,7 @@ def source_tree_sha256() -> str:
     return digest.hexdigest()
 
 
-def log_backtest_run(  # noqa: PLR0912,PLR0915 - atomic scoped MLflow transaction.
+def log_backtest_run(
     *,
     tracking_uri: str,
     artifact_location: str | None,
@@ -90,64 +91,62 @@ def log_backtest_run(  # noqa: PLR0912,PLR0915 - atomic scoped MLflow transactio
     prior_file_store_override = os.environ.get("MLFLOW_ALLOW_FILE_STORE")
     if tracking_uri.startswith("file:"):
         os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
-    mlflow: Any | None = None
-    prior_tracking_uri: str | None = None
-    prior_registry_uri: str | None = None
+    client: Any | None = None
+    run_id: str | None = None
     try:
         try:
             mlflow = _import_mlflow()
-            prior_tracking_uri = str(mlflow.get_tracking_uri())
-            prior_registry_uri = str(mlflow.get_registry_uri())
-            mlflow.set_tracking_uri(tracking_uri)
-            mlflow.set_registry_uri(tracking_uri)
-            if artifact_location is None:
-                experiment = mlflow.set_experiment(experiment_name)
-                experiment_id = str(experiment.experiment_id)
-            else:
-                client = mlflow.MlflowClient()
-                experiment = client.get_experiment_by_name(experiment_name)
-                experiment_id = (
-                    str(experiment.experiment_id)
-                    if experiment is not None
-                    else str(
-                        client.create_experiment(
-                            experiment_name,
-                            artifact_location=artifact_location,
-                        )
+            client = mlflow.MlflowClient(
+                tracking_uri=tracking_uri,
+                registry_uri=tracking_uri,
+            )
+            experiment = client.get_experiment_by_name(experiment_name)
+            experiment_id = (
+                str(experiment.experiment_id)
+                if experiment is not None
+                else str(
+                    client.create_experiment(
+                        experiment_name,
+                        artifact_location=artifact_location,
                     )
                 )
-            with mlflow.start_run(
-                experiment_id=experiment_id,
-                run_name=f"{run_kind}-{report_sha256[:12]}",
-            ) as active:
-                mlflow.log_params(parameters)
-                mlflow.set_tags(
-                    {
-                        "qee.run_kind": run_kind,
-                        "qee.code_sha256": code_sha256,
-                        "qee.input_sha256": input_sha256,
-                        "qee.report_sha256": report_sha256,
-                    }
+            )
+            active = client.create_run(
+                experiment_id,
+                tags={
+                    "mlflow.runName": f"{run_kind}-{report_sha256[:12]}",
+                    "qee.run_kind": run_kind,
+                    "qee.code_sha256": code_sha256,
+                    "qee.input_sha256": input_sha256,
+                    "qee.report_sha256": report_sha256,
+                },
+            )
+            run_id = str(active.info.run_id)
+            for key, value in parameters.items():
+                client.log_param(run_id, key, value)
+            client.log_dict(run_id, json.loads(report_bytes), "performance-report.json")
+            client.log_dict(run_id, source_manifest, "source-manifest.json")
+            for artifact_file in artifact_files:
+                client.log_artifact(
+                    run_id,
+                    str(artifact_file.resolve()),
+                    artifact_path="supplemental",
                 )
-                mlflow.log_dict(json.loads(report_bytes), "performance-report.json")
-                mlflow.log_dict(source_manifest, "source-manifest.json")
-                for artifact_file in artifact_files:
-                    mlflow.log_artifact(str(artifact_file.resolve()), artifact_path="supplemental")
-                run_id = str(active.info.run_id)
+            client.set_terminated(run_id, status="FINISHED")
         except Exception as error:
+            if client is not None and run_id is not None:
+                with suppress(Exception):
+                    client.set_terminated(run_id, status="FAILED")
             raise RuntimeError(
                 f"MLflow backtest tracking failed ({type(error).__name__})"
             ) from error
     finally:
-        if mlflow is not None:
-            if prior_tracking_uri is not None:
-                mlflow.set_tracking_uri(prior_tracking_uri)
-            if prior_registry_uri is not None:
-                mlflow.set_registry_uri(prior_registry_uri)
         if prior_file_store_override is None:
             os.environ.pop("MLFLOW_ALLOW_FILE_STORE", None)
         else:
             os.environ["MLFLOW_ALLOW_FILE_STORE"] = prior_file_store_override
+    if run_id is None:
+        raise RuntimeError("MLflow backtest tracking did not create a run")
     return BacktestTrackingReference(
         run_id=run_id,
         experiment_id=experiment_id,

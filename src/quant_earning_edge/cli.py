@@ -182,10 +182,12 @@ from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
     EventCandidateManifest,
+    EventSourceCapture,
     RunTrigger,
     UniverseBuilder,
     UniverseManifestStore,
     UniverseSnapshotWriter,
+    UniverseSourceCapture,
     evaluate_unattended_readiness,
 )
 from quant_earning_edge.universe.config import (
@@ -4468,6 +4470,9 @@ def ingest_earnings(
             "event_count": result.event_count,
             "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
             "source_manifest": str(result.source_manifest),
+            "provider_observations": [
+                str(item.path) for item in client.earnings_observation_artifacts
+            ],
         }
     )
 
@@ -4694,12 +4699,13 @@ def ingest_corporate_actions(
         base_url=environment.polygon_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
+        client = PolygonClient(
+            api_key=api_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        )
         result = CorporateActionsIngestor(
-            client=PolygonClient(
-                api_key=api_key,
-                http_client=http_client,
-                bronze_writer=BronzeWriter(layout),
-            ),
+            client=client,
             silver_writer=SilverWriter(layout),
         ).ingest(start_date=start_date, end_date=end_date)
     _echo_json(
@@ -4707,6 +4713,9 @@ def ingest_corporate_actions(
             "split_count": result.split_count,
             "dividend_count": result.dividend_count,
             "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
+            "provider_observations": [
+                str(item.path) for item in client.corporate_action_observation_artifacts
+            ],
         }
     )
 
@@ -4753,30 +4762,46 @@ def build_universe(  # noqa: PLR0917 - CLI options are an explicit operational c
     job_config = load_universe_job_config(config_file)
     halt_snapshot = load_halt_snapshot(halt_snapshot_file)
     layout = LakehouseLayout(environment.data_lake_root)
+    parsed_trade_date = _parse_date(trade_date, option="--trade-date")
+    parsed_asof_date = _parse_date(asof_date, option="--asof-date")
+    parsed_lookback_start = _parse_date(
+        lookback_start,
+        option="--lookback-start",
+    )
     with httpx.Client(
         base_url=environment.polygon_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
+        client = PolygonClient(
+            api_key=api_key,
+            http_client=http_client,
+            bronze_writer=BronzeWriter(layout),
+        )
+        observation_start = len(client.universe_observation_artifacts)
         result = DailyUniverseJob(
-            market_data=PolygonClient(
-                api_key=api_key,
-                http_client=http_client,
-                bronze_writer=BronzeWriter(layout),
-            ),
+            market_data=client,
             builder=UniverseBuilder(job_config.eligibility.to_domain()),
             snapshot_writer=UniverseSnapshotWriter(layout),
             manifest_store=UniverseManifestStore(layout),
             adv_sessions=job_config.adv_sessions,
         ).run(
-            trade_date=_parse_date(trade_date, option="--trade-date"),
-            asof_date=_parse_date(asof_date, option="--asof-date"),
-            lookback_start=_parse_date(
-                lookback_start,
-                option="--lookback-start",
-            ),
+            trade_date=parsed_trade_date,
+            asof_date=parsed_asof_date,
+            lookback_start=parsed_lookback_start,
             halt_snapshot=halt_snapshot,
             trigger=trigger,
         )
+    source = UniverseSourceCapture(layout).write(
+        trade_date=parsed_trade_date,
+        asof_date=parsed_asof_date,
+        lookback_start=parsed_lookback_start,
+        decision_at=result.manifest.started_at,
+        adv_sessions=job_config.adv_sessions,
+        snapshot=result.snapshot,
+        universe_config=config_file,
+        halt_snapshot=halt_snapshot_file,
+        provider_observations=client.universe_observation_artifacts[observation_start:],
+    )
     _echo_json(
         {
             "run_id": result.manifest.run_id,
@@ -4787,6 +4812,7 @@ def build_universe(  # noqa: PLR0917 - CLI options are an explicit operational c
             "snapshot_path": str(result.snapshot.path),
             "snapshot_sha256": result.snapshot.sha256,
             "manifest_path": str(result.manifest_path),
+            "source_manifest": str(source.path),
         }
     )
 
@@ -4819,6 +4845,57 @@ def universe_readiness(
     )
     if not evidence.ready:
         raise typer.Exit(code=1)
+
+
+@universe_app.command("event-source")
+def compose_event_source(  # noqa: PLR0917 - explicit retained-source contract.
+    start: Annotated[str, typer.Option(help="Inclusive event start date (YYYY-MM-DD).")],
+    end: Annotated[str, typer.Option(help="Inclusive event end date (YYYY-MM-DD).")],
+    ingested_at: Annotated[
+        str,
+        typer.Option(help="Shared offset-aware Silver ingestion timestamp."),
+    ],
+    earnings_files: Annotated[
+        list[Path],
+        typer.Option("--earnings-file", exists=True, dir_okay=False),
+    ],
+    split_files: Annotated[
+        list[Path],
+        typer.Option("--split-file", exists=True, dir_okay=False),
+    ],
+    dividend_files: Annotated[
+        list[Path],
+        typer.Option("--dividend-file", exists=True, dir_okay=False),
+    ],
+    earnings_observations: Annotated[
+        list[Path],
+        typer.Option("--earnings-observation", exists=True, dir_okay=False),
+    ],
+    corporate_action_observations: Annotated[
+        list[Path],
+        typer.Option("--corporate-action-observation", exists=True, dir_okay=False),
+    ],
+    env_file: EnvFileOption = None,
+) -> None:
+    """Compose and verify retained provider lineage for event Silver files."""
+    environment = _environment(env_file)
+    manifest = EventSourceCapture(LakehouseLayout(environment.data_lake_root)).write_paths(
+        start_date=_parse_date(start, option="--start"),
+        end_date=_parse_date(end, option="--end"),
+        ingested_at=_parse_datetime(ingested_at, option="--ingested-at"),
+        earnings_files=earnings_files,
+        split_files=split_files,
+        dividend_files=dividend_files,
+        earnings_observations=earnings_observations,
+        corporate_action_observations=corporate_action_observations,
+    )
+    _echo_json(
+        {
+            "source_manifest": str(manifest.path),
+            "silver_file_count": len(manifest.silver_entries),
+            "provider_observation_count": len(manifest.provider_entries),
+        }
+    )
 
 
 @universe_app.command("events")
@@ -4863,6 +4940,30 @@ def universe_events(  # noqa: PLR0917 - CLI options are the event-join contract.
             help="Silver dividend Parquet; repeat for every audited partition/revision.",
         ),
     ],
+    universe_source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Provider-source manifest for the frozen universe.",
+        ),
+    ],
+    event_source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Combined earnings/corporate-action provider-source manifest.",
+        ),
+    ],
+    calendar_source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Provider-source manifest for the authoritative calendar.",
+        ),
+    ],
     env_file: EnvFileOption = None,
 ) -> None:
     """Join scheduled earnings to a frozen eligible universe without lookahead."""
@@ -4875,7 +4976,11 @@ def universe_events(  # noqa: PLR0917 - CLI options are the event-join contract.
         earnings_files=earnings_files,
         split_files=split_files,
         dividend_files=dividend_files,
+        universe_source_manifest=universe_source_manifest,
+        event_source_manifest=event_source_manifest,
+        calendar_source_manifest=calendar_source_manifest,
     )
+    candidate_manifest = EventCandidateManifest.load(artifact.manifest_path)
     _echo_json(
         {
             "path": str(artifact.path),
@@ -4883,6 +4988,7 @@ def universe_events(  # noqa: PLR0917 - CLI options are the event-join contract.
             "sha256": artifact.sha256,
             "candidate_count": artifact.row_count,
             "excluded_counts": artifact.excluded_counts,
+            "source_schema_version": candidate_manifest.raw["schema_version"],
         }
     )
 

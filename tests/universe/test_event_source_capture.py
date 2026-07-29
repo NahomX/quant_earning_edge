@@ -130,6 +130,17 @@ def test_event_silver_reproduces_from_retained_provider_payloads(
     tmp_path: Path,
 ) -> None:
     manifest, original_paths = _source_fixture(tmp_path)
+    provider_paths = manifest.provider_paths(data_lake_root=tmp_path / "lake")
+    recomposed = EventSourceCapture(LakehouseLayout(tmp_path / "lake")).write_paths(
+        start_date=START_DATE,
+        end_date=END_DATE,
+        ingested_at=INGESTED_AT,
+        earnings_files=original_paths[:1],
+        split_files=original_paths[1:2],
+        dividend_files=original_paths[2:],
+        earnings_observations=provider_paths[:1],
+        corporate_action_observations=provider_paths[1:],
+    )
 
     with TemporaryDirectory(prefix="qee-events-test-") as temporary:
         reproduced = EventSourceCapture.reproduce(
@@ -141,6 +152,7 @@ def test_event_silver_reproduces_from_retained_provider_payloads(
         assert tuple(item.path.read_bytes() for item in reproduced) == tuple(
             path.read_bytes() for path in original_paths
         )
+        assert recomposed == manifest
 
 
 def test_event_source_manifest_rejects_changed_provider_payload(

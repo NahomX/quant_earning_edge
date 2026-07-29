@@ -34,7 +34,7 @@ reproducible through `uv.lock`.
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Provider-source calendar reconstruction | Complete | exact Alpaca calendar Bronze response; strict source manifest; byte-exact session-file reproduction |
 | Combined PIT earnings/split/dividend candidate audit | Complete | `universe/events.py`, cutoff/timing/overlap tests |
-| Source-bound candidate regeneration | Complete | production schema-v5 manifest binds universe, event, and calendar provider lineage plus exact candidate inputs; queue requires complete lineage; terminal verifier independently regenerates universe, event Silver, calendar, and candidate bytes |
+| Source-bound candidate regeneration | Complete | production/manual CLI schema-v5 manifest binds universe, event, and calendar provider lineage plus exact candidate inputs; queue and historical features require complete lineage; independent regeneration covers universe, event Silver, calendar, and candidate bytes |
 | Polygon splits/dividends ingestion | Complete | current `/stocks/v1` clients, silver schemas, integration tests |
 | Provider-source event reconstruction | Complete | exact Finnhub earnings and Polygon split/dividend Bronze pages; strict manifest; byte-exact Silver reproduction; candidate/workflow capture; terminal Phase 6 verification |
 | Stable schema-validated DuckDB silver views | Complete | `data/store.py`, view query tests |

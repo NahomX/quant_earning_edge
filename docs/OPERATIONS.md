@@ -761,7 +761,9 @@ uv run qee universe build `
 The job enumerates tickers as of the prior date, requires 20 sessions and an
 exact prior-close bar for every candidate, and persists either a success or
 failure manifest. A fixture or manual invocation cannot prove unattended
-readiness.
+readiness. A successful command also emits a `source-<hash>.json` beside the
+snapshot, retaining the exact config, halt input, and raw Polygon
+reference/details/bar observations needed to regenerate that snapshot.
 
 ## Build point-in-time earnings candidates
 
@@ -769,26 +771,45 @@ After the frozen universe and silver earnings partitions exist, join them using
 the immutable session file and an explicit decision cutoff:
 
 ```powershell
+uv run qee universe event-source `
+  --start 2026-07-27 `
+  --end 2026-07-28 `
+  --ingested-at 2026-07-28T01:30:00Z `
+  --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-27\part-<hash>.parquet `
+  --split-file .\data\silver\asset_class=us-equity\dataset=stock-splits\date=2026-07-28\part-<hash>.parquet `
+  --dividend-file .\data\silver\asset_class=us-equity\dataset=cash-dividends\date=2026-07-28\part-<hash>.parquet `
+  --earnings-observation .\data\bronze\source=finnhub\dataset=earnings-calendar\date=2026-07-27\<observation>.json `
+  --corporate-action-observation .\data\bronze\source=polygon\dataset=stock-splits\date=2026-07-28\<observation>.json `
+  --corporate-action-observation .\data\bronze\source=polygon\dataset=cash-dividends\date=2026-07-28\<observation>.json
+
 uv run qee universe events `
   --trade-date 2026-07-28 `
   --decision-at 2026-07-28T01:30:00Z `
   --universe-snapshot .\data\gold\universe-snapshots\for_trade_date=2026-07-28\snapshot-<hash>.parquet `
   --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --universe-source-manifest .\data\gold\universe-snapshots\for_trade_date=2026-07-28\source-<hash>.json `
+  --event-source-manifest .\data\manifests\event-sources\for_trade_date=2026-07-28\source-<hash>.json `
+  --calendar-source-manifest .\data\manifests\market-calendar\sources\source-<hash>.json `
   --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-27\part-<hash>.parquet `
   --earnings-file .\data\silver\asset_class=us-equity\dataset=earnings-events\date=2026-07-28\part-<hash>.parquet `
   --split-file .\data\silver\asset_class=us-equity\dataset=stock-splits\date=2026-07-28\part-<hash>.parquet `
   --dividend-file .\data\silver\asset_class=us-equity\dataset=cash-dividends\date=2026-07-28\part-<hash>.parquet
 ```
 
-The decision timestamp must fall after the prior session close and before the
+The `--ingested-at` value must be the exact shared timestamp encoded in the
+three Silver input groups; a later reconstruction rejects any mismatch. The
+ingestion commands print their retained Bronze paths for this composition
+step. The decision timestamp must fall after the prior session close and before the
 trade-session open. Only observations whose `ingested_at` is at or before that
 cutoff participate. Prior-session after-close (`amc`) and trade-date
 before-open (`bmo`) events are eligible; during-market-hours events are
 explicitly excluded. Output Parquet contains estimates but never actual results,
 and annotates same-trade-date split and dividend event IDs known by the cutoff.
-Its manifest hashes every source, records corporate-action overlap counts, and
-retains exclusion counts. A valid empty candidate set is persisted instead of
-silently inventing a trade.
+Its required schema-v5 manifest hashes every source, records corporate-action
+overlap counts, and retains exclusion counts. It also binds the exact universe,
+event, and calendar provider manifests; a candidate that cannot regenerate all
+three cannot feed historical features or the proof queue. A valid empty
+candidate set is persisted instead of silently inventing a trade.
 
 ## Evaluate the five-session gate
 

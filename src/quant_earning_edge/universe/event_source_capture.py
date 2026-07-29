@@ -130,17 +130,43 @@ class EventSourceCapture:
         earnings_observations: Sequence[BronzeArtifact],
         corporate_action_observations: Sequence[BronzeArtifact],
     ) -> EventSourceCaptureManifest:
+        return self.write_paths(
+            start_date=start_date,
+            end_date=end_date,
+            ingested_at=ingested_at,
+            earnings_files=tuple(item.path for item in earnings_files),
+            split_files=tuple(item.path for item in split_files),
+            dividend_files=tuple(item.path for item in dividend_files),
+            earnings_observations=tuple(item.path for item in earnings_observations),
+            corporate_action_observations=tuple(
+                item.path for item in corporate_action_observations
+            ),
+        )
+
+    def write_paths(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        ingested_at: datetime,
+        earnings_files: Sequence[Path],
+        split_files: Sequence[Path],
+        dividend_files: Sequence[Path],
+        earnings_observations: Sequence[Path],
+        corporate_action_observations: Sequence[Path],
+    ) -> EventSourceCaptureManifest:
+        """Compose one event manifest from already retained provider artifacts."""
         if ingested_at.tzinfo is None or ingested_at.utcoffset() is None:
             raise ValueError("event source ingested_at must be timezone-aware")
         split_observations = tuple(
             item
             for item in corporate_action_observations
-            if _dataset_from_path(item.path) == "stock-splits"
+            if _dataset_from_path(item) == "stock-splits"
         )
         dividend_observations = tuple(
             item
             for item in corporate_action_observations
-            if _dataset_from_path(item.path) == "cash-dividends"
+            if _dataset_from_path(item) == "cash-dividends"
         )
         collections = (
             earnings_files,
@@ -152,20 +178,30 @@ class EventSourceCapture:
         )
         if any(not items for items in collections):
             raise ValueError("event source capture collections must not be empty")
+        if (
+            end_date < start_date
+            or any(
+                _dataset_from_path(path) != "earnings-calendar" for path in earnings_observations
+            )
+            or any(_dataset_from_path(path) != "earnings-events" for path in earnings_files)
+            or any(_dataset_from_path(path) != "stock-splits" for path in split_files)
+            or any(_dataset_from_path(path) != "cash-dividends" for path in dividend_files)
+        ):
+            raise ValueError("event source capture paths are invalid")
         raw = {
             "schema_version": 1,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "ingested_at": ingested_at.isoformat(),
             "silver_files": {
-                "earnings_files": self._entries(item.path for item in earnings_files),
-                "split_files": self._entries(item.path for item in split_files),
-                "dividend_files": self._entries(item.path for item in dividend_files),
+                "earnings_files": self._entries(earnings_files),
+                "split_files": self._entries(split_files),
+                "dividend_files": self._entries(dividend_files),
             },
             "provider_observations": {
-                "earnings_observations": self._entries(item.path for item in earnings_observations),
-                "split_observations": self._entries(item.path for item in split_observations),
-                "dividend_observations": self._entries(item.path for item in dividend_observations),
+                "earnings_observations": self._entries(earnings_observations),
+                "split_observations": self._entries(split_observations),
+                "dividend_observations": self._entries(dividend_observations),
             },
         }
         encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()

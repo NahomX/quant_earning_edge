@@ -63,6 +63,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   Silver inputs and fully source-bound event candidates before recomputing the
   registered features. Forward labels independently rebuild raw Polygon bars
   and the raw Alpaca calendar before recomputing D+1/D+5 targets.
+- Manual universe/candidate operations now emit or require the same complete
+  schema-v5 universe/event/calendar provider lineage as the unattended daily
+  builder, so a manual schema-v2 candidate cannot enter historical features.
 - Every wide training dataset requires those unique feature and label source
   manifests, deeply replays them, and then byte-compares the reconstructed
   wide Parquet before tuning can begin.

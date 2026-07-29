@@ -44,7 +44,7 @@ from quant_earning_edge.monitoring import (
     CircuitBreakerObservation,
     CircuitBreakerObservationSpec,
     ProviderFreshnessEvidence,
-    ReconciliationAgeEvidence,
+    ReconciliationAgeEvaluator,
     encode_circuit_breaker_controls,
 )
 from quant_earning_edge.orchestration import (
@@ -68,7 +68,7 @@ def _write_breaker_auxiliary_evidence(
     daily: Path,
     *,
     observation: CircuitBreakerObservation,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path, Path, Path]:
     assert observation.polygon_data_observed_at is not None
     assert observation.alpaca_data_observed_at is not None
     polygon_observed = observation.polygon_data_observed_at
@@ -114,19 +114,73 @@ def _write_breaker_auxiliary_evidence(
     )
     freshness_path = daily / f"provider-freshness-{freshness.sha256}.json"
     freshness.write(freshness_path)
-    age = ReconciliationAgeEvidence(
-        schema_version=1,
+    prior_date = observation.session_date - timedelta(days=1)
+    calendar = SessionFileStore(LakehouseLayout(daily / "control-calendar")).write(
+        (
+            MarketSession(
+                session_date=prior_date,
+                open_at=datetime(
+                    prior_date.year,
+                    prior_date.month,
+                    prior_date.day,
+                    13,
+                    30,
+                    tzinfo=UTC,
+                ),
+                close_at=datetime(
+                    prior_date.year,
+                    prior_date.month,
+                    prior_date.day,
+                    20,
+                    tzinfo=UTC,
+                ),
+            ),
+            MarketSession(
+                session_date=observation.session_date,
+                open_at=datetime(
+                    observation.session_date.year,
+                    observation.session_date.month,
+                    observation.session_date.day,
+                    13,
+                    30,
+                    tzinfo=UTC,
+                ),
+                close_at=datetime(
+                    observation.session_date.year,
+                    observation.session_date.month,
+                    observation.session_date.day,
+                    20,
+                    tzinfo=UTC,
+                ),
+            ),
+        )
+    )
+    source_report = PaperOrderReconciler().evaluate(
+        evidence=(),
+        broker_orders=(),
+        session_date=prior_date,
+        evaluated_at=observation.evaluated_at - timedelta(minutes=1),
+    )
+    source_report_path = (
+        daily / "control-sources" / f"paper-reconciliation-{source_report.sha256}.json"
+    )
+    source_report.write(source_report_path)
+    age = ReconciliationAgeEvaluator().evaluate(
+        calendar=calendar,
+        reports=(source_report,),
         control_date=observation.session_date,
         evaluated_at=observation.evaluated_at,
-        calendar_sha256="c" * 64,
-        input_report_sha256=(),
-        latest_report_sha256=(),
-        unresolved_session_dates=(),
-        reconciliation_break_age_sessions=(observation.reconciliation_break_age_sessions),
     )
     age_path = daily / f"reconciliation-age-{age.sha256}.json"
     age.write(age_path)
-    return freshness_path, age_path, polygon_path, alpaca_path
+    return (
+        freshness_path,
+        age_path,
+        polygon_path,
+        alpaca_path,
+        calendar.path,
+        source_report_path,
+    )
 
 
 def _no_trade_replay_sources(
@@ -206,7 +260,14 @@ def _no_trade_replay_sources(
     breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
     breaker_spec_path = daily / "breaker-controls.json"
     breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
-    freshness_path, age_path, polygon_path, alpaca_path = _write_breaker_auxiliary_evidence(
+    (
+        freshness_path,
+        age_path,
+        polygon_path,
+        alpaca_path,
+        calendar_path,
+        age_report_path,
+    ) = _write_breaker_auxiliary_evidence(
         daily,
         observation=breaker_observation,
     )
@@ -265,6 +326,8 @@ def _no_trade_replay_sources(
         "age": age_path,
         "polygon_freshness": polygon_path,
         "alpaca_freshness": alpaca_path,
+        "reconciliation_calendar": calendar_path,
+        "reconciliation_age_report": age_report_path,
         "submission": submission_path,
         "manifest": manifest_path,
         "index": index_path,
@@ -295,6 +358,8 @@ def _complete_source_workflow(
                 sources["age"],
                 sources["polygon_freshness"],
                 sources["alpaca_freshness"],
+                sources["reconciliation_calendar"],
+                sources["reconciliation_age_report"],
                 sources["breaker_spec"],
                 sources["breaker"],
             )
@@ -330,6 +395,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_breaker_spec: bool = True,
     capture_breaker_auxiliary: bool = True,
     capture_freshness_payloads: bool = True,
+    capture_reconciliation_age_sources: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -392,7 +458,14 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
     breaker_spec_path = daily / "breaker-controls.json"
     breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
-    freshness_path, age_path, polygon_path, alpaca_path = _write_breaker_auxiliary_evidence(
+    (
+        freshness_path,
+        age_path,
+        polygon_path,
+        alpaca_path,
+        calendar_path,
+        age_report_path,
+    ) = _write_breaker_auxiliary_evidence(
         daily,
         observation=breaker_observation,
     )
@@ -544,6 +617,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                 *(
                     (polygon_path, alpaca_path)
                     if capture_breaker_auxiliary and capture_freshness_payloads
+                    else ()
+                ),
+                *(
+                    (calendar_path, age_report_path)
+                    if capture_breaker_auxiliary and capture_reconciliation_age_sources
                     else ()
                 ),
                 *((breaker_spec_path,) if capture_breaker_spec else ()),
@@ -922,6 +1000,25 @@ def test_daily_report_verifier_requires_raw_freshness_payloads(
     )
 
     with pytest.raises(ValueError, match="exactly one captured raw Polygon and Alpaca"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_reconciliation_age_sources(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_reconciliation_age_sources=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly one captured calendar"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

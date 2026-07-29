@@ -256,6 +256,7 @@ def test_prepare_breaker_bundle_discovers_sources_and_writes_content_addresses(
     assert Path(payload["freshness_path"]).name.startswith("provider-freshness-")
     assert payload["freshness_observation_paths"] == [str(path.resolve()) for path in raw_paths]
     assert Path(payload["reconciliation_age_path"]).name.startswith("reconciliation-age-")
+    assert payload["reconciliation_age_source_paths"] == [str(calendar.path.resolve())]
     breaker_path = Path(payload["breaker_spec_path"])
     assert breaker_path.name.startswith("breaker-controls-")
     spec = CircuitBreakerEvaluationSpec.model_validate_json(breaker_path.read_bytes())

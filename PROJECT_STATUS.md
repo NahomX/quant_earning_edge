@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 366 automated tests pass.
+- 367 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 94 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -76,6 +76,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   must themselves reproduce from exactly one workflow-captured raw Polygon
   snapshot and Alpaca clock payload, so those safety inputs cannot be silently
   replaced inside an otherwise canonical control file.
+- Reconciliation-break age must independently reproduce from the exact captured
+  authoritative calendar and every immutable source-report revision; a summary
+  with plausible dates or hashes cannot authorize submission.
 - A worker accepts a post-completion marker only after independently
   reproducing its workflow health, rolling controls, daily source evidence,
   and terminal gate bytes; hash-consistent arbitrary JSON cannot suppress

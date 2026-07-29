@@ -141,6 +141,7 @@ class DailyWorkflowSpecGenerator:
                         "freshness_path",
                         "freshness_observation_paths",
                         "reconciliation_age_path",
+                        "reconciliation_age_source_paths",
                         "breaker_spec_path",
                     ),
                 ),
@@ -265,6 +266,7 @@ class DailyWorkflowSpecGenerator:
                         "freshness_path",
                         "freshness_observation_paths",
                         "reconciliation_age_path",
+                        "reconciliation_age_source_paths",
                         "breaker_spec_path",
                     ),
                 )

@@ -278,6 +278,7 @@ class Phase6DailyReportVerifier:
         state: DailyWorkflowState,
         breaker_path: Path,
     ) -> CircuitBreakerDecision:
+        from quant_earning_edge.data import SessionFileStore  # noqa: PLC0415
         from quant_earning_edge.monitoring.breakers import (  # noqa: PLC0415
             CircuitBreakerDecision,
             CircuitBreakerEvaluationSpec,
@@ -290,6 +291,7 @@ class Phase6DailyReportVerifier:
             ProviderFreshnessEvidence,
         )
         from quant_earning_edge.monitoring.reconciliation_age import (  # noqa: PLC0415
+            ReconciliationAgeEvaluator,
             ReconciliationAgeEvidence,
         )
 
@@ -328,6 +330,24 @@ class Phase6DailyReportVerifier:
         )
         freshness = ProviderFreshnessEvidence.load(freshness_path)
         age = ReconciliationAgeEvidence.load(age_path)
+        artifact_paths = Phase6DailyReportVerifier._artifact_paths_by_sha(state)
+        calendar_paths = artifact_paths.get(age.calendar_sha256, [])
+        report_paths = tuple(artifact_paths.get(digest, []) for digest in age.input_report_sha256)
+        if len(calendar_paths) != 1 or any(len(paths) != 1 for paths in report_paths):
+            raise ValueError(
+                "reconciliation-age evidence must bind to exactly one captured "
+                "calendar and each source report"
+            )
+        reproduced_age = ReconciliationAgeEvaluator().evaluate(
+            calendar=SessionFileStore.load(calendar_paths[0]),
+            reports=tuple(PaperReconciliationReport.load(paths[0]) for paths in report_paths),
+            control_date=age.control_date,
+            evaluated_at=age.evaluated_at,
+        )
+        if reproduced_age.canonical_bytes != age.canonical_bytes:
+            raise ValueError(
+                "reconciliation-age evidence differs from captured calendar or reports"
+            )
         canonical_payloads = Phase6DailyReportVerifier._canonical_payloads_by_sha(state)
         polygon_payloads = canonical_payloads.get(freshness.polygon_payload_sha256, [])
         alpaca_payloads = canonical_payloads.get(freshness.alpaca_payload_sha256, [])
@@ -358,6 +378,21 @@ class Phase6DailyReportVerifier:
                 "breaker controls differ from captured freshness or reconciliation age"
             )
         return breaker
+
+    @staticmethod
+    def _artifact_paths_by_sha(state: DailyWorkflowState) -> dict[str, list[Path]]:
+        paths: dict[str, list[Path]] = {}
+        for candidate in {
+            Path(artifact.path).resolve()
+            for stage in state.stages
+            for artifact in stage.output_artifacts
+        }:
+            try:
+                digest = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            except OSError:
+                continue
+            paths.setdefault(digest, []).append(candidate)
+        return paths
 
     @staticmethod
     def _canonical_payloads_by_sha(

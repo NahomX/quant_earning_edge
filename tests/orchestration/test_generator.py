@@ -231,6 +231,7 @@ def test_generate_cli_can_refresh_breakers_inside_preopen_stage(tmp_path: Path) 
         "freshness_path",
         "freshness_observation_paths",
         "reconciliation_age_path",
+        "reconciliation_age_source_paths",
         "breaker_spec_path",
     )
     evaluate = spec.stages[2].commands[0]

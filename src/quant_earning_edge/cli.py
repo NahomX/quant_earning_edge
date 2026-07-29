@@ -2733,6 +2733,10 @@ def prepare_breaker_bundle(  # noqa: PLR0917 - complete autonomous control bound
             "freshness_path": str(freshness_path),
             "freshness_observation_paths": [str(path) for path in freshness_observation_paths],
             "reconciliation_age_path": str(age_path),
+            "reconciliation_age_source_paths": [
+                str(session_file.resolve()),
+                *(str(path.resolve()) for path in discovered.reconciliation_report_files),
+            ],
             "breaker_spec_path": str(breaker_path),
             "freshness_sha256": freshness.sha256,
             "reconciliation_age_sha256": age.sha256,

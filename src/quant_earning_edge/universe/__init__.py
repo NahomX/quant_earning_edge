@@ -32,6 +32,10 @@ from quant_earning_edge.universe.snapshot import (
     UniverseSnapshotArtifact,
     UniverseSnapshotWriter,
 )
+from quant_earning_edge.universe.source_capture import (
+    UniverseSourceCapture,
+    UniverseSourceCaptureManifest,
+)
 
 __all__ = [
     "EVENT_CANDIDATE_SCHEMA",
@@ -57,6 +61,8 @@ __all__ = [
     "UniverseSnapshot",
     "UniverseSnapshotArtifact",
     "UniverseSnapshotWriter",
+    "UniverseSourceCapture",
+    "UniverseSourceCaptureManifest",
     "evaluate_unattended_readiness",
     "sector_from_sic_code",
 ]

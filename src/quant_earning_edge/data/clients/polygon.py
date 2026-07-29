@@ -483,11 +483,112 @@ class PolygonClient:
         self._max_pages = max_pages
         self._sleeper = sleeper
         self._decision_snapshot_artifacts: list[BronzeArtifact] = []
+        self._universe_observation_artifacts: list[BronzeArtifact] = []
 
     @property
     def decision_snapshot_artifacts(self) -> tuple[BronzeArtifact, ...]:
         """Return raw decision snapshots captured by this client instance."""
         return tuple(self._decision_snapshot_artifacts)
+
+    @property
+    def universe_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return raw reference, details, and daily-bar universe responses."""
+        return tuple(self._universe_observation_artifacts)
+
+    @classmethod
+    def daily_bars_from_payload(
+        cls,
+        raw: Any,
+        *,
+        symbol: str,
+    ) -> tuple[EquityBar, ...]:
+        """Reconstruct one retained aggregate page without a provider request."""
+        normalized = symbol.strip().upper()
+        page = cls._validate_page(raw, expected_symbol=normalized)
+        bars = tuple(
+            cls._to_equity_bar(
+                aggregate=aggregate,
+                symbol=normalized,
+                adjusted=page.adjusted,
+                timestamp=datetime.fromtimestamp(aggregate.timestamp_ms / 1000, tz=UTC),
+            )
+            for aggregate in page.results
+        )
+        timestamps = tuple(item.timestamp for item in bars)
+        if timestamps != tuple(sorted(set(timestamps))):
+            raise ProviderResponseError("Polygon aggregate payload timestamps are not unique")
+        return bars
+
+    @staticmethod
+    def ticker_details_from_payload(
+        raw: Any,
+        *,
+        symbol: str,
+        asof_date: date,
+    ) -> TickerDetails:
+        """Reconstruct retained point-in-time ticker details."""
+        normalized = symbol.strip().upper()
+        try:
+            envelope = _TickerDetailsResponse.model_validate(raw)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Polygon ticker-details response failed validation: {error}"
+            ) from error
+        if envelope.status != "OK":
+            raise ProviderResponseError(f"Polygon ticker-details status was {envelope.status!r}")
+        if envelope.results.ticker != normalized:
+            raise ProviderResponseError(
+                f"Polygon response ticker {envelope.results.ticker!r} did not match {normalized!r}"
+            )
+        details = envelope.results
+        return TickerDetails(
+            symbol=normalized,
+            asof_date=asof_date,
+            name=details.name,
+            active=details.active,
+            locale=details.locale,
+            market=details.market,
+            primary_exchange=details.primary_exchange,
+            security_type=details.security_type,
+            market_cap=details.market_cap,
+            sic_code=details.sic_code,
+            list_date=details.list_date,
+            delisted_date=details.delisted_date,
+        )
+
+    @staticmethod
+    def ticker_references_from_payload(
+        raw: Any,
+        *,
+        asof_date: date,
+    ) -> tuple[TickerReference, ...]:
+        """Reconstruct one retained ticker-reference page."""
+        try:
+            page = _TickersResponse.model_validate(raw)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Polygon tickers response failed validation: {error}"
+            ) from error
+        if page.status != "OK":
+            raise ProviderResponseError(f"Polygon tickers response status was {page.status!r}")
+        references = tuple(
+            TickerReference(
+                symbol=item.ticker.strip().upper(),
+                asof_date=asof_date,
+                name=item.name,
+                active=item.active,
+                locale=item.locale,
+                market=item.market,
+                primary_exchange=item.primary_exchange,
+                security_type=item.security_type,
+                delisted_date=item.delisted_date,
+            )
+            for item in page.results
+        )
+        symbols = tuple(item.symbol for item in references)
+        if len(symbols) != len(set(symbols)):
+            raise ProviderResponseError("Polygon retained ticker references contain duplicates")
+        return tuple(sorted(references, key=lambda item: item.symbol))
 
     def daily_bars(
         self,
@@ -519,28 +620,23 @@ class PolygonClient:
             response = self._request(url=url, params=params)
             raw = self._decode_json(response)
             if self._bronze_writer is not None:
-                self._bronze_writer.write_json(
-                    raw,
-                    source="polygon",
-                    dataset="daily-aggregate-bars",
-                    event_date=start_date,
+                self._universe_observation_artifacts.append(
+                    self._bronze_writer.write_json(
+                        raw,
+                        source="polygon",
+                        dataset="daily-aggregate-bars",
+                        event_date=start_date,
+                    )
                 )
             page = self._validate_page(raw, expected_symbol=normalized_symbol)
-            for aggregate in page.results:
-                timestamp = datetime.fromtimestamp(aggregate.timestamp_ms / 1000, tz=UTC)
-                if timestamp in seen_timestamps:
+            for bar in self.daily_bars_from_payload(raw, symbol=normalized_symbol):
+                if bar.timestamp in seen_timestamps:
                     raise ProviderResponseError(
-                        f"Polygon returned duplicate aggregate timestamp: {timestamp.isoformat()}"
+                        "Polygon returned duplicate aggregate timestamp: "
+                        f"{bar.timestamp.isoformat()}"
                     )
-                seen_timestamps.add(timestamp)
-                bars.append(
-                    self._to_equity_bar(
-                        aggregate=aggregate,
-                        symbol=normalized_symbol,
-                        adjusted=page.adjusted,
-                        timestamp=timestamp,
-                    )
-                )
+                seen_timestamps.add(bar.timestamp)
+                bars.append(bar)
 
             if page.next_url is None:
                 return tuple(sorted(bars, key=lambda bar: bar.timestamp))
@@ -560,38 +656,18 @@ class PolygonClient:
         )
         raw = self._decode_json(response)
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="polygon",
-                dataset="ticker-details",
-                event_date=asof_date,
+            self._universe_observation_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="polygon",
+                    dataset="ticker-details",
+                    event_date=asof_date,
+                )
             )
-        try:
-            envelope = _TickerDetailsResponse.model_validate(raw)
-        except ValidationError as error:
-            raise ProviderResponseError(
-                f"Polygon ticker-details response failed validation: {error}"
-            ) from error
-        if envelope.status != "OK":
-            raise ProviderResponseError(f"Polygon ticker-details status was {envelope.status!r}")
-        details = envelope.results
-        if details.ticker != normalized_symbol:
-            raise ProviderResponseError(
-                f"Polygon response ticker {details.ticker!r} did not match {normalized_symbol!r}"
-            )
-        return TickerDetails(
+        return self.ticker_details_from_payload(
+            raw,
             symbol=normalized_symbol,
             asof_date=asof_date,
-            name=details.name,
-            active=details.active,
-            locale=details.locale,
-            market=details.market,
-            primary_exchange=details.primary_exchange,
-            security_type=details.security_type,
-            market_cap=details.market_cap,
-            sic_code=details.sic_code,
-            list_date=details.list_date,
-            delisted_date=details.delisted_date,
         )
 
     def ticker_snapshot(
@@ -920,11 +996,13 @@ class PolygonClient:
             response = self._request(url=url, params=params)
             raw = self._decode_json(response)
             if self._bronze_writer is not None:
-                self._bronze_writer.write_json(
-                    raw,
-                    source="polygon",
-                    dataset="ticker-reference",
-                    event_date=asof_date,
+                self._universe_observation_artifacts.append(
+                    self._bronze_writer.write_json(
+                        raw,
+                        source="polygon",
+                        dataset="ticker-reference",
+                        event_date=asof_date,
+                    )
                 )
             try:
                 page = _TickersResponse.model_validate(raw)
@@ -932,28 +1010,14 @@ class PolygonClient:
                 raise ProviderResponseError(
                     f"Polygon tickers response failed validation: {error}"
                 ) from error
-            if page.status != "OK":
-                raise ProviderResponseError(f"Polygon tickers response status was {page.status!r}")
-            for item in page.results:
-                symbol = item.ticker.strip().upper()
+            for reference in self.ticker_references_from_payload(raw, asof_date=asof_date):
+                symbol = reference.symbol
                 if symbol in symbols:
                     raise ProviderResponseError(
                         f"Polygon returned duplicate ticker reference: {symbol}"
                     )
                 symbols.add(symbol)
-                references.append(
-                    TickerReference(
-                        symbol=symbol,
-                        asof_date=asof_date,
-                        name=item.name,
-                        active=item.active,
-                        locale=item.locale,
-                        market=item.market,
-                        primary_exchange=item.primary_exchange,
-                        security_type=item.security_type,
-                        delisted_date=item.delisted_date,
-                    )
-                )
+                references.append(reference)
             if page.next_url is None:
                 return tuple(sorted(references, key=lambda item: item.symbol))
             url = self._validated_next_url(page.next_url)

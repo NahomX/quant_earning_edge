@@ -1286,6 +1286,11 @@ directory must contain the retained authoritative file
 the current Finnhub earnings interval and Polygon corporate actions, writes
 explicit empty silver partitions when a provider validly reports no events,
 builds the scheduled universe and event candidates, and persists all lineage.
+Universe construction also writes a strict source manifest containing the exact
+Polygon ticker-reference, ticker-details, and adjusted daily-bar Bronze
+responses plus retained copies of the eligibility configuration and halt
+snapshot. The reconstruction command path uses those files without provider
+access and rejects any snapshot whose semantic or Parquet-file hash differs.
 For non-empty candidates it waits until 20 minutes before the authoritative
 open, fetches adjusted daily history and completed pre-market minutes, and
 writes the exact strategy feature vector. It fails after the ten-minute

@@ -31,6 +31,7 @@ from quant_earning_edge.universe import (
     UniverseBuilder,
     UniverseManifestStore,
     UniverseSnapshotWriter,
+    UniverseSourceCapture,
 )
 from quant_earning_edge.universe.config import load_halt_snapshot, load_universe_job_config
 from quant_earning_edge.universe.events import EVENT_CANDIDATE_SCHEMA
@@ -220,6 +221,7 @@ class DailyInputPreparer:
             end_date=trade_date,
             ingested_at=decision_at,
         )
+        observation_start = len(self._polygon.universe_observation_artifacts)
         universe = DailyUniverseJob(
             market_data=self._polygon,
             builder=UniverseBuilder(config.eligibility.to_domain()),
@@ -233,6 +235,18 @@ class DailyInputPreparer:
             lookback_start=prior_date - timedelta(days=90),
             halt_snapshot=halt_snapshot,
             trigger=RunTrigger.SCHEDULED,
+        )
+        universe_observations = self._polygon.universe_observation_artifacts[observation_start:]
+        UniverseSourceCapture(self._layout).write(
+            trade_date=trade_date,
+            asof_date=prior_date,
+            lookback_start=prior_date - timedelta(days=90),
+            decision_at=decision_at,
+            adv_sessions=config.adv_sessions,
+            snapshot=universe.snapshot,
+            universe_config=universe_config_file,
+            halt_snapshot=halt_snapshot_file,
+            provider_observations=universe_observations,
         )
         split_files = tuple(
             item.path

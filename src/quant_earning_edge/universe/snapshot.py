@@ -97,8 +97,8 @@ class UniverseSnapshotWriter:
             with path.open("xb") as sink:
                 pq.write_table(table, sink, compression="zstd")  # type: ignore[no-untyped-call]
         except FileExistsError:
-            existing = pq.read_schema(path)  # type: ignore[no-untyped-call]
-            if existing != UNIVERSE_SNAPSHOT_SCHEMA:
+            existing = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
+            if existing.schema != UNIVERSE_SNAPSHOT_SCHEMA or not existing.equals(table):
                 raise RuntimeError(f"Universe snapshot schema collision at {path}") from None
         return UniverseSnapshotArtifact(
             path=path,

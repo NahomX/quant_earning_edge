@@ -436,16 +436,18 @@ def test_list_tickers_paginates_historical_date_and_captures_bronze(
         transport=httpx.MockTransport(respond),
     )
     with http_client:
-        references = PolygonClient(
+        client = PolygonClient(
             api_key="key",
             http_client=http_client,
             bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
-        ).list_tickers(asof_date=date(2026, 7, 27))
+        )
+        references = client.list_tickers(asof_date=date(2026, 7, 27))
 
     assert [reference.symbol for reference in references] == ["AAPL", "MSFT"]
     assert all(reference.asof_date == date(2026, 7, 27) for reference in references)
     assert len(requests) == 2
     assert len(list((tmp_path / "bronze").rglob("*.json"))) == 2
+    assert len(client.universe_observation_artifacts) == 2
 
 
 def test_list_tickers_rejects_duplicate_symbol_across_pages() -> None:

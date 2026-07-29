@@ -35,6 +35,7 @@ reproducible through `uv.lock`.
 | Stable schema-validated DuckDB silver views | Complete | `data/store.py`, view query tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
+| Provider-source universe reconstruction | Complete, pending terminal workflow binding | exact Polygon reference/details/daily-bar Bronze set plus retained config/halt inputs; strict manifest and byte-exact standalone snapshot reproduction |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
 | Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
 | Credential-safe CLI and validated universe config | Complete | `cli.py`, `runtime.py`, CLI/config tests |

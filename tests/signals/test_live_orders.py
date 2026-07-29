@@ -95,13 +95,15 @@ def test_live_planner_freezes_linked_paper_and_replay_order_ids() -> None:
     assert b"exit_price" not in artifact.canonical_bytes
 
 
-def test_insufficient_closed_history_produces_explicit_no_trade_artifact() -> None:
+def test_insufficient_closed_history_uses_capped_calibration_orders() -> None:
     artifact = _plan(DailyOrderPlanningSpec.model_validate(_raw_spec(outcome_count=19)))
 
-    assert artifact.portfolio.positions == ()
-    assert artifact.intended_orders == ()
-    assert artifact.paper_batch.orders == ()
-    assert artifact.decision_snapshots == ()
+    assert artifact.portfolio.sizing_mode == "calibration"
+    assert artifact.portfolio.per_position_weight == pytest.approx(0.01)
+    assert len(artifact.portfolio.positions) == 2
+    assert len(artifact.intended_orders) == 4
+    assert len(artifact.paper_batch.orders) == 4
+    assert len(artifact.decision_snapshots) == 2
 
 
 def test_schema_rejects_realized_labels_and_future_observations() -> None:
@@ -172,7 +174,9 @@ def test_frozen_order_loader_rejects_paper_replay_identity_tampering(
 def test_no_trade_frozen_artifact_materializes_without_market_files(
     tmp_path: Path,
 ) -> None:
-    artifact = _plan(DailyOrderPlanningSpec.model_validate(_raw_spec(outcome_count=19)))
+    raw = _raw_spec(outcome_count=19)
+    raw["candidates"] = []
+    artifact = _plan(DailyOrderPlanningSpec.model_validate(raw))
     frozen_path = tmp_path / "frozen.json"
     artifact.write(frozen_path)
     output_dir = tmp_path / "replay-specs"

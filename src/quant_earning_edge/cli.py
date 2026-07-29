@@ -1599,6 +1599,7 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
                     kelly_fraction=sizing.kelly_fraction,
                     history_window=sizing.rolling_window_days,
                     minimum_history=min(20, sizing.rolling_window_days),
+                    calibration_position_weight=sizing.calibration_position_pct,
                     max_position_weight=caps.max_position_pct,
                     max_sector_weight=caps.max_sector_pct,
                     max_gross_weight=caps.max_gross_exposure_pct,

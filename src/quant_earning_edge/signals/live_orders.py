@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -223,6 +223,11 @@ class FrozenDailyOrders:
                     sector_weights=tuple(
                         (str(item[0]), float(item[1])) for item in portfolio["sector_weights"]
                     ),
+                    sizing_mode=cast(
+                        "Literal['calibration', 'kelly']",
+                        str(portfolio["sizing_mode"]),
+                    ),
+                    per_position_weight=float(portfolio["per_position_weight"]),
                 ),
                 intended_orders=tuple(
                     IntendedOrderSpec.model_validate(item) for item in raw["intended_orders"]
@@ -258,6 +263,7 @@ class LiveOrderPlanner:
                 kelly_fraction=sizing.kelly_fraction,
                 history_window=sizing.rolling_window_days,
                 minimum_history=min(20, sizing.rolling_window_days),
+                calibration_position_weight=sizing.calibration_position_pct,
                 max_position_weight=caps.max_position_pct,
                 max_sector_weight=caps.max_sector_pct,
                 max_gross_weight=caps.max_gross_exposure_pct,

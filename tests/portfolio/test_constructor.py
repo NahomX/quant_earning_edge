@@ -71,7 +71,7 @@ def test_sector_cap_prevents_concentration() -> None:
     assert plan.sector_weights[0][1] == pytest.approx(0.20, abs=0.0001)
 
 
-def test_insufficient_or_one_sided_history_produces_zero_risk() -> None:
+def test_calibration_risk_breaks_cold_start_then_one_sided_history_stops() -> None:
     constructor = FractionalKellyPortfolioConstructor(PortfolioConfig(minimum_history=20))
     candidates = _candidates(3)
 
@@ -90,7 +90,12 @@ def test_insufficient_or_one_sided_history_produces_zero_risk() -> None:
         decision_date=date(2025, 4, 1),
     )
 
-    assert insufficient.positions == ()
+    assert insufficient.sizing_mode == "calibration"
+    assert insufficient.per_position_weight == pytest.approx(0.01)
+    assert len(insufficient.positions) == 3
+    assert all(item.target_weight <= 0.01 for item in insufficient.positions)
+    assert all_winners.sizing_mode == "kelly"
+    assert all_winners.per_position_weight == 0
     assert all_winners.positions == ()
 
 

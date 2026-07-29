@@ -54,7 +54,7 @@ reproducible through `uv.lock`.
 | Fail-closed MLflow backtest provenance | Complete | code/data/source hashes, cost parameters, seed, engine, and canonical report for all research entry points |
 | Fold-level walk-forward gate evidence | Complete | ordered OOS folds and explicit 75% positive-Sharpe gate |
 | Deterministic HTML tearsheet | Complete | self-contained equity curve, headline and cost tables |
-| Fractional-Kelly portfolio constructor | Complete | causal 60-trade history, integer shares, all hard caps |
+| Fractional-Kelly portfolio constructor | Complete | bounded 1% cold-start calibration, causal 60-session history, explicit sizing mode, integer shares, all hard caps |
 | Strict earnings-v1 strategy configuration | Complete | registry feature match, next-open-to-next-close target alignment, and cross-field risk/cost validation |
 | Deterministic nested Optuna search | Complete | seeded TPE, median pruning, resumable SQLite, mean purged-validation Sharpe, 200-trial cap |
 | Immutable hyperparameter-selection evidence | Complete | full trial ledger, exact data/plan/config binding, canonical winner and parameter hashes |

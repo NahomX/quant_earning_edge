@@ -72,6 +72,7 @@ portfolio:
     method: fractional_kelly
     kelly_fraction: 0.25
     rolling_window_days: 60
+    calibration_position_pct: 0.01  # fixed per-position risk until 20 prior sessions
   caps:
     max_position_pct: 0.05
     max_sector_pct: 0.20

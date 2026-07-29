@@ -260,10 +260,14 @@ daily evaluation contract.
 
 The Phase 4 constructor ranks candidates deterministically by absolute model
 score and symbol, then applies quarter-Kelly sizing from at most the latest 60
-realized trade outcomes. It requires at least 20 outcomes containing both wins
-and losses; otherwise it returns a zero-risk plan rather than inventing a
-payoff estimate. Only outcomes closed strictly before the explicit decision
-date participate.
+realized session outcomes. During the first 20 prior sessions it uses the
+precommitted 1% per-position calibration allocation, still subject to every
+sector and gross cap. This bounded warm-up prevents a zero-risk cold-start
+deadlock without inventing a Kelly estimate. Starting with the 21st session,
+quarter-Kelly is used; a nonpositive or one-sided estimate produces a zero-risk
+plan. Only outcomes closed strictly before the explicit decision date
+participate. Every plan records `sizing_mode` and the effective
+`per_position_weight`.
 
 Integer-share rounding is always downward. The resulting plan enforces at most
 5% per position, 20% per sector, and 50% gross exposure. The effective weights

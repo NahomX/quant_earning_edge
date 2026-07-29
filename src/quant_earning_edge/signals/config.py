@@ -72,6 +72,7 @@ class SizingSpec(StrictModel):
     method: Literal["fractional_kelly"]
     kelly_fraction: float = Field(gt=0, le=1)
     rolling_window_days: int = Field(gt=0)
+    calibration_position_pct: float = Field(gt=0, le=1)
 
 
 class CapsSpec(StrictModel):
@@ -137,6 +138,8 @@ class EarningsStrategyConfig(StrictModel):
             raise ValueError("at least one pre-session earnings window must be enabled")
         if self.portfolio.sizing.rolling_window_days != 60:
             raise ValueError("the precommitted Kelly history window is 60 days")
+        if self.portfolio.sizing.calibration_position_pct > self.portfolio.caps.max_position_pct:
+            raise ValueError("calibration position size must not exceed the position cap")
         return self
 
 

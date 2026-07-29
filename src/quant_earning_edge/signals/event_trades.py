@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -338,6 +338,11 @@ class EventTradePlanner:
                     sector_weights=tuple(
                         (str(item[0]), float(item[1])) for item in portfolio_raw["sector_weights"]
                     ),
+                    sizing_mode=cast(
+                        "Literal['calibration', 'kelly']",
+                        str(portfolio_raw["sizing_mode"]),
+                    ),
+                    per_position_weight=float(portfolio_raw["per_position_weight"]),
                 ),
                 intents=tuple(
                     TradeIntent(

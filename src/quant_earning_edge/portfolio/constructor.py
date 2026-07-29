@@ -56,6 +56,7 @@ class PortfolioConfig:
     kelly_fraction: float = 0.25
     history_window: int = 60
     minimum_history: int = 20
+    calibration_position_weight: float = 0.01
     max_position_weight: float = 0.05
     max_sector_weight: float = 0.20
     max_gross_weight: float = 0.50
@@ -67,12 +68,15 @@ class PortfolioConfig:
             raise ValueError("history requirements are inconsistent")
         fractions = (
             self.kelly_fraction,
+            self.calibration_position_weight,
             self.max_position_weight,
             self.max_sector_weight,
             self.max_gross_weight,
         )
         if any(not 0 < value <= 1 for value in fractions):
             raise ValueError("Kelly and risk fractions must be in (0, 1]")
+        if self.calibration_position_weight > self.max_position_weight:
+            raise ValueError("calibration position weight must not exceed the position cap")
         if self.max_position_weight > self.max_sector_weight:
             raise ValueError("position cap must not exceed sector cap")
         if self.max_sector_weight > self.max_gross_weight:
@@ -104,6 +108,14 @@ class PortfolioPlan:
     positions: tuple[PositionTarget, ...]
     gross_weight: float
     sector_weights: tuple[tuple[str, float], ...]
+    sizing_mode: Literal["calibration", "kelly"] = "kelly"
+    per_position_weight: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.sizing_mode not in {"calibration", "kelly"}:
+            raise ValueError("portfolio sizing mode is invalid")
+        if not 0 <= self.per_position_weight <= 1 or not math.isfinite(self.per_position_weight):
+            raise ValueError("portfolio per-position weight is invalid")
 
 
 class FractionalKellyPortfolioConstructor:
@@ -132,11 +144,16 @@ class FractionalKellyPortfolioConstructor:
                 key=lambda item: item.closed_date,
             )[-self._config.history_window :]
         )
+        history_is_calibrating = len(history) < self._config.minimum_history
         raw_kelly = _kelly(history, minimum_history=self._config.minimum_history)
         fractional_kelly = raw_kelly * self._config.kelly_fraction
-        per_position_weight = min(
-            fractional_kelly,
-            self._config.max_position_weight,
+        sizing_mode: Literal["calibration", "kelly"] = (
+            "calibration" if history_is_calibrating else "kelly"
+        )
+        per_position_weight = (
+            self._config.calibration_position_weight
+            if history_is_calibrating
+            else min(fractional_kelly, self._config.max_position_weight)
         )
         ranked = sorted(candidates, key=lambda item: (-abs(item.score), item.symbol))[
             : self._config.top_k
@@ -179,6 +196,8 @@ class FractionalKellyPortfolioConstructor:
             positions=tuple(positions),
             gross_weight=gross_weight,
             sector_weights=tuple(sorted(sector_weights.items())),
+            sizing_mode=sizing_mode,
+            per_position_weight=per_position_weight,
         )
 
 

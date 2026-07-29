@@ -27,6 +27,11 @@ On Windows, run:
   -LoopSpec C:\ProgramData\quant_earning_edge\phase6-loop.json
 ```
 
+The Windows launcher supervises the worker process and restarts it after a
+five-second delay if it exits. Override `-RestartDelaySeconds` only when
+operational policy requires a longer backoff. Linux receives the equivalent
+process supervision from `Restart=always` in the systemd unit.
+
 Use `--once` directly on `qee workflow worker` for deployment smoke tests. A
 cycle heartbeat is written under
 `manifests/job=workflow-worker/cycles` on every scan, including an empty inbox.

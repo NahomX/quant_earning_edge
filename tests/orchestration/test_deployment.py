@@ -27,5 +27,8 @@ def test_windows_worker_uses_project_venv_and_no_embedded_secrets() -> None:
     assert "[string]$LoopSpec" in script
     assert "--loop-spec $ResolvedLoopSpec" in script
     assert "--env-file" in script
+    assert "while ($true)" in script
+    assert "Start-Sleep -Seconds $RestartDelaySeconds" in script
+    assert "[int]$RestartDelaySeconds = 5" in script
     assert "APCA_API_SECRET_KEY" not in script
     assert "POLYGON_API_KEY=" not in script

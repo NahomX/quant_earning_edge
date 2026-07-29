@@ -11,7 +11,10 @@ param(
     [string]$WorkerId = $env:COMPUTERNAME,
 
     [ValidateRange(1, 60)]
-    [int]$PollSeconds = 10
+    [int]$PollSeconds = 10,
+
+    [ValidateRange(1, 300)]
+    [int]$RestartDelaySeconds = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,11 +31,18 @@ if ([string]::IsNullOrWhiteSpace($WorkerId)) {
     throw "WorkerId must not be blank"
 }
 
-& $QeeExecutable workflow worker `
-    --inbox $ResolvedInbox `
-    --worker-id $WorkerId `
-    --loop-spec $ResolvedLoopSpec `
-    --poll-seconds $PollSeconds `
-    --env-file $ResolvedEnvFile
+while ($true) {
+    & $QeeExecutable workflow worker `
+        --inbox $ResolvedInbox `
+        --worker-id $WorkerId `
+        --loop-spec $ResolvedLoopSpec `
+        --poll-seconds $PollSeconds `
+        --env-file $ResolvedEnvFile
 
-exit $LASTEXITCODE
+    $WorkerExitCode = $LASTEXITCODE
+    Write-Warning (
+        "qee workflow worker exited with code $WorkerExitCode; " +
+        "restarting in $RestartDelaySeconds second(s)"
+    )
+    Start-Sleep -Seconds $RestartDelaySeconds
+}

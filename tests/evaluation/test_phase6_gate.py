@@ -187,6 +187,9 @@ def test_phase6_gate_passes_only_with_all_locked_thresholds(tmp_path: Path) -> N
 
     assert result.authoritative_session_count == 90
     assert result.observed_session_count == 90
+    assert result.session_report_sha256 == tuple(item.sha256 for item in reports)
+    assert result.bootstrap_resamples == 500
+    assert result.seed == 7
     assert result.operational_uptime == 1
     assert result.net_sharpe is not None and result.net_sharpe > 0.8
     assert result.bootstrap_sharpe is not None
@@ -214,6 +217,44 @@ def test_phase6_gate_passes_only_with_all_locked_thresholds(tmp_path: Path) -> N
     ]
     assert result.passes_phase6_gate
     assert result.verdict == "pass"
+
+
+def test_phase6_report_hash_binds_exact_daily_replay_evidence(tmp_path: Path) -> None:
+    calendar = _calendar(tmp_path, 90)
+    dates = tuple(item.session_date for item in calendar.sessions)
+    reports = _profitable_reports(dates)
+    changed_reports = (
+        _daily_report(
+            dates[0],
+            initial_cash=reports[0].initial_cash,
+            return_rate=reports[0].net_return or 0.0,
+            index=999,
+        ),
+        *reports[1:],
+    )
+    evaluator = Phase6GateEvaluator(bootstrap_resamples=50, seed=7)
+
+    first = evaluator.evaluate(
+        calendar=calendar,
+        workflow_health=_health(calendar),
+        reports=reports,
+        proof_start=dates[0],
+        proof_end=dates[-1],
+        initial_cash=100_000,
+    )
+    changed = evaluator.evaluate(
+        calendar=calendar,
+        workflow_health=_health(calendar),
+        reports=changed_reports,
+        proof_start=dates[0],
+        proof_end=dates[-1],
+        initial_cash=100_000,
+    )
+
+    assert first.net_sharpe == changed.net_sharpe
+    assert first.final_equity == changed.final_equity
+    assert first.session_report_sha256 != changed.session_report_sha256
+    assert first.sha256 != changed.sha256
 
 
 def test_missing_sessions_fail_strict_uptime_gate(tmp_path: Path) -> None:

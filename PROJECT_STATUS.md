@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 356 automated tests pass.
+- 357 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 93 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -52,6 +52,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   negative/undefined edge still shuts risk off.
 - The restart-safe worker continuously discovers, queues, executes, reconciles,
   and finalizes authoritative Phase 6 paper sessions.
+- The terminal Phase 6 verdict binds the ordered SHA-256 of every daily replay
+  report plus bootstrap count/seed, making the exact 90-session evidence and
+  statistical procedure part of the verdict identity.
 - Paper submission is locked to Alpaca's paper host. Circuit breakers and
   reconciliation failures halt new orders.
 

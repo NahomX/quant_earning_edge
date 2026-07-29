@@ -584,6 +584,7 @@ all available daily replay reports:
 ```json
 {
   "session_file": "sessions-<hash>.json",
+  "workflow_health_file": "workflow-health-<hash>.json",
   "proof_start": "2026-07-28",
   "proof_end": "2026-12-02",
   "initial_cash": 100000,
@@ -617,7 +618,12 @@ then subtracts modeled spread, modeled square-root impact, the realized
 execution residual (queue/auction effects beyond those models), and commission.
 Every daily report reconciles those dollar components to replay fill-price P&L
 and net P&L. The 90-session report also records each component's sequential
-marginal Sharpe loss.
+marginal Sharpe loss. Its schema-v4 evidence includes the bootstrap resample
+count and seed plus the ordered SHA-256 of every daily replay report. Each daily
+report already binds its order-level replay evidence, so the terminal verdict
+identifies the complete transitive 90-session source set and its statistical
+procedure even when different evidence happens to produce the same headline
+metrics.
 
 ## Fetch authoritative market sessions
 

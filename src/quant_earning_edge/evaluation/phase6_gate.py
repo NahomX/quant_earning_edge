@@ -56,6 +56,9 @@ class Phase6GateReport:
     schema_version: int
     calendar_sha256: str
     workflow_health_sha256: str
+    session_report_sha256: tuple[str, ...]
+    bootstrap_resamples: int
+    seed: int
     proof_start: date
     proof_end: date
     required_session_count: int
@@ -182,6 +185,8 @@ class Phase6GateEvaluator:
             proof_end=proof_end,
             initial_cash=initial_cash,
             performance=performance,
+            bootstrap_resamples=self._bootstrap_resamples,
+            seed=self._seed,
         )
 
     def _performance(
@@ -253,6 +258,8 @@ class Phase6GateEvaluator:
         proof_start: date,
         proof_end: date,
         initial_cash: float,
+        bootstrap_resamples: int,
+        seed: int,
         performance: tuple[
             float | None,
             float | None,
@@ -317,9 +324,12 @@ class Phase6GateEvaluator:
             )
         )
         return Phase6GateReport(
-            schema_version=3,
+            schema_version=4,
             calendar_sha256=calendar.sha256,
             workflow_health_sha256=workflow_health.sha256,
+            session_report_sha256=tuple(item.sha256 for item in reports),
+            bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
             proof_start=proof_start,
             proof_end=proof_end,
             required_session_count=90,

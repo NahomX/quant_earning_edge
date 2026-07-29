@@ -88,6 +88,24 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
                     "bootstrap": {"sharpe": {"lower": 0.6}},
                 },
                 "walk_forward": {"passes_positive_fold_gate": True},
+                "cohorts": [
+                    {
+                        "dimension": dimension,
+                        "value": value,
+                        "trade_count": 10,
+                        "session_count": 10,
+                        "total_net_pnl": 500.0,
+                        "mean_net_return": 0.01,
+                        "net_sharpe": 1.1,
+                        "hit_rate": 0.6,
+                        "payoff": 1.5,
+                    }
+                    for dimension, value in (
+                        ("event_timing", "bmo"),
+                        ("sector", "Technology"),
+                        ("iv_regime", "unavailable"),
+                    )
+                ],
                 "passes_phase4_research_gate": True,
                 "passes_pre_paper_backtest_gate": True,
             },

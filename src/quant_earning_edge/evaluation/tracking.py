@@ -41,7 +41,7 @@ def source_tree_sha256() -> str:
     return digest.hexdigest()
 
 
-def log_backtest_run(
+def log_backtest_run(  # noqa: PLR0912,PLR0915 - atomic scoped MLflow transaction.
     *,
     tracking_uri: str,
     artifact_location: str | None,
@@ -56,6 +56,7 @@ def log_backtest_run(
     bootstrap_resamples: int,
     seed: int,
     source_files: Sequence[Path],
+    artifact_files: Sequence[Path] = (),
     extra_parameters: Mapping[str, str | int | float | bool] | None = None,
 ) -> BacktestTrackingReference:
     """Persist hashes, parameters, seed, and report to MLflow or fail."""
@@ -89,10 +90,16 @@ def log_backtest_run(
     prior_file_store_override = os.environ.get("MLFLOW_ALLOW_FILE_STORE")
     if tracking_uri.startswith("file:"):
         os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+    mlflow: Any | None = None
+    prior_tracking_uri: str | None = None
+    prior_registry_uri: str | None = None
     try:
         try:
             mlflow = _import_mlflow()
+            prior_tracking_uri = str(mlflow.get_tracking_uri())
+            prior_registry_uri = str(mlflow.get_registry_uri())
             mlflow.set_tracking_uri(tracking_uri)
+            mlflow.set_registry_uri(tracking_uri)
             if artifact_location is None:
                 experiment = mlflow.set_experiment(experiment_name)
                 experiment_id = str(experiment.experiment_id)
@@ -124,12 +131,19 @@ def log_backtest_run(
                 )
                 mlflow.log_dict(json.loads(report_bytes), "performance-report.json")
                 mlflow.log_dict(source_manifest, "source-manifest.json")
+                for artifact_file in artifact_files:
+                    mlflow.log_artifact(str(artifact_file.resolve()), artifact_path="supplemental")
                 run_id = str(active.info.run_id)
         except Exception as error:
             raise RuntimeError(
                 f"MLflow backtest tracking failed ({type(error).__name__})"
             ) from error
     finally:
+        if mlflow is not None:
+            if prior_tracking_uri is not None:
+                mlflow.set_tracking_uri(prior_tracking_uri)
+            if prior_registry_uri is not None:
+                mlflow.set_registry_uri(prior_registry_uri)
         if prior_file_store_override is None:
             os.environ.pop("MLFLOW_ALLOW_FILE_STORE", None)
         else:

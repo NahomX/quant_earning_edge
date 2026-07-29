@@ -61,6 +61,7 @@ from quant_earning_edge.evaluation import (
     PerformanceReport,
     Phase4AggregationSpec,
     Phase4GateEvaluator,
+    Phase4HtmlTearsheetWriter,
     Phase4PromotionEvidence,
     Phase6AggregationSpec,
     Phase6CompletionFinalizer,
@@ -154,6 +155,7 @@ from quant_earning_edge.signals import (
     OptunaStudyArtifact,
     ProductionModelArtifact,
     ProductionModelTrainer,
+    TradeCohort,
     load_strategy_config,
     strategy_file_sha256,
 )
@@ -1652,6 +1654,10 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
         Path,
         typer.Option(dir_okay=False, help="Immutable combined Phase 4 gate JSON."),
     ],
+    tearsheet_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable fold and cohort HTML tearsheet."),
+    ],
     bootstrap_resamples: Annotated[
         int,
         typer.Option(min=1, help="Trade bootstrap resamples."),
@@ -1673,6 +1679,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
         plan_paths: list[Path] = []
         for fold in spec.folds:
             results = []
+            cohorts: list[TradeCohort] = []
             for configured_path in fold.event_plan_files:
                 plan_path = (
                     configured_path
@@ -1681,6 +1688,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                 )
                 plan_paths.append(plan_path)
                 plan = EventTradePlanner.load(plan_path)
+                cohorts.extend(plan.cohorts)
                 results.append(
                     VectorbtIntradayEngine().run(
                         trades=plan.intents,
@@ -1694,6 +1702,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                     test_start_date=fold.test_start_date,
                     test_end_date=fold.test_end_date,
                     results=tuple(results),
+                    cohorts=tuple(cohorts),
                 )
             )
         evaluator = Phase4GateEvaluator(
@@ -1702,6 +1711,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
         )
         report = evaluator.evaluate(tuple(fold_results))
         evaluator.write(report, output)
+        Phase4HtmlTearsheetWriter().write(report=report, output=tearsheet_output)
     except (KeyError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="Phase 4 aggregation") from error
     try:
@@ -1726,6 +1736,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
             source_files=(aggregation_spec, *plan_paths),
+            artifact_files=(tearsheet_output,),
             extra_parameters={
                 "fold_count": len(report.walk_forward.folds),
                 "passes_phase4_research_gate": report.passes_phase4_research_gate,
@@ -1738,6 +1749,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
         {
             "output": str(output.resolve()),
             "sha256": report.sha256,
+            "tearsheet_output": str(tearsheet_output.resolve()),
             "trade_count": report.overall.trade_count,
             "fold_count": len(report.walk_forward.folds),
             "passes_phase4_research_gate": report.passes_phase4_research_gate,

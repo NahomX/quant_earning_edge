@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +43,8 @@ class EventExecutionObservation:
     exit_at: datetime
     exit_price: float
     frozen_average_daily_volume_shares: float
+    event_timing: Literal["bmo", "amc"]
+    iv_regime: Literal["low", "medium", "high", "unavailable"] = "unavailable"
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -51,6 +53,10 @@ class EventExecutionObservation:
             raise ValueError("symbol and sector must not be empty")
         object.__setattr__(self, "symbol", symbol)
         object.__setattr__(self, "sector", sector)
+        if self.event_timing not in {"bmo", "amc"}:
+            raise ValueError("event timing must be bmo or amc")
+        if self.iv_regime not in {"low", "medium", "high", "unavailable"}:
+            raise ValueError("unsupported IV regime")
         timestamps = (
             self.decision_at,
             self.sizing_price_observed_at,
@@ -106,6 +112,8 @@ class EventExecutionSpec(_StrictSpec):
     exit_at: datetime
     exit_price: float = Field(gt=0)
     frozen_average_daily_volume_shares: float = Field(gt=0)
+    event_timing: Literal["bmo", "amc"]
+    iv_regime: Literal["low", "medium", "high", "unavailable"] = "unavailable"
 
     def to_domain(self) -> EventExecutionObservation:
         return EventExecutionObservation(**self.model_dump())
@@ -144,12 +152,41 @@ class EventTradePlanningSpec(_StrictSpec):
 
 
 @dataclass(frozen=True)
+class TradeCohort:
+    """Immutable research-cohort labels for one planned trade."""
+
+    trade_id: str
+    event_timing: Literal["bmo", "amc"]
+    sector: str
+    iv_regime: Literal["low", "medium", "high", "unavailable"]
+
+    def __post_init__(self) -> None:
+        trade_id = self.trade_id.strip()
+        sector = self.sector.strip()
+        if not trade_id or not sector:
+            raise ValueError("trade cohort identity and sector must not be blank")
+        if self.event_timing not in {"bmo", "amc"}:
+            raise ValueError("trade cohort event timing is invalid")
+        if self.iv_regime not in {"low", "medium", "high", "unavailable"}:
+            raise ValueError("trade cohort IV regime is invalid")
+        object.__setattr__(self, "trade_id", trade_id)
+        object.__setattr__(self, "sector", sector)
+
+
+@dataclass(frozen=True)
 class PlannedEventTrades:
     """Portfolio targets and executable same-session round trips."""
 
     trade_date: date
     portfolio: PortfolioPlan
     intents: tuple[TradeIntent, ...]
+    cohorts: tuple[TradeCohort, ...]
+
+    def __post_init__(self) -> None:
+        if tuple(item.trade_id for item in self.cohorts) != tuple(
+            item.trade_id for item in self.intents
+        ):
+            raise ValueError("event-plan cohorts must align exactly with trade intents")
 
     def to_json_bytes(self) -> bytes:
         """Serialize canonical decision and execution evidence."""
@@ -230,19 +267,30 @@ class EventTradePlanner:
             equity=equity,
             decision_date=trade_date,
         )
-        intents = tuple(
-            _intent(
+        intents = []
+        cohorts = []
+        for position in portfolio.positions:
+            observation = selected_observations[position.symbol]
+            intent = _intent(
                 position.symbol,
                 shares=position.shares,
                 score=position.score,
-                observation=selected_observations[position.symbol],
+                observation=observation,
             )
-            for position in portfolio.positions
-        )
+            intents.append(intent)
+            cohorts.append(
+                TradeCohort(
+                    trade_id=intent.trade_id,
+                    event_timing=observation.event_timing,
+                    sector=observation.sector,
+                    iv_regime=observation.iv_regime,
+                )
+            )
         return PlannedEventTrades(
             trade_date=trade_date,
             portfolio=portfolio,
-            intents=intents,
+            intents=tuple(intents),
+            cohorts=tuple(cohorts),
         )
 
     @staticmethod
@@ -288,6 +336,7 @@ class EventTradePlanner:
                     )
                     for item in raw["intents"]
                 ),
+                cohorts=tuple(TradeCohort(**item) for item in raw["cohorts"]),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError(f"invalid event-trade plan: {path}") from error

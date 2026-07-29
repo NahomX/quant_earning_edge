@@ -50,6 +50,7 @@ from quant_earning_edge.evaluation.report import (
 )
 from quant_earning_edge.evaluation.strategy_gate import (
     BacktestResultCombiner,
+    CohortPerformance,
     FoldArtifactSpec,
     FoldBacktestResults,
     Phase4AggregationSpec,
@@ -57,7 +58,7 @@ from quant_earning_edge.evaluation.strategy_gate import (
     Phase4GateEvaluator,
     Phase4PromotionEvidence,
 )
-from quant_earning_edge.evaluation.tearsheet import HtmlTearsheetWriter
+from quant_earning_edge.evaluation.tearsheet import HtmlTearsheetWriter, Phase4HtmlTearsheetWriter
 from quant_earning_edge.evaluation.tracking import (
     BacktestTrackingReference,
     default_artifact_location,
@@ -71,6 +72,7 @@ __all__ = [
     "BacktestResultCombiner",
     "BacktestTrackingReference",
     "BootstrapSummary",
+    "CohortPerformance",
     "ConfidenceInterval",
     "CostAttribution",
     "FoldArtifactSpec",
@@ -89,6 +91,7 @@ __all__ = [
     "Phase4AggregationSpec",
     "Phase4GateEvaluation",
     "Phase4GateEvaluator",
+    "Phase4HtmlTearsheetWriter",
     "Phase4PromotionEvidence",
     "Phase6AggregationSpec",
     "Phase6CompletionFinalizer",

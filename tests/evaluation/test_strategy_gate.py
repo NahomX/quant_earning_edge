@@ -25,7 +25,7 @@ from quant_earning_edge.evaluation import (
     Phase4PromotionEvidence,
 )
 from quant_earning_edge.portfolio import PortfolioPlan
-from quant_earning_edge.signals import EventTradePlanner, PlannedEventTrades
+from quant_earning_edge.signals import EventTradePlanner, PlannedEventTrades, TradeCohort
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -92,14 +92,55 @@ def _chained_results() -> tuple[BacktestResult, ...]:
     return tuple(results)
 
 
+def _cohorts(results: tuple[BacktestResult, ...]) -> tuple[TradeCohort, ...]:
+    return tuple(
+        TradeCohort(
+            trade_id=result.trades[0].intent.trade_id,
+            event_timing="bmo" if index % 2 == 0 else "amc",
+            sector="Technology" if index % 3 else "Health Care",
+            iv_regime=("low", "medium", "high")[index % 3],
+        )
+        for index, result in enumerate(results)
+    )
+
+
+def _promotion_cohort_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "dimension": dimension,
+            "value": value,
+            "trade_count": 10,
+            "session_count": 10,
+            "total_net_pnl": 500.0,
+            "mean_net_return": 0.01,
+            "net_sharpe": 1.1,
+            "hit_rate": 0.6,
+            "payoff": 1.5,
+        }
+        for dimension, value in (
+            ("event_timing", "bmo"),
+            ("sector", "Technology"),
+            ("iv_regime", "unavailable"),
+        )
+    ]
+
+
 def test_phase4_report_is_deterministic_and_persisted(tmp_path: Path) -> None:
     results = _chained_results()
     folds = (
         FoldBacktestResults(
-            0, results[0].daily[0].session_date, results[9].daily[0].session_date, results[:10]
+            0,
+            results[0].daily[0].session_date,
+            results[9].daily[0].session_date,
+            results[:10],
+            _cohorts(results[:10]),
         ),
         FoldBacktestResults(
-            1, results[10].daily[0].session_date, results[-1].daily[0].session_date, results[10:]
+            1,
+            results[10].daily[0].session_date,
+            results[-1].daily[0].session_date,
+            results[10:],
+            _cohorts(results[10:]),
         ),
     )
     evaluator = Phase4GateEvaluator(bootstrap_resamples=100, seed=7)
@@ -113,6 +154,11 @@ def test_phase4_report_is_deterministic_and_persisted(tmp_path: Path) -> None:
     assert first == second
     assert first.overall.trade_count == 20
     assert first.walk_forward.positive_sharpe_fraction == 1.0
+    assert {item.dimension for item in first.cohorts} == {
+        "event_timing",
+        "sector",
+        "iv_regime",
+    }
     assert first.passes_phase4_research_gate == (
         first.overall.net_sharpe >= 0.8
         and first.overall.bootstrap is not None
@@ -128,6 +174,22 @@ def test_combiner_rejects_equity_discontinuity() -> None:
 
     with pytest.raises(ValueError, match="equity"):
         BacktestResultCombiner().combine((results[0], broken))
+
+
+def test_phase4_gate_rejects_missing_cohort_trade() -> None:
+    results = _chained_results()[:2]
+    folds = (
+        FoldBacktestResults(
+            0,
+            results[0].daily[0].session_date,
+            results[-1].daily[0].session_date,
+            results,
+            _cohorts(results)[:1],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="does not cover every trade"):
+        Phase4GateEvaluator(bootstrap_resamples=10).evaluate(folds)
 
 
 def replace_result_initial(result: BacktestResult, value: float) -> BacktestResult:
@@ -147,6 +209,14 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
         trade_date=first_date,
         portfolio=PortfolioPlan(100_000, 20, 0.1, 0.025, (), 0.01, ()),
         intents=(first_fixture.trades[0].intent,),
+        cohorts=(
+            TradeCohort(
+                first_fixture.trades[0].intent.trade_id,
+                "bmo",
+                "Technology",
+                "unavailable",
+            ),
+        ),
     )
     first_path = tmp_path / "first.json"
     EventTradePlanner.write(first_plan, first_path)
@@ -174,11 +244,20 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
             (),
         ),
         intents=(second_fixture.trades[0].intent,),
+        cohorts=(
+            TradeCohort(
+                second_fixture.trades[0].intent.trade_id,
+                "amc",
+                "Health Care",
+                "unavailable",
+            ),
+        ),
     )
     second_path = tmp_path / "second.json"
     EventTradePlanner.write(second_plan, second_path)
     spec = tmp_path / "aggregation.json"
     output = tmp_path / "gate.json"
+    tearsheet = tmp_path / "gate.html"
     spec.write_text(
         json.dumps(
             {
@@ -210,6 +289,8 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
             str(spec),
             "--output",
             str(output),
+            "--tearsheet-output",
+            str(tearsheet),
             "--bootstrap-resamples",
             "10",
         ],
@@ -220,6 +301,10 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
     assert payload["trade_count"] == 2
     assert payload["fold_count"] == 2
     assert output.exists()
+    assert tearsheet.exists()
+    rendered = tearsheet.read_text(encoding="utf-8")
+    assert "Cohort diagnostics" in rendered
+    assert "unavailable" in rendered
 
 
 def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
@@ -230,6 +315,7 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
             "bootstrap": {"sharpe": {"lower": 0.6}},
         },
         "walk_forward": {"passes_positive_fold_gate": True},
+        "cohorts": _promotion_cohort_rows(),
         "passes_phase4_research_gate": True,
         "passes_pre_paper_backtest_gate": True,
     }
@@ -247,3 +333,22 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
     failing.write_bytes(json.dumps(report, sort_keys=True, separators=(",", ":")).encode())
     with pytest.raises(ValueError, match="pre-paper gate verdict is inconsistent"):
         Phase4PromotionEvidence.load(failing)
+
+
+def test_production_promotion_rejects_missing_cohort_evidence(tmp_path: Path) -> None:
+    report = {
+        "overall": {
+            "net_sharpe": 1.2,
+            "max_drawdown": 0.10,
+            "bootstrap": {"sharpe": {"lower": 0.6}},
+        },
+        "walk_forward": {"passes_positive_fold_gate": True},
+        "cohorts": [],
+        "passes_phase4_research_gate": True,
+        "passes_pre_paper_backtest_gate": True,
+    }
+    path = tmp_path / "missing-cohorts.json"
+    path.write_bytes(json.dumps(report, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(ValueError, match="invalid Phase 4 gate report"):
+        Phase4PromotionEvidence.load(path)

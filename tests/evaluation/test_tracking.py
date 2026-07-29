@@ -23,6 +23,8 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
     source = tmp_path / "backtest.json"
     source.write_text('{"input":"fixed"}', encoding="utf-8")
     output = tmp_path / "report.json"
+    tearsheet = tmp_path / "tearsheet.html"
+    tearsheet.write_text("<html>fixed</html>", encoding="utf-8")
     report = b'{"net_sharpe":1.25}'
     environment: dict[str, str] = {}
     tracking_uri = default_tracking_uri(output, environment=environment)
@@ -44,6 +46,7 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
         bootstrap_resamples=10_000,
         seed=42,
         source_files=(source,),
+        artifact_files=(tearsheet,),
     )
 
     run = mlflow.MlflowClient(tracking_uri).get_run(reference.run_id)
@@ -57,7 +60,13 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
     } == {
         "performance-report.json",
         "source-manifest.json",
+        "supplemental",
     }
+    supplemental = mlflow.MlflowClient(tracking_uri).list_artifacts(
+        reference.run_id,
+        "supplemental",
+    )
+    assert {item.path for item in supplemental} == {"supplemental/tearsheet.html"}
     downloaded = mlflow.MlflowClient(tracking_uri).download_artifacts(
         reference.run_id,
         "performance-report.json",
@@ -69,6 +78,8 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
 def test_backtest_tracking_failure_is_not_silently_ignored(tmp_path: Path) -> None:
     source = tmp_path / "backtest.json"
     source.write_text("{}", encoding="utf-8")
+    prior_tracking_uri = mlflow.get_tracking_uri()
+    prior_registry_uri = mlflow.get_registry_uri()
 
     with pytest.raises(RuntimeError, match="MLflow backtest tracking failed"):
         log_backtest_run(
@@ -86,3 +97,6 @@ def test_backtest_tracking_failure_is_not_silently_ignored(tmp_path: Path) -> No
             seed=1,
             source_files=(source,),
         )
+
+    assert mlflow.get_tracking_uri() == prior_tracking_uri
+    assert mlflow.get_registry_uri() == prior_registry_uri

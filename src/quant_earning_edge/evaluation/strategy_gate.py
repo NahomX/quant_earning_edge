@@ -8,8 +8,9 @@ import math
 from dataclasses import asdict, dataclass, replace
 from datetime import date  # noqa: TC003 - Pydantic resolves runtime fields.
 from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime fields.
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from quant_earning_edge.backtest import BacktestResult
@@ -21,6 +22,9 @@ from quant_earning_edge.evaluation.report import PerformanceEvaluator, Performan
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from quant_earning_edge.backtest import TradeLedger
+    from quant_earning_edge.signals.event_trades import TradeCohort
 
 
 class FoldArtifactSpec(BaseModel):
@@ -50,6 +54,22 @@ class FoldBacktestResults:
     test_start_date: date
     test_end_date: date
     results: tuple[BacktestResult, ...]
+    cohorts: tuple[TradeCohort, ...]
+
+
+@dataclass(frozen=True)
+class CohortPerformance:
+    """Trade- and session-level diagnostics for one research cohort."""
+
+    dimension: Literal["event_timing", "sector", "iv_regime"]
+    value: str
+    trade_count: int
+    session_count: int
+    total_net_pnl: float
+    mean_net_return: float
+    net_sharpe: float
+    hit_rate: float
+    payoff: float | None
 
 
 @dataclass(frozen=True)
@@ -58,6 +78,7 @@ class Phase4GateEvaluation:
 
     overall: PerformanceReport
     walk_forward: WalkForwardEvaluation
+    cohorts: tuple[CohortPerformance, ...]
     passes_phase4_research_gate: bool
     passes_pre_paper_backtest_gate: bool
 
@@ -92,6 +113,7 @@ class Phase4PromotionEvidence:
         expected = {
             "overall",
             "walk_forward",
+            "cohorts",
             "passes_phase4_research_gate",
             "passes_pre_paper_backtest_gate",
         }
@@ -107,6 +129,7 @@ class Phase4PromotionEvidence:
             max_drawdown = float(overall["max_drawdown"])
             lower_sharpe = float(bootstrap["sharpe"]["lower"])
             positive_fold_gate = bool(walk_forward["passes_positive_fold_gate"])
+            _validate_promotion_cohorts(raw["cohorts"])
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("invalid Phase 4 gate report") from error
         research = net_sharpe >= 0.8 and lower_sharpe >= 0.3 and max_drawdown <= 0.20
@@ -198,8 +221,10 @@ class Phase4GateEvaluator:
             raise ValueError("at least one fold result is required")
         fold_reports = []
         all_results: list[BacktestResult] = []
+        all_cohorts: list[TradeCohort] = []
         for fold in folds:
             combined = self._combiner.combine(fold.results)
+            _validate_cohort_coverage(combined, fold.cohorts)
             if (
                 combined.daily[0].session_date < fold.test_start_date
                 or combined.daily[-1].session_date > fold.test_end_date
@@ -215,8 +240,12 @@ class Phase4GateEvaluator:
                 )
             )
             all_results.extend(fold.results)
-        overall = self._performance.evaluate(self._combiner.combine(all_results))
+            all_cohorts.extend(fold.cohorts)
+        combined_overall = self._combiner.combine(all_results)
+        _validate_cohort_coverage(combined_overall, all_cohorts)
+        overall = self._performance.evaluate(combined_overall)
         walk_forward = WalkForwardEvaluator().aggregate(fold_reports)
+        cohorts = _evaluate_cohorts(combined_overall, all_cohorts)
         lower_sharpe = (
             overall.bootstrap.sharpe.lower if overall.bootstrap is not None else float("-inf")
         )
@@ -230,6 +259,7 @@ class Phase4GateEvaluator:
         return Phase4GateEvaluation(
             overall=overall,
             walk_forward=walk_forward,
+            cohorts=cohorts,
             passes_phase4_research_gate=phase4,
             passes_pre_paper_backtest_gate=pre_paper,
         )
@@ -244,3 +274,128 @@ class Phase4GateEvaluator:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"Phase 4 gate report collision at {output}") from None
+
+
+def _validate_cohort_coverage(
+    result: BacktestResult,
+    cohorts: Sequence[TradeCohort],
+) -> None:
+    trade_ids = tuple(item.intent.trade_id for item in result.trades)
+    cohort_ids = tuple(item.trade_id for item in cohorts)
+    if len(set(cohort_ids)) != len(cohort_ids):
+        raise ValueError("Phase 4 cohort evidence contains duplicate trade IDs")
+    if set(cohort_ids) != set(trade_ids):
+        raise ValueError("Phase 4 cohort evidence does not cover every trade exactly once")
+
+
+def _evaluate_cohorts(
+    result: BacktestResult,
+    cohorts: Sequence[TradeCohort],
+) -> tuple[CohortPerformance, ...]:
+    cohort_by_trade = {item.trade_id: item for item in cohorts}
+    output = []
+    dimensions: tuple[Literal["event_timing", "sector", "iv_regime"], ...] = (
+        "event_timing",
+        "sector",
+        "iv_regime",
+    )
+    for dimension in dimensions:
+        values = sorted({str(getattr(item, dimension)) for item in cohorts})
+        for value in values:
+            trades = tuple(
+                trade
+                for trade in result.trades
+                if str(getattr(cohort_by_trade[trade.intent.trade_id], dimension)) == value
+            )
+            output.append(
+                _cohort_performance(
+                    dimension=dimension,
+                    value=value,
+                    trades=trades,
+                )
+            )
+    return tuple(output)
+
+
+def _cohort_performance(
+    *,
+    dimension: Literal["event_timing", "sector", "iv_regime"],
+    value: str,
+    trades: Sequence[TradeLedger],
+) -> CohortPerformance:
+    typed_trades = tuple(trades)
+    returns = np.asarray([item.net_return for item in typed_trades], dtype=float)
+    wins = returns[returns > 0]
+    losses = returns[returns < 0]
+    daily: dict[date, tuple[float, float]] = {}
+    for item in typed_trades:
+        session = item.intent.exit_date
+        pnl, notional = daily.get(session, (0.0, 0.0))
+        daily[session] = (
+            pnl + float(item.net_pnl),
+            notional + float(item.entry_notional),
+        )
+    daily_returns = np.asarray(
+        [pnl / notional for pnl, notional in daily.values()],
+        dtype=float,
+    )
+    return CohortPerformance(
+        dimension=dimension,
+        value=value,
+        trade_count=len(typed_trades),
+        session_count=len(daily),
+        total_net_pnl=float(sum(item.net_pnl for item in typed_trades)),
+        mean_net_return=float(np.mean(returns)),
+        net_sharpe=_cohort_sharpe(daily_returns),
+        hit_rate=float(np.mean(returns > 0)),
+        payoff=(float(np.mean(wins) / abs(np.mean(losses))) if wins.size and losses.size else None),
+    )
+
+
+def _cohort_sharpe(returns: np.ndarray) -> float:
+    if returns.size < 2:
+        return 0.0
+    deviation = float(np.std(returns, ddof=1))
+    if math.isclose(deviation, 0.0, abs_tol=1e-15):
+        return 0.0
+    return float(np.mean(returns) / deviation * math.sqrt(252))
+
+
+def _validate_promotion_cohorts(raw: object) -> None:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Phase 4 promotion requires cohort evidence")
+    expected = {
+        "dimension",
+        "value",
+        "trade_count",
+        "session_count",
+        "total_net_pnl",
+        "mean_net_return",
+        "net_sharpe",
+        "hit_rate",
+        "payoff",
+    }
+    dimensions = set()
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != expected:
+            raise ValueError("Phase 4 promotion cohort schema mismatch")
+        dimension = str(item["dimension"])
+        if dimension not in {"event_timing", "sector", "iv_regime"}:
+            raise ValueError("Phase 4 promotion cohort dimension is invalid")
+        if not str(item["value"]).strip():
+            raise ValueError("Phase 4 promotion cohort value is blank")
+        if int(item["trade_count"]) < 1 or int(item["session_count"]) < 1:
+            raise ValueError("Phase 4 promotion cohort counts must be positive")
+        numeric = (
+            float(item["total_net_pnl"]),
+            float(item["mean_net_return"]),
+            float(item["net_sharpe"]),
+            float(item["hit_rate"]),
+        )
+        if not all(math.isfinite(value) for value in numeric) or not 0 <= numeric[-1] <= 1:
+            raise ValueError("Phase 4 promotion cohort metrics are invalid")
+        if item["payoff"] is not None and not math.isfinite(float(item["payoff"])):
+            raise ValueError("Phase 4 promotion cohort payoff is invalid")
+        dimensions.add(dimension)
+    if dimensions != {"event_timing", "sector", "iv_regime"}:
+        raise ValueError("Phase 4 promotion requires all cohort dimensions")

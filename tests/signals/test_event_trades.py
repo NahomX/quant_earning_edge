@@ -70,6 +70,7 @@ def _inputs() -> tuple[
             exit_at=datetime(2025, 2, 3, 21, 0, tzinfo=UTC),
             exit_price=103.0 + index * 10,
             frozen_average_daily_volume_shares=1_000_000,
+            event_timing="bmo" if index % 2 == 0 else "amc",
         )
         for index, prediction in enumerate(predictions)
     )
@@ -100,6 +101,8 @@ def test_event_trade_plan_is_deterministic_and_long_only() -> None:
     assert all(item.side == "long" for item in first.intents)
     assert all(item.entry_date == item.exit_date for item in first.intents)
     assert first.portfolio.gross_weight <= 0.50
+    assert tuple(item.event_timing for item in first.cohorts) == ("bmo", "amc")
+    assert all(item.iv_regime == "unavailable" for item in first.cohorts)
 
 
 def test_future_labels_and_exit_prices_cannot_change_selection_or_size() -> None:

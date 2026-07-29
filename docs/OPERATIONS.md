@@ -352,7 +352,10 @@ artifact and is mandatory when that artifact is reloaded for live scoring.
 Prepare a strict JSON object containing `equity`, the session's OOS
 `predictions`, matching `observations`, and prior `outcomes`. Observations
 separate the sizing price and timestamp known at decision time from later
-entry/exit execution evidence.
+entry/exit execution evidence. Every observation also declares the authoritative
+`event_timing` (`bmo` or `amc`). `iv_regime` may be `low`, `medium`, `high`, or
+`unavailable`; use `unavailable` unless a causal point-in-time options
+classification actually exists.
 
 ```powershell
 uv run qee model plan-event-backtest `
@@ -379,12 +382,20 @@ paths resolve from the aggregation file:
 uv run qee evaluation phase4-gate `
   --aggregation-spec .\phase4-folds.json `
   --output .\data\manifests\backtest\phase4-gate.json `
+  --tearsheet-output .\data\manifests\backtest\phase4-tearsheet.html `
   --bootstrap-resamples 10000
 ```
 
 Every plan is replayed through the timestamped cost ledger. The next plan's
 starting equity must equal the prior plan's final net equity, preventing hidden
 capital resets. Sessions and folds must be increasing and non-overlapping.
+Every executed trade must have exactly one immutable cohort record. The
+canonical report and self-contained HTML include BMO/AMC, sector, and IV-regime
+tables with trade/session counts, net P&L, mean return, Sharpe, hit rate, and
+payoff. Missing or duplicate cohort mappings fail the gate. An unavailable IV
+classification remains visibly `unavailable`; the evaluator never manufactures
+an options regime. The Phase 4 MLflow run stores the HTML as a supplemental
+artifact alongside the canonical report and source manifest.
 
 The report keeps two separate decisions:
 

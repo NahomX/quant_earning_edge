@@ -64,6 +64,7 @@ reproducible through `uv.lock`.
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
 | Phase 4 multi-fold gate aggregation | Complete | capital continuity and both documented threshold sets |
+| Phase 4 cohort evidence and tearsheet | Complete | exact trade mapping; BMO/AMC, sector, and explicit IV-availability metrics in canonical JSON/HTML |
 | Causally bounded NBBO/trade replay engine | Complete | partial/missed fills, impact, limit queues, auction skew |
 | Active NBBO pre-decision-read property gate | Complete | consumed timestamps and pre-boundary mutation invariance |
 | Immutable single-order replay evidence and CLI | Complete | semantic input hash, collision-safe JSON, CLI tests |

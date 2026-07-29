@@ -33,6 +33,7 @@ from quant_earning_edge.orchestration.workflow import (
 )
 
 if TYPE_CHECKING:
+    from quant_earning_edge.monitoring.breakers import CircuitBreakerDecision
     from quant_earning_edge.orchestration.workflow import (
         ArtifactReference,
         DailyWorkflowState,
@@ -212,10 +213,6 @@ class Phase6DailyReportVerifier:
         state: DailyWorkflowState,
         frozen: FrozenDailyOrders,
     ) -> None:
-        from quant_earning_edge.monitoring.breakers import (  # noqa: PLC0415
-            CircuitBreakerDecision,
-        )
-
         breaker_stage = Phase6DailyReportVerifier._stage(
             state,
             WorkflowStage.EVALUATE_BREAKERS,
@@ -237,7 +234,10 @@ class Phase6DailyReportVerifier:
             submit_stage,
             "paper-batch-submission.json",
         )
-        breaker = CircuitBreakerDecision.load(breaker_path)
+        breaker = Phase6DailyReportVerifier._reproduced_breaker(
+            state=state,
+            breaker_path=breaker_path,
+        )
         submission = PaperBatchSubmission.load(submission_path)
         if breaker.halt_new_orders:
             raise ValueError("paper submission used a halted breaker decision")
@@ -270,6 +270,46 @@ class Phase6DailyReportVerifier:
         for order_id, record in submitted.items():
             if record.request != requests[order_id] or record.broker_order != observed[order_id]:
                 raise ValueError("paper submission differs from frozen or raw broker evidence")
+
+    @staticmethod
+    def _reproduced_breaker(
+        *,
+        state: DailyWorkflowState,
+        breaker_path: Path,
+    ) -> CircuitBreakerDecision:
+        from quant_earning_edge.monitoring.breakers import (  # noqa: PLC0415
+            CircuitBreakerDecision,
+            CircuitBreakerEvaluationSpec,
+            CircuitBreakerEvaluator,
+        )
+        from quant_earning_edge.monitoring.control_inputs import (  # noqa: PLC0415
+            encode_circuit_breaker_controls,
+        )
+
+        breaker = CircuitBreakerDecision.load(breaker_path)
+        reproduced_paths = []
+        for stage in state.stages:
+            for artifact in stage.output_artifacts:
+                candidate = Path(artifact.path).resolve()
+                if candidate == breaker_path or candidate.suffix != ".json":
+                    continue
+                try:
+                    encoded = candidate.read_bytes()
+                    spec = CircuitBreakerEvaluationSpec.model_validate_json(encoded)
+                    if encode_circuit_breaker_controls(spec) != encoded:
+                        continue
+                    reproduced = CircuitBreakerEvaluator().evaluate(
+                        tuple(item.to_domain() for item in spec.observations)
+                    )
+                except (OSError, ValueError):
+                    continue
+                if reproduced.canonical_bytes == breaker.canonical_bytes:
+                    reproduced_paths.append(candidate)
+        if len(reproduced_paths) != 1:
+            raise ValueError(
+                "breaker decision does not reproduce from one captured control specification"
+            )
+        return breaker
 
     @staticmethod
     def _verify_paper_reconciliation(

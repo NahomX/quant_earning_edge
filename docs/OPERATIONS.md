@@ -952,7 +952,10 @@ is valid and creates explicit no-trade evidence without calling the broker.
 The command also emits every canonical Bronze response path. The workflow
 captures those raw files; terminal verification requires the batch requests to
 equal the frozen plan, the batch breaker hash to equal the captured non-halted
-decision, and every stored broker order to reproduce from its raw response.
+decision, and every stored broker order to reproduce from its raw response. The
+allow decision is not trusted as a summary: its strict canonical control
+specification must also be captured, and rerunning the breaker evaluator must
+reproduce the decision bytes exactly.
 
 After the close, construct a reconciliation spec with the replay evidence paths
 and Alpaca order resources, then run:

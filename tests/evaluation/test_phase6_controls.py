@@ -38,7 +38,13 @@ from quant_earning_edge.live import (
     PaperOrderReconciler,
     PaperSubmission,
 )
-from quant_earning_edge.monitoring import CircuitBreakerDecision
+from quant_earning_edge.monitoring import (
+    CircuitBreakerEvaluationSpec,
+    CircuitBreakerEvaluator,
+    CircuitBreakerObservation,
+    CircuitBreakerObservationSpec,
+    encode_circuit_breaker_controls,
+)
 from quant_earning_edge.orchestration import (
     DailyWorkflowRunner,
     DailyWorkflowState,
@@ -115,20 +121,24 @@ def _no_trade_replay_sources(
         )
     )
     frozen.write(frozen_path)
-    breaker = CircuitBreakerDecision(
-        schema_version=1,
+    breaker_evaluated_at = datetime.now(UTC)
+    breaker_observation = CircuitBreakerObservation(
         session_date=session_date,
-        evaluated_at=datetime.now(UTC),
-        observation_dates=(session_date,),
-        replay_source_dates=(session_date,),
-        halt_new_orders=False,
-        triggered_breakers=(),
-        replay_loss_fraction=0.0,
-        consecutive_low_fill_sessions=0,
-        polygon_freshness_minutes=0.0,
-        alpaca_freshness_minutes=0.0,
+        evaluated_at=breaker_evaluated_at,
+        replay_notional=0,
+        replay_net_pnl=0,
+        replay_fill_rate=None,
+        polygon_data_observed_at=breaker_evaluated_at,
+        alpaca_data_observed_at=breaker_evaluated_at,
         reconciliation_break_age_sessions=None,
+        replay_source_date=session_date,
     )
+    breaker_spec = CircuitBreakerEvaluationSpec(
+        observations=(CircuitBreakerObservationSpec.model_validate(breaker_observation.__dict__),)
+    )
+    breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
+    breaker_spec_path = daily / "breaker-controls.json"
+    breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
     breaker_path = daily / "breaker-decision.json"
     breaker.write(breaker_path)
     submission_path = daily / "paper-batch-submission.json"
@@ -179,6 +189,7 @@ def _no_trade_replay_sources(
         "strategy": strategy,
         "frozen": frozen_path,
         "breaker": breaker_path,
+        "breaker_spec": breaker_spec_path,
         "submission": submission_path,
         "manifest": manifest_path,
         "index": index_path,
@@ -204,7 +215,7 @@ def _complete_source_workflow(
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (sources["frozen"],)
         if stage is WorkflowStage.EVALUATE_BREAKERS:
-            return (sources["breaker"],)
+            return (sources["breaker_spec"], sources["breaker"])
         if stage is WorkflowStage.SUBMIT_PAPER_ORDERS:
             return (sources["submission"],)
         if stage is WorkflowStage.REPLAY_ORDERS:
@@ -234,6 +245,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     session_date: date,
     capture_broker_observations: bool = True,
     capture_submission_observations: bool = True,
+    capture_breaker_spec: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -279,20 +291,23 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
     frozen_path = daily / "frozen-daily-orders.json"
     frozen.write(frozen_path)
-    breaker = CircuitBreakerDecision(
-        schema_version=1,
+    breaker_observation = CircuitBreakerObservation(
         session_date=session_date,
         evaluated_at=entry_at - timedelta(minutes=5),
-        observation_dates=(session_date,),
-        replay_source_dates=(session_date,),
-        halt_new_orders=False,
-        triggered_breakers=(),
-        replay_loss_fraction=0.0,
-        consecutive_low_fill_sessions=0,
-        polygon_freshness_minutes=0.0,
-        alpaca_freshness_minutes=0.0,
+        replay_notional=0,
+        replay_net_pnl=0,
+        replay_fill_rate=None,
+        polygon_data_observed_at=entry_at - timedelta(minutes=5),
+        alpaca_data_observed_at=entry_at - timedelta(minutes=5),
         reconciliation_break_age_sessions=None,
+        replay_source_date=session_date,
     )
+    breaker_spec = CircuitBreakerEvaluationSpec(
+        observations=(CircuitBreakerObservationSpec.model_validate(breaker_observation.__dict__),)
+    )
+    breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
+    breaker_spec_path = daily / "breaker-controls.json"
+    breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
     breaker_path = daily / "breaker-decision.json"
     breaker.write(breaker_path)
     quote_artifact = SilverWriter(LakehouseLayout(tmp_path / "market-lake")).write_stock_quotes(
@@ -436,7 +451,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (frozen_path,)
         if stage is WorkflowStage.EVALUATE_BREAKERS:
-            return (breaker_path,)
+            return (breaker_spec_path, breaker_path) if capture_breaker_spec else (breaker_path,)
         if stage is WorkflowStage.SUBMIT_PAPER_ORDERS:
             return (
                 (paper_submission_path, *submit_observation_paths)
@@ -753,6 +768,25 @@ def test_daily_report_verifier_requires_raw_submission_observations(
     )
 
     with pytest.raises(ValueError, match="submission lacks exact raw broker observations"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_reproducible_breaker_decision(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_breaker_spec=False,
+    )
+
+    with pytest.raises(ValueError, match="does not reproduce from one captured control"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

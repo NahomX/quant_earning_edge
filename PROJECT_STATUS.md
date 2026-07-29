@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 363 automated tests pass.
+- 364 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 94 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -69,6 +69,8 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Paper submission is independently checked against the frozen request batch,
   the exact non-halted breaker decision, the immutable batch record, and
   workflow-captured raw Alpaca responses.
+- The submission-time allow decision must itself reproduce byte-for-byte from
+  exactly one captured canonical breaker-control specification.
 - A worker accepts a post-completion marker only after independently
   reproducing its workflow health, rolling controls, daily source evidence,
   and terminal gate bytes; hash-consistent arbitrary JSON cannot suppress

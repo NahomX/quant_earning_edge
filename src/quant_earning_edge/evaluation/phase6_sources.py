@@ -233,6 +233,11 @@ class Phase6DailyReportVerifier:
             model_path=model_paths[0],
         )
         feature_paths = tuple(sorted((paths[0] for paths in feature_matches), key=str))
+        Phase6DailyReportVerifier._verify_feature_generation(
+            state=state,
+            feature_paths=feature_paths,
+            paths_by_sha=paths_by_sha,
+        )
         reproduced = LivePlanningAssembler().assemble(
             source=source,
             model=model,
@@ -240,6 +245,58 @@ class Phase6DailyReportVerifier:
         )
         if reproduced.canonical_bytes != scored.canonical_bytes:
             raise ValueError("scored planning differs from captured source/model/features")
+
+    @staticmethod
+    def _verify_feature_generation(
+        *,
+        state: DailyWorkflowState,
+        feature_paths: tuple[Path, ...],
+        paths_by_sha: dict[str, list[Path]],
+    ) -> None:
+        from quant_earning_edge.data import LakehouseLayout  # noqa: PLC0415
+        from quant_earning_edge.features import (  # noqa: PLC0415
+            FeatureSourceCapture,
+            FeatureSourceManifest,
+        )
+
+        for feature_path in feature_paths:
+            digest = hashlib.sha256(feature_path.read_bytes()).hexdigest()
+            manifests = []
+            for stage in state.stages:
+                for artifact in stage.output_artifacts:
+                    path = Path(artifact.path).resolve()
+                    if path.suffix != ".json":
+                        continue
+                    try:
+                        manifest = FeatureSourceManifest.load(path)
+                    except (OSError, ValueError):
+                        continue
+                    if manifest.raw["feature_file"]["sha256"] == digest:
+                        manifests.append(manifest)
+            if len(manifests) != 1:
+                raise ValueError(
+                    "feature artifact must bind to exactly one captured source manifest"
+                )
+            manifest = manifests[0]
+            relative = Path(manifest.raw["feature_file"]["path"])
+            source_root = feature_path
+            for _ in relative.parts:
+                source_root = source_root.parent
+            source_root = source_root.resolve()
+            if manifest.feature_path(data_lake_root=source_root) != feature_path:
+                raise ValueError("feature source manifest differs from captured feature")
+            input_paths = manifest.input_paths(data_lake_root=source_root)
+            if any(
+                path not in paths_by_sha.get(entry["sha256"], [])
+                for path, entry in zip(input_paths, manifest.input_entries, strict=True)
+            ):
+                raise ValueError("feature generation lacks exact captured causal inputs")
+            with TemporaryDirectory(prefix="qee-feature-reconstruction-") as temporary:
+                FeatureSourceCapture.reproduce(
+                    manifest,
+                    data_lake_root=source_root,
+                    output_layout=LakehouseLayout(Path(temporary)),
+                )
 
     @staticmethod
     def _verify_live_source(

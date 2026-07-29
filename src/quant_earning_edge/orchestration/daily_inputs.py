@@ -22,6 +22,7 @@ from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
     FeatureEngine,
+    FeatureSourceCapture,
     FeatureStore,
     PremarketFeatureLoader,
 )
@@ -359,15 +360,25 @@ class DailyInputPreparer:
             target_date=trade_date,
         )
         values = FeatureEngine().compute(contexts, feature_names=feature_names)
-        return (
-            FeatureStore(self._layout)
-            .write(
-                feature_group=feature_group,
-                values=values,
-                computed_at=observed_at,
-            )
-            .path.resolve()
+        artifact = FeatureStore(self._layout).write(
+            feature_group=feature_group,
+            values=values,
+            computed_at=observed_at,
         )
+        FeatureSourceCapture(self._layout).write(
+            trade_date=trade_date,
+            asof_date=asof_date,
+            observed_at=observed_at,
+            feature_group=feature_group,
+            symbols=symbols,
+            feature_names=feature_names,
+            feature_file=artifact,
+            candidate_files=(candidate_file,),
+            daily_bar_files=bars_files,
+            minute_bar_files=minute_files,
+            earnings_files=earnings_files,
+        )
+        return artifact.path.resolve()
 
     def _candidate_file(self, trade_date: date) -> Path | None:
         root = (

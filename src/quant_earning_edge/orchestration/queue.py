@@ -14,7 +14,7 @@ import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_earning_edge.data.calendar import SessionFileStore
-from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
+from quant_earning_edge.features import FEATURE_VALUE_SCHEMA, FeatureSourceCapture
 from quant_earning_edge.orchestration.commands import (
     CommandExecutor,
     WorkflowRunSpec,
@@ -462,7 +462,15 @@ class NextWorkflowQueuer:
                 and (computed_at := next(iter(computed))) <= observed_at
                 and computed_at < target_open
             ):
-                matches.append((computed_at, path.resolve()))
+                resolved = path.resolve()
+                try:
+                    FeatureSourceCapture.find_for_feature(
+                        resolved,
+                        data_lake_root=self._data_lake_root,
+                    )
+                except ValueError:
+                    continue
+                matches.append((computed_at, resolved))
         if not matches:
             return ()
         latest = max(item[0] for item in matches)

@@ -51,7 +51,7 @@ class DailyBarsFeatureLoader:
         cutoff = observed_at.astimezone(UTC)
         latest: dict[tuple[str, date], dict[str, Any]] = {}
         for path in sorted(paths):
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if not self._REQUIRED.issubset(table.column_names):
                 raise ValueError(f"daily-bars file is missing required columns: {path}")
             for row in table.select(sorted(self._REQUIRED)).to_pylist():
@@ -187,7 +187,7 @@ class EarningsFeatureLoader:
     ) -> dict[tuple[str, date], EarningsObservation]:
         candidates: dict[tuple[str, date], EarningsObservation] = {}
         for path in sorted(paths):
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if not self._CANDIDATE_REQUIRED.issubset(table.column_names):
                 raise ValueError(f"candidate file is missing required columns: {path}")
             for row in table.select(sorted(self._CANDIDATE_REQUIRED)).to_pylist():
@@ -213,7 +213,7 @@ class EarningsFeatureLoader:
     ) -> dict[str, tuple[dict[str, Any], ...]]:
         latest: dict[tuple[str, date, str], dict[str, Any]] = {}
         for path in sorted(paths):
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if not self._HISTORY_REQUIRED.issubset(table.column_names):
                 raise ValueError(f"earnings file is missing required columns: {path}")
             for row in table.select(sorted(self._HISTORY_REQUIRED)).to_pylist():
@@ -260,7 +260,7 @@ class PremarketFeatureLoader:
         cutoff = observed_at.astimezone(UTC)
         latest: dict[tuple[str, datetime], dict[str, Any]] = {}
         for path in sorted(minute_files):
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if not self._REQUIRED.issubset(table.column_names):
                 raise ValueError(f"minute-bars file is missing required columns: {path}")
             for row in table.select(sorted(self._REQUIRED)).to_pylist():

@@ -87,6 +87,7 @@ from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
     FeatureEngine,
+    FeatureSourceCapture,
     FeatureStore,
     PremarketFeatureLoader,
 )
@@ -3644,6 +3645,24 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                     data_lake_root=environment.data_lake_root,
                 ),
             )
+            feature_lineage_files = tuple(
+                dict.fromkeys(
+                    path
+                    for feature_file in tuple(feature_files or ())
+                    for manifest in (
+                        FeatureSourceCapture.find_for_feature(
+                            feature_file,
+                            data_lake_root=environment.data_lake_root,
+                        ),
+                    )
+                    for path in (
+                        manifest.path,
+                        *manifest.input_paths(
+                            data_lake_root=environment.data_lake_root,
+                        ),
+                    )
+                )
+            )
             automated_planning = AutomatedPlanningInputs(
                 candidate_file=candidate_file,
                 candidate_lineage_files=candidate_lineage_files,
@@ -3654,6 +3673,7 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 prior_replay_files=tuple(prior_replay_files or ()),
                 initial_cash=initial_cash,
                 capture_not_before=capture_not_before,
+                feature_lineage_files=feature_lineage_files,
             )
             planning = None
         if planning is not None and planning.trade_date != selected_date:

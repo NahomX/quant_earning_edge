@@ -33,8 +33,10 @@ from quant_earning_edge.data import (
 )
 from quant_earning_edge.data.clients import (
     AlpacaCalendarClient,
+    EquityBar,
     FinnhubClient,
     MarketSession,
+    MinuteBar,
     PolygonClient,
     StockQuote,
 )
@@ -44,7 +46,14 @@ from quant_earning_edge.evaluation import (
     Phase6DailyReportVerifier,
     ReplaySessionAggregator,
 )
-from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
+from quant_earning_edge.features import (
+    DailyBarsFeatureLoader,
+    EarningsFeatureLoader,
+    FeatureEngine,
+    FeatureSourceCapture,
+    FeatureStore,
+    PremarketFeatureLoader,
+)
 from quant_earning_edge.live import (
     BrokerOrder,
     PaperAccountSnapshot,
@@ -102,14 +111,14 @@ def _production_model() -> ProductionModelArtifact:
         {
             "asof_date": first + timedelta(days=index),
             "horizon_end_date": first + timedelta(days=index + 2),
-            "signal": 1.0 if index % 2 == 0 else -1.0,
+            "return_1d": 1.0 if index % 2 == 0 else -1.0,
             "forward_1d_close": 0.01 if index % 2 == 0 else -0.01,
         }
         for index in range(70)
     ]
     pq.write_table(pa.Table.from_pylist(rows), dataset)  # type: ignore[no-untyped-call]
     return ProductionModelTrainer(
-        feature_names=("signal",),
+        feature_names=("return_1d",),
         early_stopping_rounds=10,
     ).run(
         dataset_files=(dataset,),
@@ -907,6 +916,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_universe_lineage: bool = True,
     capture_event_lineage: bool = True,
     capture_calendar_lineage: bool = True,
+    capture_feature_lineage: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -954,24 +964,93 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         split_path,
         dividend_path,
     ) = live_capture_paths
-    feature_path = daily / "live-features.parquet"
-    feature_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(  # type: ignore[no-untyped-call]
-        pa.Table.from_pylist(
-            [
-                {
-                    "symbol": "AAA",
-                    "asof_date": planning_source.feature_asof_date,
-                    "feature_name": "signal",
-                    "value": 1.0,
-                    "feature_code_hash": "e" * 64,
-                    "input_sha256": "d" * 64,
-                    "computed_at": decision_at,
-                }
-            ],
-            schema=FEATURE_VALUE_SCHEMA,
+    feature_layout = LakehouseLayout(daily / "candidate-lake")
+    feature_writer = SilverWriter(feature_layout)
+    feature_bars = feature_writer.write_daily_bars(
+        tuple(
+            EquityBar(
+                symbol="AAA",
+                timestamp=datetime(
+                    day.year,
+                    day.month,
+                    day.day,
+                    20,
+                    tzinfo=UTC,
+                ),
+                open=close - 1,
+                high=close + 1,
+                low=close - 2,
+                close=close,
+                volume=1_000_000,
+                vwap=close - 0.5,
+                adjusted=True,
+            )
+            for day, close in (
+                (planning_source.feature_asof_date - timedelta(days=1), 99.0),
+                (planning_source.feature_asof_date, 100.0),
+            )
         ),
-        feature_path,
+        ingested_at=decision_at,
+    )
+    feature_minute = feature_writer.write_minute_bars(
+        (
+            MinuteBar(
+                symbol="AAA",
+                timestamp=decision_at - timedelta(minutes=2),
+                open=100,
+                high=101,
+                low=99,
+                close=100.5,
+                volume=10_000,
+                vwap=100.25,
+                adjusted=True,
+            ),
+        ),
+        event_date=session_date,
+        ingested_at=decision_at,
+    )
+    bar_paths = tuple(item.path for item in feature_bars)
+    contexts = DailyBarsFeatureLoader().load(
+        bar_paths,
+        symbols=("AAA",),
+        asof_date=planning_source.feature_asof_date,
+        observed_at=decision_at,
+    )
+    contexts = PremarketFeatureLoader().enrich(
+        contexts,
+        minute_files=(feature_minute.path,),
+        target_date=session_date,
+        observed_at=decision_at,
+    )
+    contexts = EarningsFeatureLoader().enrich(
+        contexts,
+        candidate_files=(candidate_path,),
+        earnings_files=(earnings_path,),
+        observed_at=decision_at,
+        target_date=session_date,
+    )
+    feature = FeatureStore(feature_layout).write(
+        feature_group="live",
+        values=FeatureEngine().compute(contexts, feature_names=("return_1d",)),
+        computed_at=decision_at,
+    )
+    feature_path = feature.path
+    feature_source = FeatureSourceCapture(feature_layout).write(
+        trade_date=session_date,
+        asof_date=planning_source.feature_asof_date,
+        observed_at=decision_at,
+        feature_group="live",
+        symbols=("AAA",),
+        feature_names=("return_1d",),
+        feature_file=feature,
+        candidate_files=(candidate_path,),
+        daily_bar_files=bar_paths,
+        minute_bar_files=(feature_minute.path,),
+        earnings_files=(earnings_path,),
+    )
+    feature_lineage_paths = (
+        feature_source.path,
+        *feature_source.input_paths(data_lake_root=feature_layout.root),
     )
     planning, planning_sources, planning_evidence_path = _write_scored_planning(
         daily,
@@ -1153,65 +1232,68 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         stage: WorkflowStage,
     ) -> tuple[Path, ...]:
         if stage is WorkflowStage.FREEZE_INPUTS:
-            return (
-                (
-                    strategy_path,
-                    source_path,
-                    *(
-                        (
-                            candidate_path,
-                            live_calendar_path,
-                            account_path,
-                            live_snapshot_path,
-                        )
-                        if capture_live_provider_inputs
-                        else ()
-                    ),
-                    *(
-                        (
-                            candidate_manifest_path,
-                            universe_path,
-                            earnings_path,
-                            split_path,
-                            dividend_path,
-                        )
-                        if capture_candidate_lineage
-                        else ()
-                    ),
-                    *(
-                        (
-                            universe_source_manifest_path,
-                            universe_config_path,
-                            universe_halt_path,
-                            universe_bar_raw_path,
-                            universe_details_raw_path,
-                            universe_reference_raw_path,
-                        )
-                        if capture_universe_lineage
-                        else ()
-                    ),
-                    *(
-                        (
-                            event_source_manifest_path,
-                            event_earnings_raw_path,
-                            event_split_raw_path,
-                            event_dividend_raw_path,
-                        )
-                        if capture_event_lineage
-                        else ()
-                    ),
-                    *(
-                        (calendar_source_manifest_path, calendar_raw_path)
-                        if capture_calendar_lineage
-                        else ()
-                    ),
-                    *((live_evidence_path,) if capture_live_source_evidence else ()),
-                    model_evidence_path,
-                    model_path,
-                    captured_feature_path,
+            return tuple(
+                dict.fromkeys(
+                    (
+                        strategy_path,
+                        source_path,
+                        *(
+                            (
+                                candidate_path,
+                                live_calendar_path,
+                                account_path,
+                                live_snapshot_path,
+                            )
+                            if capture_live_provider_inputs
+                            else ()
+                        ),
+                        *(
+                            (
+                                candidate_manifest_path,
+                                universe_path,
+                                earnings_path,
+                                split_path,
+                                dividend_path,
+                            )
+                            if capture_candidate_lineage
+                            else ()
+                        ),
+                        *(
+                            (
+                                universe_source_manifest_path,
+                                universe_config_path,
+                                universe_halt_path,
+                                universe_bar_raw_path,
+                                universe_details_raw_path,
+                                universe_reference_raw_path,
+                            )
+                            if capture_universe_lineage
+                            else ()
+                        ),
+                        *(
+                            (
+                                event_source_manifest_path,
+                                event_earnings_raw_path,
+                                event_split_raw_path,
+                                event_dividend_raw_path,
+                            )
+                            if capture_event_lineage
+                            else ()
+                        ),
+                        *(
+                            (calendar_source_manifest_path, calendar_raw_path)
+                            if capture_calendar_lineage
+                            else ()
+                        ),
+                        *((live_evidence_path,) if capture_live_source_evidence else ()),
+                        model_evidence_path,
+                        model_path,
+                        captured_feature_path,
+                        *(feature_lineage_paths if capture_feature_lineage else ()),
+                    )
+                    if capture_planning_input
+                    else (strategy_path,)
                 )
-                if capture_planning_input
-                else (strategy_path,)
             )
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (
@@ -1669,6 +1751,25 @@ def test_daily_report_verifier_rejects_unscored_compatibility_planning(
     )
 
     with pytest.raises(ValueError, match="exactly one captured scored-planning"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_feature_generation_lineage(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_feature_lineage=False,
+    )
+
+    with pytest.raises(ValueError, match="captured source manifest"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

@@ -625,9 +625,11 @@ an input.
 
 Every included daily replay report is independently reconstructed before it is
 aggregated. The verifier first requires schema-v2 scored-planning evidence. It
-reloads the exact captured probability-free live source, production-model
-evidence and booster, and long-form feature files by their hashes, then reruns
-model inference and requires the scored planning bytes to match. Compatibility
+reloads the exact captured probability-free live source and production-model
+evidence/booster. Every long-form live feature file must carry a strict source
+manifest binding its candidate, daily-bar, premarket-minute, and earnings
+Silver inputs; the verifier regenerates the feature Parquet byte-for-byte
+before rerunning model inference and requiring the scored planning bytes to match. Compatibility
 planning without that production lineage is ineligible for terminal proof.
 Next, it locates the captured canonical planning input whose SHA-256 is embedded
 in the frozen orders, reruns the portfolio/order planner with the captured
@@ -1265,7 +1267,8 @@ uv run qee workflow worker `
 This is a state-driven loop, not a wall-clock schedule. On every cycle it finds
 the first unfinished authoritative proof session, requires the prior session
 to be complete, discovers exactly one immutable event-candidate artifact and
-the latest complete causal feature artifact, prepares the rolling controls,
+the latest complete causal feature artifact with valid retained source lineage,
+prepares the rolling controls,
 and writes the dated inbox specification. It stages the first proof session
 outside the inbox for `admit-proof-start`; after admission, later sessions are
 queued automatically. Missing inputs produce a visible `waiting_for_inputs`

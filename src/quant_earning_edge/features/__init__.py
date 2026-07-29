@@ -23,6 +23,10 @@ from quant_earning_edge.features.registry import (
     PriceBar,
     feature,
 )
+from quant_earning_edge.features.source_capture import (
+    FeatureSourceCapture,
+    FeatureSourceManifest,
+)
 from quant_earning_edge.features.store import (
     FEATURE_VALUE_SCHEMA,
     FeatureArtifact,
@@ -41,6 +45,8 @@ __all__ = [
     "FeatureContext",
     "FeatureEngine",
     "FeatureRegistry",
+    "FeatureSourceCapture",
+    "FeatureSourceManifest",
     "FeatureSpec",
     "FeatureStore",
     "FeatureValue",

@@ -443,6 +443,10 @@ def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
         prior_replay_files=(tmp_path / "prior-replay.json",),
         initial_cash=100_000,
         capture_not_before=decision_at,
+        feature_lineage_files=(
+            tmp_path / "feature-source.json",
+            tmp_path / "feature-input.parquet",
+        ),
     )
 
     spec = DailyWorkflowSpecGenerator().generate(
@@ -468,6 +472,7 @@ def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
     assert freeze.commands[0].arguments[:2] == ("model", "capture-live-source")
     assert freeze.commands[0].artifact_json_keys == ("provider_observation_paths",)
     assert all(path.resolve() in freeze.output_files for path in automated.candidate_lineage_files)
+    assert all(path.resolve() in freeze.output_files for path in automated.feature_lineage_files)
     assert [command.arguments[:2] for command in generation.commands] == [
         ("model", "score-live-planning"),
         ("model", "plan-live-orders"),

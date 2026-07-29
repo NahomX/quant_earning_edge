@@ -33,7 +33,12 @@ class AutomatedPlanningInputs:
     prior_replay_files: tuple[Path, ...]
     initial_cash: float
     capture_not_before: datetime
+    feature_lineage_files: tuple[Path, ...] = ()
     minimum_probability: float = 0.5
+
+    def __post_init__(self) -> None:
+        if bool(self.feature_files) != bool(self.feature_lineage_files):
+            raise ValueError("automated feature files require complete source lineage")
 
 
 class DailyWorkflowSpecGenerator:
@@ -222,6 +227,7 @@ class DailyWorkflowSpecGenerator:
                         automatic.model_evidence.resolve(),
                         automatic.model_file.resolve(),
                         *(path.resolve() for path in automatic.feature_files),
+                        *(path.resolve() for path in automatic.feature_lineage_files),
                         *(path.resolve() for path in automatic.prior_replay_files),
                         strategy,
                         phase6,

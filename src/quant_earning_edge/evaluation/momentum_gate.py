@@ -92,7 +92,7 @@ class MomentumBenchmarkReferenceSpec(_StrictSpec):
 class MomentumBaselineManifest(_StrictSpec):
     """Actual baseline identity linked to the standardized backtest input."""
 
-    schema_version: int = 2
+    schema_version: int = 3
     strategy: str
     lookback_sessions: int
     selection_fraction: float = Field(gt=0, le=0.5)
@@ -103,11 +103,12 @@ class MomentumBaselineManifest(_StrictSpec):
     build_spec_sha256: str
     session_file_sha256: str
     daily_bar_sha256: tuple[str, ...] = Field(min_length=1)
+    split_source_sha256: str
 
     @model_validator(mode="after")
     def validate_contract(self) -> MomentumBaselineManifest:
-        if self.schema_version != 2:
-            raise ValueError("momentum baseline schema_version must be 2")
+        if self.schema_version != 3:
+            raise ValueError("momentum baseline schema_version must be 3")
         if self.strategy != _MOMENTUM_STRATEGY or self.lookback_sessions != 60:
             raise ValueError("momentum baseline strategy contract differs")
         if self.universe != _MOMENTUM_UNIVERSE:
@@ -119,6 +120,7 @@ class MomentumBaselineManifest(_StrictSpec):
             self.build_spec_sha256,
             self.session_file_sha256,
             *self.daily_bar_sha256,
+            self.split_source_sha256,
         ):
             if not _is_sha256(digest):
                 raise ValueError("momentum baseline artifact identity is invalid")
@@ -220,6 +222,7 @@ class MomentumBenchmarkGateEvaluator:
         build_spec: MomentumBaselineBuildSpec,
         calendar: SessionFile,
         daily_bar_files: Sequence[Path],
+        split_source_manifest: Path,
         baseline_manifest: MomentumBaselineManifest,
         performance_report: PerformanceReport,
     ) -> MomentumBenchmarkGateReport:
@@ -239,16 +242,19 @@ class MomentumBenchmarkGateEvaluator:
         bar_hashes = tuple(sorted(_file_sha256(path) for path in daily_bar_files))
         if bar_hashes != baseline_manifest.daily_bar_sha256:
             raise ValueError("momentum daily-bar artifact hashes differ")
+        if _file_sha256(split_source_manifest) != baseline_manifest.split_source_sha256:
+            raise ValueError("momentum split-history source hash differs")
         rebuilt = MomentumBaselineBuilder().build(
             spec=build_spec,
             calendar=calendar,
             universe_artifact=universe_artifact,
             daily_bar_files=daily_bar_files,
+            split_source_manifest=split_source_manifest,
         )
         if rebuilt.trade_plan_bytes != trade_plan.read_bytes():
             raise ValueError("momentum trade plan does not reproduce from source artifacts")
         expected_manifest = MomentumBaselineManifest(
-            schema_version=2,
+            schema_version=3,
             strategy=_MOMENTUM_STRATEGY,
             lookback_sessions=build_spec.lookback_sessions,
             selection_fraction=build_spec.selection_fraction,
@@ -259,6 +265,9 @@ class MomentumBenchmarkGateEvaluator:
             build_spec_sha256=rebuilt.build_spec_sha256,
             session_file_sha256=rebuilt.session_file_sha256,
             daily_bar_sha256=rebuilt.daily_bar_sha256,
+            split_source_sha256=(
+                rebuilt.split_source_sha256 if rebuilt.split_source_sha256 is not None else ""
+            ),
         )
         if expected_manifest != baseline_manifest:
             raise ValueError("momentum baseline manifest does not reproduce from source artifacts")

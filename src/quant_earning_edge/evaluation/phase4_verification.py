@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from quant_earning_edge.backtest import CostModel
+from quant_earning_edge.data import SplitHistorySourceManifest
 from quant_earning_edge.evaluation.phase4_assembly import (
     Phase4AssemblyManifest,
     Phase4HistoricalAssembler,
@@ -49,6 +50,8 @@ class Phase4GateReproduction:
     @property
     def source_paths(self) -> tuple[Path, ...]:
         assembly = Phase4AssemblyManifest.load(self.assembly_manifest_path)
+        split_path = assembly.resolved_split_source_manifest(self.assembly_manifest_path)
+        split_source = SplitHistorySourceManifest.load(split_path)
         return (
             self.aggregation_spec_path,
             self.assembly_manifest_path,
@@ -57,6 +60,9 @@ class Phase4GateReproduction:
             assembly.resolved_session_file(self.assembly_manifest_path),
             *assembly.resolved_candidate_files(self.assembly_manifest_path),
             *assembly.resolved_daily_bar_files(self.assembly_manifest_path),
+            split_path,
+            *split_source.split_paths(data_lake_root=split_source.data_lake_root),
+            *split_source.provider_paths(data_lake_root=split_source.data_lake_root),
             *self.plan_paths,
         )
 
@@ -199,6 +205,7 @@ def _verify_plan_reproduction(
             session_file=manifest.resolved_session_file(manifest_path),
             candidate_files=manifest.resolved_candidate_files(manifest_path),
             daily_bar_files=manifest.resolved_daily_bar_files(manifest_path),
+            split_source_manifest=manifest.resolved_split_source_manifest(manifest_path),
             initial_cash=manifest.initial_cash,
             output_dir=reproduction_root / "plans",
             manifest_output=reproduction_root / "manifest.json",

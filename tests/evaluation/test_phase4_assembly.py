@@ -14,7 +14,13 @@ import pytest
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
-from quant_earning_edge.data import DAILY_BARS_SCHEMA, LakehouseLayout, SessionFileStore
+from quant_earning_edge.data import (
+    DAILY_BARS_SCHEMA,
+    BronzeWriter,
+    LakehouseLayout,
+    SessionFileStore,
+    SplitHistorySourceCapture,
+)
 from quant_earning_edge.data.clients import MarketSession
 from quant_earning_edge.evaluation import (
     Phase4AggregationSpec,
@@ -57,7 +63,23 @@ def _sources(tmp_path: Path) -> dict[str, object]:
             close_at=datetime(2025, 1, 6, 21, 0, tzinfo=UTC),
         ),
     )
-    session_artifact = SessionFileStore(LakehouseLayout(tmp_path / "lake")).write(sessions)
+    layout = LakehouseLayout(tmp_path / "lake")
+    session_artifact = SessionFileStore(layout).write(sessions)
+    split_observation = BronzeWriter(layout).write_json(
+        {"results": [], "status": "OK"},
+        source="polygon",
+        dataset="stock-splits",
+        event_date=date(2025, 1, 3),
+        received_at=datetime(2025, 2, 1, tzinfo=UTC),
+    )
+    split_source = SplitHistorySourceCapture(layout).write(
+        plan_id="9" * 64,
+        start_date=date(2025, 1, 3),
+        end_date=date(2025, 1, 7),
+        ingested_at=datetime(2025, 2, 1, tzinfo=UTC),
+        split_files=(),
+        provider_observations=(split_observation,),
+    )
     predictions = (
         OosPrediction(
             0,
@@ -144,6 +166,7 @@ def _sources(tmp_path: Path) -> dict[str, object]:
         "run": run_path,
         "candidates": candidate_path,
         "bars": bar_path,
+        "split_source": split_source.path,
         "bar_rows": bar_rows,
     }
 
@@ -199,7 +222,7 @@ def _bar(symbol: str, session_date: date, open_price: float, close: float) -> di
         "volume": 1_000_000.0,
         "vwap": (open_price + close) / 2,
         "transactions": 10_000,
-        "adjusted": True,
+        "adjusted": False,
         "source": "polygon",
         "available_at": datetime(2025, 2, 1, tzinfo=UTC),
         "ingested_at": datetime(2025, 2, 1, tzinfo=UTC),
@@ -218,6 +241,7 @@ def _assemble(
         session_file=sources["sessions"],
         candidate_files=(sources["candidates"],),
         daily_bar_files=(sources["bars"],),
+        split_source_manifest=sources["split_source"],
         initial_cash=100_000,
         output_dir=tmp_path / f"plans{suffix}",
         manifest_output=tmp_path / f"manifest{suffix}.json",
@@ -278,7 +302,36 @@ def test_assembler_rejects_missing_execution_bar(tmp_path: Path) -> None:
     )
     sources["bars"] = missing_path
 
-    with pytest.raises(ValueError, match="missing adjusted execution bar"):
+    with pytest.raises(ValueError, match="missing raw execution bar"):
+        _assemble(tmp_path, sources)
+
+
+def test_assembler_rejects_provider_adjusted_execution_bars(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    adjusted_path = tmp_path / "bars-adjusted.parquet"
+    adjusted_rows = [{**row, "adjusted": True} for row in sources["bar_rows"]]
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(adjusted_rows, schema=DAILY_BARS_SCHEMA),
+        adjusted_path,
+    )
+    sources["bars"] = adjusted_path
+
+    with pytest.raises(ValueError, match="requires raw daily bars"):
+        _assemble(tmp_path, sources)
+
+
+def test_assembler_rejects_split_day_candidate(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    candidate_path = tmp_path / "candidates-with-split.parquet"
+    rows = pq.read_table(sources["candidates"]).to_pylist()  # type: ignore[no-untyped-call]
+    rows[0]["split_event_ids"] = ["split-on-entry-date"]
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(rows, schema=EVENT_CANDIDATE_SCHEMA),
+        candidate_path,
+    )
+    sources["candidates"] = candidate_path
+
+    with pytest.raises(ValueError, match="excludes earnings trades on split execution dates"):
         _assemble(tmp_path, sources)
 
 
@@ -366,6 +419,8 @@ def test_assemble_phase4_cli_materializes_complete_fold_map(tmp_path: Path) -> N
             str(sources["candidates"]),
             "--daily-bar-file",
             str(sources["bars"]),
+            "--split-source-manifest",
+            str(sources["split_source"]),
             "--initial-cash",
             "100000",
             "--output-dir",

@@ -55,6 +55,7 @@ class CandidateExclusion(StrEnum):
 
     NOT_IN_ELIGIBLE_UNIVERSE = "not_in_eligible_universe"
     UNSUPPORTED_DURING_MARKET_HOURS = "unsupported_during_market_hours"
+    SPLIT_ON_TRADE_DATE = "split_on_trade_date"
 
 
 @dataclass(frozen=True)
@@ -459,6 +460,9 @@ class EventCandidateJob:
             symbol = str(event["symbol"])
             if symbol not in eligible_symbols:
                 exclusions[CandidateExclusion.NOT_IN_ELIGIBLE_UNIVERSE] += 1
+                continue
+            if split_ids.get(symbol):
+                exclusions[CandidateExclusion.SPLIT_ON_TRADE_DATE] += 1
                 continue
             candidates.append(
                 EventCandidate(

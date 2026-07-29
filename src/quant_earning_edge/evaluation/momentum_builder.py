@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
-from datetime import date  # noqa: TC003 - Pydantic resolves runtime fields.
+from datetime import date
 from itertools import pairwise
 from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime fields.
 from typing import TYPE_CHECKING, Any, Self
@@ -16,6 +16,11 @@ import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_earning_edge.backtest import BacktestSpec
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
+from quant_earning_edge.data.split_vintage import causally_adjust_daily_bar_rows
 from quant_earning_edge.momentum import CrossSectionalMomentum, MomentumPrice
 
 if TYPE_CHECKING:
@@ -90,6 +95,7 @@ class MomentumBaselineBuild:
     session_file_sha256: str
     universe_artifact_sha256: str
     daily_bar_sha256: tuple[str, ...]
+    split_source_sha256: str | None
 
     @property
     def trade_plan_bytes(self) -> bytes:
@@ -133,9 +139,10 @@ class MomentumBaselineBuilder:
         calendar: SessionFile,
         universe_artifact: Path,
         daily_bar_files: Sequence[Path],
+        split_source_manifest: Path | None = None,
     ) -> MomentumBaselineBuild:
         if not daily_bar_files:
-            raise ValueError("momentum baseline requires adjusted daily bar files")
+            raise ValueError("momentum baseline requires daily bar files")
         dates = tuple(item.session_date for item in calendar.sessions)
         try:
             start_index = dates.index(spec.signal_start_date)
@@ -149,7 +156,11 @@ class MomentumBaselineBuilder:
             raise ValueError("session file lacks post-signal execution sessions")
 
         memberships = _load_memberships(universe_artifact)
-        bars = _load_bars(daily_bar_files)
+        bars, split_source_sha256 = _load_bars(
+            daily_bar_files,
+            basis_date=dates[final_index],
+            split_source_manifest=split_source_manifest,
+        )
         model = CrossSectionalMomentum(selection_fraction=spec.selection_fraction)
         trade_rows: list[dict[str, Any]] = []
         mark_keys: set[tuple[str, date]] = set()
@@ -270,6 +281,7 @@ class MomentumBaselineBuilder:
             session_file_sha256=calendar.sha256,
             universe_artifact_sha256=_file_sha256(universe_artifact),
             daily_bar_sha256=tuple(sorted(_file_sha256(path) for path in daily_bar_files)),
+            split_source_sha256=split_source_sha256,
         )
 
 
@@ -304,37 +316,72 @@ def _load_memberships(path: Path) -> tuple[_Membership, ...]:
     )
 
 
-def _load_bars(paths: Sequence[Path]) -> dict[tuple[str, date], _Bar]:
+def _load_bars(
+    paths: Sequence[Path],
+    *,
+    basis_date: date,
+    split_source_manifest: Path | None,
+) -> tuple[dict[tuple[str, date], _Bar], str | None]:
     output: dict[tuple[str, date], _Bar] = {}
     required = {"session_date", "symbol", "open", "close", "volume", "adjusted"}
+    rows: list[dict[str, Any]] = []
     for path in sorted(paths):
         table = pq.read_table(path)  # type: ignore[no-untyped-call]
         if not required.issubset(table.column_names):
             raise ValueError(f"daily bar artifact is missing columns: {path}")
-        for row in table.select(sorted(required)).to_pylist():
-            if row["adjusted"] is not True:
-                raise ValueError("momentum baseline requires adjusted daily bars")
-            bar = _Bar(
-                symbol=str(row["symbol"]).strip().upper(),
-                session_date=row["session_date"],
-                open=float(row["open"]),
-                close=float(row["close"]),
-                volume=float(row["volume"]),
+        rows.extend(
+            row
+            for row in table.select(sorted(required)).to_pylist()
+            if row["session_date"] <= basis_date
+        )
+    modes = {bool(row["adjusted"]) for row in rows}
+    if len(modes) != 1:
+        raise ValueError("momentum daily bars mix split-adjustment modes")
+    adjusted = modes.pop() if modes else True
+    split_source_sha256 = None
+    if not adjusted:
+        if split_source_manifest is None:
+            raise ValueError("raw momentum bars require a complete split-history source")
+        source = SplitHistorySourceManifest.load(split_source_manifest)
+        root = source.data_lake_root
+        if (
+            date.fromisoformat(source.raw["start_date"]) > min(row["session_date"] for row in rows)
+            or date.fromisoformat(source.raw["end_date"]) < basis_date
+        ):
+            raise ValueError("momentum split history does not cover the evaluation interval")
+        SplitHistorySourceCapture.reproduce(source, data_lake_root=root)
+        rows = list(
+            causally_adjust_daily_bar_rows(
+                rows,
+                splits=source.splits(data_lake_root=root),
+                basis_date=basis_date,
             )
-            if (
-                not bar.symbol
-                or min(bar.open, bar.close) <= 0
-                or not all(math.isfinite(item) for item in (bar.open, bar.close, bar.volume))
-                or bar.volume < 0
-            ):
-                raise ValueError("momentum daily bar is invalid")
-            key = (bar.symbol, bar.session_date)
-            if key in output:
-                raise ValueError(
-                    f"duplicate momentum daily bar for {bar.symbol} {bar.session_date}"
-                )
-            output[key] = bar
-    return output
+        )
+        split_source_sha256 = _file_sha256(source.path)
+    elif split_source_manifest is not None:
+        raise ValueError("split-history source is only valid with raw momentum bars")
+    for row in rows:
+        if row["adjusted"] is not True:
+            raise ValueError("momentum baseline requires split-normalized daily bars")
+        bar = _Bar(
+            symbol=str(row["symbol"]).strip().upper(),
+            session_date=row["session_date"],
+            open=float(row["open"]),
+            close=float(row["close"]),
+            volume=float(row["volume"]),
+        )
+        if (
+            not bar.symbol
+            or min(bar.open, bar.close) <= 0
+            or not all(math.isfinite(item) for item in (bar.open, bar.close, bar.volume))
+            or bar.volume < 0
+        ):
+            raise ValueError("momentum daily bar is invalid")
+        key = (bar.symbol, bar.session_date)
+        if key in output:
+            raise ValueError(f"duplicate momentum daily bar for {bar.symbol} {bar.session_date}")
+        output[key] = bar
+    return output, split_source_sha256
 
 
 def _required_bar(

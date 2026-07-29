@@ -15,7 +15,12 @@ from typer.testing import CliRunner
 
 from quant_earning_edge.backtest import VectorbtBacktestEngine
 from quant_earning_edge.cli import app
-from quant_earning_edge.data import LakehouseLayout, SessionFileStore
+from quant_earning_edge.data import (
+    BronzeWriter,
+    LakehouseLayout,
+    SessionFileStore,
+    SplitHistorySourceCapture,
+)
 from quant_earning_edge.data.clients import MarketSession
 from quant_earning_edge.evaluation import (
     HISTORICAL_SPY_MEMBERSHIP_SCHEMA,
@@ -40,6 +45,7 @@ class _Inputs:
     build_spec: Path
     session_file: Path
     daily_bars: Path
+    split_source: Path
 
 
 def _inputs(
@@ -48,7 +54,8 @@ def _inputs(
     reference_difference: float = 0.05,
 ) -> _Inputs:
     dates = tuple(date(2024, 1, 1) + timedelta(days=index) for index in range(361))
-    calendar = SessionFileStore(LakehouseLayout(tmp_path / "lake")).write(
+    layout = LakehouseLayout(tmp_path / "lake")
+    calendar = SessionFileStore(layout).write(
         tuple(
             MarketSession(
                 session_date=item,
@@ -83,7 +90,7 @@ def _inputs(
                     "open": close,
                     "close": close,
                     "volume": 1_000_000.0,
-                    "adjusted": True,
+                    "adjusted": False,
                 }
                 for index, session in enumerate(dates)
                 for symbol, close in (
@@ -102,16 +109,31 @@ def _inputs(
     )
     build_spec = tmp_path / "momentum-build.json"
     build_spec.write_bytes(methodology.canonical_bytes)
+    split_observation = BronzeWriter(layout).write_json(
+        {"status": "OK", "results": []},
+        source="polygon",
+        dataset="stock-splits",
+        event_date=dates[0],
+    )
+    split_source = SplitHistorySourceCapture(layout).write(
+        plan_id="a" * 64,
+        start_date=dates[0],
+        end_date=dates[-1],
+        ingested_at=datetime(2025, 1, 1, tzinfo=UTC),
+        split_files=(),
+        provider_observations=(split_observation,),
+    )
     built = MomentumBaselineBuilder().build(
         spec=methodology,
         calendar=calendar,
         universe_artifact=universe,
         daily_bar_files=(daily_bars,),
+        split_source_manifest=split_source.path,
     )
     trade_plan = tmp_path / "momentum-trade-plan.json"
     built.write_trade_plan(trade_plan)
     manifest = MomentumBaselineManifest(
-        schema_version=2,
+        schema_version=3,
         strategy="cross_sectional_momentum_60_session",
         lookback_sessions=60,
         selection_fraction=0.1,
@@ -122,6 +144,7 @@ def _inputs(
         build_spec_sha256=built.build_spec_sha256,
         session_file_sha256=built.session_file_sha256,
         daily_bar_sha256=built.daily_bar_sha256,
+        split_source_sha256=built.split_source_sha256 or "",
     )
     manifest_path = tmp_path / "baseline.json"
     manifest.write(manifest_path)
@@ -160,6 +183,7 @@ def _inputs(
         build_spec=build_spec,
         session_file=calendar.path,
         daily_bars=daily_bars,
+        split_source=split_source.path,
     )
 
 
@@ -172,6 +196,7 @@ def _evaluate(inputs: _Inputs):
         build_spec=MomentumBaselineBuildSpec.load(inputs.build_spec),
         calendar=SessionFileStore.load(inputs.session_file),
         daily_bar_files=(inputs.daily_bars,),
+        split_source_manifest=inputs.split_source,
         baseline_manifest=MomentumBaselineManifest.load(inputs.manifest),
         performance_report=PerformanceReport.load(inputs.performance),
     )
@@ -214,6 +239,8 @@ def test_momentum_baseline_cli_rebuilds_exact_artifacts(tmp_path: Path) -> None:
             str(inputs.universe),
             "--daily-bar-file",
             str(inputs.daily_bars),
+            "--split-source-manifest",
+            str(inputs.split_source),
             "--trade-plan-output",
             str(trade_plan),
             "--manifest-output",
@@ -235,6 +262,7 @@ def test_future_membership_and_bars_cannot_change_trade_plan(tmp_path: Path) -> 
         calendar=calendar,
         universe_artifact=inputs.universe,
         daily_bar_files=(inputs.daily_bars,),
+        split_source_manifest=inputs.split_source,
     )
     future_date = calendar.sessions[-1].session_date + timedelta(days=1)
     extended_universe = tmp_path / "extended-universe.parquet"
@@ -271,7 +299,7 @@ def test_future_membership_and_bars_cannot_change_trade_plan(tmp_path: Path) -> 
                             "open": 1_000_000.0,
                             "close": 1_000_000.0,
                             "volume": 1_000_000.0,
-                            "adjusted": True,
+                            "adjusted": False,
                         }
                         for symbol in ("LOSS", "WIN")
                     ],
@@ -287,6 +315,7 @@ def test_future_membership_and_bars_cannot_change_trade_plan(tmp_path: Path) -> 
         calendar=calendar,
         universe_artifact=extended_universe,
         daily_bar_files=(extended_bars,),
+        split_source_manifest=inputs.split_source,
     )
 
     assert extended.trade_plan_bytes == original.trade_plan_bytes
@@ -306,6 +335,7 @@ def test_momentum_gate_rejects_tampered_published_artifact(tmp_path: Path) -> No
         ("universe", "historical-universe artifact hash differs"),
         ("trade_plan", "trade-plan artifact hash differs"),
         ("daily_bars", "daily-bar artifact hashes differ"),
+        ("split_source", "split-history source hash differs"),
     ),
 )
 def test_momentum_gate_rejects_tampered_source_artifacts(
@@ -351,6 +381,8 @@ def test_momentum_gate_cli_persists_failed_comparison(tmp_path: Path) -> None:
             str(inputs.session_file),
             "--daily-bar-file",
             str(inputs.daily_bars),
+            "--split-source-manifest",
+            str(inputs.split_source),
             "--baseline-manifest",
             str(inputs.manifest),
             "--universe-artifact",

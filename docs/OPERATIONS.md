@@ -221,7 +221,9 @@ The Phase 3 exit gate is not a free-form comparison. Prepare:
   required sessions;
 - an authoritative session file covering the 60-session lookback and all
   post-signal exits;
-- adjusted daily-bar Parquet partitions; and
+- provider-unadjusted daily-bar Parquet partitions;
+- the complete, provider-bound split-history source manifest covering the
+  evaluation interval; and
 - point-in-time membership Parquet with the exact non-null schema `symbol:
   string`, `effective_from: date32`, `effective_through: date32`. Intervals for
   a symbol must not overlap.
@@ -237,17 +239,21 @@ uv run qee evaluation build-momentum-baseline `
   --universe-artifact .\data\benchmarks\historical-spy-components.parquet `
   --daily-bar-file .\data\silver\daily-bars\year=2024\part-<hash>.parquet `
   --daily-bar-file .\data\silver\daily-bars\year=2025\part-<hash>.parquet `
+  --split-source-manifest .\data\manifests\split-history-sources\source-<hash>.json `
   --trade-plan-output .\data\benchmarks\momentum-trade-plan.json `
   --manifest-output .\data\benchmarks\momentum-baseline.json
 ```
 
-The builder ranks only members effective on each signal date, uses exactly 61
-closes for the 60-session return, sizes from the known signal-date close and
-20-session ADV, enters at the next session's open, and exits after the
-precommitted holding interval. The generated manifest binds the methodology,
-calendar, membership, every bar partition, trade plan, and semantic vectorbt
-input. Run that trade plan through `backtest run-ledger` to create the
-standardized performance report and MLflow provenance.
+The builder normalizes raw OHLCV only for splits executed by the terminal
+evaluated session, then ranks only members effective on each signal date. It
+uses exactly 61 closes for the 60-session return, sizes from the known
+signal-date close and 20-session ADV, enters at the next session's open, and
+exits after the precommitted holding interval. Splits executed after the
+evaluation interval cannot rewrite this basis. The generated manifest binds
+the methodology, calendar, membership, every bar partition, the complete
+split source, trade plan, and semantic vectorbt input. Run that trade plan
+through `backtest run-ledger` to create the standardized performance report
+and MLflow provenance.
 
 Then evaluate:
 
@@ -259,6 +265,7 @@ uv run qee evaluation momentum-benchmark-gate `
   --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
   --daily-bar-file .\data\silver\daily-bars\year=2024\part-<hash>.parquet `
   --daily-bar-file .\data\silver\daily-bars\year=2025\part-<hash>.parquet `
+  --split-source-manifest .\data\manifests\split-history-sources\source-<hash>.json `
   --baseline-manifest .\data\benchmarks\momentum-baseline.json `
   --universe-artifact .\data\benchmarks\historical-spy-components.parquet `
   --trade-plan .\data\benchmarks\momentum-trade-plan.json `
@@ -423,8 +430,9 @@ uv run qee model verify-production-source `
 ## Assemble the complete OOS Phase 4 history
 
 Do not hand-author the production Phase 4 session set. Once the walk-forward
-run, point-in-time candidate partitions, adjusted daily bars, and authoritative
-calendar are available, materialize every fold and session in one pass:
+run, point-in-time candidate partitions, provider-unadjusted daily bars, the
+matching complete split-history source, and authoritative calendar are
+available, materialize every fold and session in one pass:
 
 ```powershell
 uv run qee evaluation assemble-phase4 `
@@ -434,6 +442,7 @@ uv run qee evaluation assemble-phase4 `
   --candidate-file .\data\gold\event-candidates\for_trade_date=2026-01-05\candidates-<hash>.parquet `
   --candidate-file .\data\gold\event-candidates\for_trade_date=2026-01-06\candidates-<hash>.parquet `
   --daily-bar-file .\data\silver\daily-bars\year=2026\part-<hash>.parquet `
+  --split-source-manifest .\data\manifests\split-history-sources\source-<hash>.json `
   --initial-cash 100000 `
   --output-dir .\data\manifests\backtest\phase4-plans `
   --manifest-output .\data\manifests\backtest\phase4-assembly.json `
@@ -443,8 +452,12 @@ uv run qee evaluation assemble-phase4 `
 The assembler requires the candidate key set to equal the complete OOS
 prediction ledger. Each candidate must bind the supplied session file and use
 the immediately prior authoritative session. Entry and exit evidence comes
-only from adjusted open/close bars on the mapped trade session. Missing,
-duplicate, unadjusted, or schema-drifted sources fail closed.
+only from raw open/close bars on the mapped trade session. The split manifest
+must reproduce from its retained provider pages and cover every execution bar.
+An earnings candidate with a split executing on its trade date is excluded
+before model evaluation, because prior-close sizing and same-day nominal
+execution would otherwise cross incompatible share bases. Missing, duplicate,
+adjusted, split-day, or schema-drifted sources fail closed.
 
 The training dataset records `information_cutoff_at` as the latest
 `computed_at` timestamp among every feature in each row. That timestamp is
@@ -458,12 +471,13 @@ as the later model-decision time.
 Plans are built chronologically across fold boundaries. Equity and realized
 session returns flow into the next decision automatically, including explicit
 zero-return abstention sessions. The canonical assembly manifest hashes the
-strategy, OOS run, calendar, every candidate/bar partition, and every generated
-plan. `phase4-gate` re-hashes that complete graph and rejects a fold map whose
-ordered plan set differs from the manifest. Before calculating any metric, it
-also rebuilds every plan in a temporary workspace from the bound sources and
-requires byte-for-byte equality. Re-hashing a hand-edited plan into a new
-manifest cannot satisfy the gate.
+strategy, OOS run, calendar, every candidate/bar partition, every generated
+plan, and the split-history source with its retained provider observations.
+`phase4-gate` re-hashes that complete graph and rejects a fold map whose ordered
+plan set differs from the manifest. Before calculating any metric, it also
+reproduces the split source and rebuilds every plan in a temporary workspace
+from the bound sources, requiring byte-for-byte equality. Re-hashing a
+hand-edited plan into a new manifest cannot satisfy the gate.
 
 The strategy YAML is also the executable cost contract. Commission, market
 impact, borrow, and every inclusive price-tier spread floor are translated

@@ -86,6 +86,16 @@ class SplitHistorySourceManifest:
             data_lake_root=data_lake_root,
         )
 
+    @property
+    def data_lake_root(self) -> Path:
+        """Infer the validated lake root from the canonical manifest location."""
+        if (
+            self.path.parent.name != "split-history-sources"
+            or self.path.parent.parent.name != "manifests"
+        ):
+            raise ValueError("split-history source manifest is outside its canonical lake path")
+        return self.path.parent.parent.parent.resolve()
+
     def splits(self, *, data_lake_root: Path) -> tuple[StockSplit, ...]:
         raws = tuple(
             json.loads(path.read_bytes())

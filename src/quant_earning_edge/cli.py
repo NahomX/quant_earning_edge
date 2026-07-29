@@ -771,7 +771,15 @@ def build_momentum_baseline(  # noqa: PLR0917 - explicit source/output contract.
             "--daily-bar-file",
             exists=True,
             dir_okay=False,
-            help="Adjusted daily-bar Parquet; repeat for every source partition.",
+            help="Raw daily-bar Parquet; repeat for every source partition.",
+        ),
+    ],
+    split_source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Complete split history through the terminal evaluation session.",
         ),
     ],
     trade_plan_output: Annotated[
@@ -791,9 +799,10 @@ def build_momentum_baseline(  # noqa: PLR0917 - explicit source/output contract.
             calendar=SessionFileStore.load(session_file),
             universe_artifact=universe_artifact,
             daily_bar_files=daily_bar_files,
+            split_source_manifest=split_source_manifest,
         )
         manifest = MomentumBaselineManifest(
-            schema_version=2,
+            schema_version=3,
             strategy="cross_sectional_momentum_60_session",
             lookback_sessions=methodology.lookback_sessions,
             selection_fraction=methodology.selection_fraction,
@@ -804,6 +813,9 @@ def build_momentum_baseline(  # noqa: PLR0917 - explicit source/output contract.
             build_spec_sha256=built.build_spec_sha256,
             session_file_sha256=built.session_file_sha256,
             daily_bar_sha256=built.daily_bar_sha256,
+            split_source_sha256=(
+                built.split_source_sha256 if built.split_source_sha256 is not None else ""
+            ),
         )
         built.write_trade_plan(trade_plan_output)
         manifest.write(manifest_output)
@@ -855,7 +867,15 @@ def evaluate_momentum_benchmark_gate(  # noqa: PLR0917 - explicit evidence bound
             "--daily-bar-file",
             exists=True,
             dir_okay=False,
-            help="Adjusted daily-bar Parquet; repeat for every source partition.",
+            help="Raw daily-bar Parquet; repeat for every source partition.",
+        ),
+    ],
+    split_source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Complete split history through the terminal evaluation session.",
         ),
     ],
     baseline_manifest: Annotated[
@@ -905,6 +925,7 @@ def evaluate_momentum_benchmark_gate(  # noqa: PLR0917 - explicit evidence bound
             build_spec=MomentumBaselineBuildSpec.load(build_spec),
             calendar=SessionFileStore.load(session_file),
             daily_bar_files=daily_bar_files,
+            split_source_manifest=split_source_manifest,
             baseline_manifest=MomentumBaselineManifest.load(baseline_manifest),
             performance_report=PerformanceReport.load(performance_report),
         )
@@ -1841,7 +1862,15 @@ def assemble_phase4_history(  # noqa: PLR0917 - explicit immutable source bounda
             "--daily-bar-file",
             exists=True,
             dir_okay=False,
-            help="Adjusted execution bars; repeat as needed.",
+            help="Raw execution bars; repeat as needed.",
+        ),
+    ],
+    split_source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Complete split history covering all Phase 4 execution bars.",
         ),
     ],
     initial_cash: Annotated[
@@ -1873,6 +1902,7 @@ def assemble_phase4_history(  # noqa: PLR0917 - explicit immutable source bounda
             session_file=session_file,
             candidate_files=candidate_files,
             daily_bar_files=daily_bar_files,
+            split_source_manifest=split_source_manifest,
             initial_cash=initial_cash,
             output_dir=output_dir,
             manifest_output=manifest_output,

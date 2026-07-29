@@ -7,6 +7,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -14,7 +15,12 @@ import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_earning_edge.backtest import CostModel
-from quant_earning_edge.data import DAILY_BARS_SCHEMA, SessionFileStore
+from quant_earning_edge.data import (
+    DAILY_BARS_SCHEMA,
+    SessionFileStore,
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
 from quant_earning_edge.evaluation.strategy_gate import (
     FoldArtifactSpec,
     Phase4AggregationSpec,
@@ -35,7 +41,7 @@ from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import date, datetime
+    from datetime import datetime
 
     from quant_earning_edge.data.clients import MarketSession
 
@@ -54,15 +60,16 @@ class Phase4FileReference(_StrictModel):
 class Phase4AssemblyManifest(_StrictModel):
     """Canonical binding from raw research inputs to generated event plans."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     strategy_config: Phase4FileReference
     walkforward_run_evidence: Phase4FileReference
     session_file: Phase4FileReference
     candidate_files: tuple[Phase4FileReference, ...]
     daily_bar_files: tuple[Phase4FileReference, ...]
+    split_source_manifest: Phase4FileReference
     initial_cash: float = Field(gt=0)
     minimum_probability: float = Field(ge=0.5, lt=1)
-    execution_price_contract: Literal["adjusted_session_open_to_close"]
+    execution_price_contract: Literal["raw_session_open_to_close_no_trade_date_split"]
     iv_regime_contract: Literal["unavailable"]
     plan_files: tuple[Phase4FileReference, ...]
 
@@ -100,6 +107,7 @@ class Phase4AssemblyManifest(_StrictModel):
             self.session_file,
             *self.candidate_files,
             *self.daily_bar_files,
+            self.split_source_manifest,
             *self.plan_files,
         )
         resolved = tuple(
@@ -135,6 +143,9 @@ class Phase4AssemblyManifest(_StrictModel):
             _resolve(item.path, base=manifest_path.parent) for item in self.daily_bar_files
         )
 
+    def resolved_split_source_manifest(self, manifest_path: Path) -> Path:
+        return _resolve(self.split_source_manifest.path, base=manifest_path.parent)
+
 
 @dataclass(frozen=True)
 class Phase4AssemblyResult:
@@ -160,6 +171,7 @@ class Phase4HistoricalAssembler:
         session_file: Path,
         candidate_files: Sequence[Path],
         daily_bar_files: Sequence[Path],
+        split_source_manifest: Path,
         initial_cash: float,
         output_dir: Path,
         manifest_output: Path,
@@ -173,6 +185,11 @@ class Phase4HistoricalAssembler:
             raise ValueError("Phase 4 minimum probability must be in [0.5, 1)")
         candidate_paths = _unique_files(candidate_files, kind="candidate")
         daily_paths = _unique_files(daily_bar_files, kind="daily bar")
+        split_source = SplitHistorySourceManifest.load(split_source_manifest)
+        SplitHistorySourceCapture.reproduce(
+            split_source,
+            data_lake_root=split_source.data_lake_root,
+        )
         strategy = load_strategy_config(strategy_config)
         run = WalkForwardModelRun.load_evidence(walkforward_run_evidence)
         if run.hyperparameter_study_sha256 is None:
@@ -190,6 +207,11 @@ class Phase4HistoricalAssembler:
         session_index = {item.session_date: index for index, item in enumerate(sessions)}
         candidates = _load_candidates(candidate_paths, session_sha256=calendar.sha256)
         bars = _load_daily_bars(daily_paths)
+        bar_dates = tuple(key[1] for key in bars)
+        if date.fromisoformat(split_source.raw["start_date"]) > min(
+            bar_dates
+        ) or date.fromisoformat(split_source.raw["end_date"]) < max(bar_dates):
+            raise ValueError("Phase 4 split history does not cover the execution bars")
         predictions = tuple(item for fold in run.folds for item in fold.predictions)
         prediction_keys = {(item.symbol, item.asof_date) for item in predictions}
         if len(prediction_keys) != len(predictions):
@@ -317,9 +339,13 @@ class Phase4HistoricalAssembler:
             daily_bar_files=tuple(
                 _reference(path, base=manifest_output.parent) for path in daily_paths
             ),
+            split_source_manifest=_reference(
+                split_source.path,
+                base=manifest_output.parent,
+            ),
             initial_cash=initial_cash,
             minimum_probability=minimum_probability,
-            execution_price_contract="adjusted_session_open_to_close",
+            execution_price_contract="raw_session_open_to_close_no_trade_date_split",
             iv_regime_contract="unavailable",
             plan_files=tuple(_reference(path, base=manifest_output.parent) for path in plan_paths),
         )
@@ -371,6 +397,8 @@ def _load_candidates(
                 raise ValueError("event candidate differs from the supplied session file")
             if row["timing"] not in {"bmo", "amc"}:
                 raise ValueError("event candidate timing is unsupported")
+            if row["split_event_ids"]:
+                raise ValueError("Phase 4 excludes earnings trades on split execution dates")
             output[key] = row
     return output
 
@@ -386,8 +414,8 @@ def _load_daily_bars(paths: Sequence[Path]) -> dict[tuple[str, date], dict[str, 
             key = (symbol, row["session_date"])
             if key in output:
                 raise ValueError(f"duplicate daily bar key: {key}")
-            if not row["adjusted"]:
-                raise ValueError("Phase 4 execution requires adjusted daily bars")
+            if row["adjusted"]:
+                raise ValueError("Phase 4 execution requires raw daily bars")
             for field in ("open", "close"):
                 value = float(row[field])
                 if value <= 0 or not math.isfinite(value):
@@ -442,7 +470,7 @@ def _observation(
 ) -> EventExecutionObservation:
     if bar is None:
         raise ValueError(
-            f"missing adjusted execution bar for {prediction.symbol} on {candidate['trade_date']}"
+            f"missing raw execution bar for {prediction.symbol} on {candidate['trade_date']}"
         )
     return EventExecutionObservation(
         row_index=prediction.row_index,

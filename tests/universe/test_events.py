@@ -162,17 +162,15 @@ def test_join_selects_prior_amc_and_trade_date_bmo_only(tmp_path: Path) -> None:
 
     rows = pq.ParquetFile(artifact.path).read().to_pylist()  # type: ignore[no-untyped-call]
     assert [(row["symbol"], row["event_date"], row["timing"]) for row in rows] == [
-        ("AAPL", ASOF_DATE, "amc"),
         ("GOOG", TRADE_DATE, "bmo"),
     ]
     assert artifact.excluded_counts == {
         CandidateExclusion.NOT_IN_ELIGIBLE_UNIVERSE: 1,
+        CandidateExclusion.SPLIT_ON_TRADE_DATE: 1,
         CandidateExclusion.UNSUPPORTED_DURING_MARKET_HOURS: 1,
     }
-    assert rows[0]["split_event_ids"] == ["split-aapl"]
-    assert rows[0]["dividend_event_ids"] == []
-    assert rows[1]["split_event_ids"] == []
-    assert rows[1]["dividend_event_ids"] == ["dividend-goog"]
+    assert rows[0]["split_event_ids"] == []
+    assert rows[0]["dividend_event_ids"] == ["dividend-goog"]
     assert all(row["sector"] == "MANUFACTURING" for row in rows)
     assert all(row["sizing_price"] == 100 for row in rows)
     assert all(row["frozen_average_daily_volume_shares"] == 2_000_000 for row in rows)

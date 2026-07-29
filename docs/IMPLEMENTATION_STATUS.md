@@ -54,8 +54,8 @@ reproducible through `uv.lock`.
 | Source-bound training-dataset reconstruction | Complete | historical feature and forward-label provider manifests are mandatory and deeply replayed before byte-exact wide Parquet rebuild and Optuna selection |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
 | Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
-| Deterministic 60-session momentum baseline | Complete | PIT membership + adjusted-bar builder, causal next-open ledger, immutable source manifest |
-| Source-bound Phase 3 momentum comparison gate | Complete | rebuilds methodology/calendar/universe/bars/trades/report before strict ±0.1 verdict |
+| Deterministic 60-session momentum baseline | Complete | PIT membership + raw bars normalized to the terminal evaluation split vintage, causal next-open ledger, immutable source manifest |
+| Source-bound Phase 3 momentum comparison gate | Complete | rebuilds methodology/calendar/universe/raw bars/split history/trades/report before strict ±0.1 verdict |
 | Strategy-bound decomposed execution cost model | Complete | validated YAML-to-engine translation for commission, inclusive spread tiers, impact, and borrow; exact MLflow parameters |
 | Vectorbt daily round-trip engine | Complete | long/short mark-to-market, determinism, rejection tests |
 | Exact daily cost attribution invariant | Complete | gross minus five cost components equals net on every session |
@@ -74,7 +74,7 @@ reproducible through `uv.lock`.
 | Source-bound walk-forward reconstruction | Complete | content-addressed datasets/split/strategy/study/run/fold lineage; independent exact OOS fold retraining; production refit requires the attested run |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 | OOS prediction-to-Phase 4 provenance | Complete | canonical run reload, exact probability checks, complete row coverage, shared Optuna/run hashes |
-| Reproducible historical Phase 4 assembly | Complete | exact OOS/candidate key join, premarket-aware decision cutoffs, authoritative sessions/bars, chained equity/outcomes, source-and-plan manifest, gate-time byte-exact rebuild |
+| Reproducible historical Phase 4 assembly | Complete | exact OOS/candidate key join, split-day exclusion, raw nominal execution bars, complete split-source lineage, chained equity/outcomes, and gate-time byte-exact rebuild |
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
 | Explicit event-model abstention sessions | Complete | zero-return ledgers preserve non-trading OOS dates in Phase 4 metrics |
@@ -186,6 +186,15 @@ by splits executed by that feature's as-of date. The daily universe production
 path uses the same transformation. A provider-adjusted bar physically observed
 after a historical cutoff is rejected, because its current adjustment vintage
 could contain later corporate actions.
+
+The momentum benchmark uses one share basis established at the terminal
+evaluated session, so splits executed after the experiment cannot restate its
+signals, sizes, marks, or P&L. Phase 4 instead uses raw nominal open/close
+execution prices and excludes any earnings candidate whose trade date is also
+a split execution date. Both manifests bind and independently reproduce the
+complete provider split source. This removes future split restatement; it does
+not claim an archival vintage for unrelated provider corrections already
+present in a later raw-bar download.
 
 ## Next implementation slice
 

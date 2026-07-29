@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from quant_earning_edge.backtest import CostModelConfig
 from quant_earning_edge.features import FEATURE_REGISTRY
 
 if TYPE_CHECKING:
@@ -130,6 +131,19 @@ class EarningsStrategyConfig(StrictModel):
     portfolio: PortfolioSpec
     costs: CostsSpec
     seed: int
+
+    @property
+    def cost_model_config(self) -> CostModelConfig:
+        """Translate the validated strategy costs into the executable engine contract."""
+        return CostModelConfig(
+            commission_bps_per_side=self.costs.commission_bps_per_side,
+            impact_coefficient_bps=self.costs.market_impact_coef_bps,
+            borrow_bps_annualized=self.costs.borrow_bps_annualized,
+            half_spread_by_price_tier=tuple(
+                (item.min_price, item.half_spread_bps)
+                for item in self.costs.half_spread_by_price_tier
+            ),
+        )
 
     @model_validator(mode="after")
     def validate_features_and_windows(self) -> Self:

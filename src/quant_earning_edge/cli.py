@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from quant_earning_edge import __version__
 from quant_earning_edge.backtest import (
     BacktestSpec,
+    CostModel,
     NbboReplayEvidence,
     NbboReplaySpec,
     ReplayConfigSpec,
@@ -1616,7 +1617,8 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
             walkforward_run_sha256=model_run.sha256,
         )
         planner.write(plan, plan_output)
-        result = run_event_plan(plan)
+        cost_model = CostModel(config.cost_model_config)
+        result = run_event_plan(plan, cost_model=cost_model)
         evaluator = PerformanceEvaluator()
         report = evaluator.evaluate(result)
         evaluator.write(report, evaluation_output)
@@ -1654,6 +1656,7 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
                 "strategy_sha256": strategy_file_sha256(strategy_config),
                 "walkforward_run_sha256": model_run.sha256,
             },
+            cost_model_config=config.cost_model_config,
         )
     except (OSError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="MLflow tracking") from error
@@ -1792,6 +1795,8 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
             else aggregation_spec.parent / spec.assembly_manifest
         )
         assembly_manifest = Phase4AssemblyManifest.load(manifest_path)
+        strategy = load_strategy_config(assembly_manifest.resolved_strategy_config(manifest_path))
+        cost_model = CostModel(strategy.cost_model_config)
         run_path = (
             spec.walkforward_run_evidence
             if spec.walkforward_run_evidence.is_absolute()
@@ -1800,6 +1805,13 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
         model_run = WalkForwardModelRun.load_evidence(run_path)
         if assembly_manifest.walkforward_run_evidence.sha256 != model_run.sha256:
             raise ValueError("Phase 4 assembly manifest differs from the walk-forward run")
+        if (
+            model_run.feature_names != strategy.features
+            or model_run.label_name != strategy.label.column_name
+            or model_run.threshold != strategy.label.threshold
+            or model_run.seed != strategy.seed
+        ):
+            raise ValueError("Phase 4 strategy differs from the walk-forward run")
         if model_run.hyperparameter_study_sha256 is None:
             raise ValueError("walk-forward run lacks an Optuna study binding")
         fold_results = []
@@ -1821,7 +1833,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                 model_run.validate_predictions(plan.source_predictions)
                 all_predictions.extend(plan.source_predictions)
                 cohorts.extend(plan.cohorts)
-                results.append(run_event_plan(plan))
+                results.append(run_event_plan(plan, cost_model=cost_model))
             fold_results.append(
                 FoldBacktestResults(
                     fold_index=fold.fold_index,
@@ -1877,6 +1889,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                 "passes_phase4_research_gate": report.passes_phase4_research_gate,
                 "passes_pre_paper_backtest_gate": report.passes_pre_paper_backtest_gate,
             },
+            cost_model_config=strategy.cost_model_config,
         )
     except (OSError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="MLflow tracking") from error

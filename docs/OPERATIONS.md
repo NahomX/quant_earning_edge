@@ -389,6 +389,12 @@ strategy, OOS run, calendar, every candidate/bar partition, and every generated
 plan. `phase4-gate` re-hashes that complete graph and rejects a fold map whose
 ordered plan set differs from the manifest.
 
+The strategy YAML is also the executable cost contract. Commission, market
+impact, borrow, and every inclusive price-tier spread floor are translated
+directly into the vectorbt cost model during assembly and gate replay. The same
+values are recorded in MLflow; a separately hard-coded research cost model is
+not permitted.
+
 ## Plan and evaluate one OOS event session (diagnostic)
 
 Prepare a strict JSON object containing `equity`, the session's OOS

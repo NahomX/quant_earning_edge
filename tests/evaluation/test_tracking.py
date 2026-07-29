@@ -8,6 +8,7 @@ from pathlib import Path
 import mlflow
 import pytest
 
+from quant_earning_edge.backtest import CostModelConfig
 from quant_earning_edge.evaluation import (
     default_artifact_location,
     default_tracking_uri,
@@ -47,6 +48,12 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
         seed=42,
         source_files=(source,),
         artifact_files=(tearsheet,),
+        cost_model_config=CostModelConfig(
+            commission_bps_per_side=3.0,
+            impact_coefficient_bps=7.0,
+            borrow_bps_annualized=11.0,
+            half_spread_by_price_tier=((100.0, 1.0), (0.0, 20.0)),
+        ),
     )
 
     client = mlflow.MlflowClient(
@@ -58,7 +65,9 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
     assert run.data.params["input_sha256"] == "b" * 64
     assert run.data.params["seed"] == "42"
     assert run.data.params["bootstrap_resamples"] == "10000"
-    assert run.data.params["cost_impact_coefficient_bps"] == "5.0"
+    assert run.data.params["cost_impact_coefficient_bps"] == "7.0"
+    assert run.data.params["cost_commission_bps_per_side"] == "3.0"
+    assert run.data.params["cost_half_spread_by_price_tier"] == ("[[100.0,1.0],[0.0,20.0]]")
     assert {item.path for item in client.list_artifacts(reference.run_id)} == {
         "performance-report.json",
         "source-manifest.json",

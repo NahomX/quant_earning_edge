@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from quant_earning_edge.backtest import (
     BacktestResult,
+    CostModel,
     DailyLedger,
     TradeIntent,
     VectorbtIntradayEngine,
@@ -401,10 +402,14 @@ def _intent(
     )
 
 
-def run_event_plan(plan: PlannedEventTrades) -> BacktestResult:
+def run_event_plan(
+    plan: PlannedEventTrades,
+    *,
+    cost_model: CostModel | None = None,
+) -> BacktestResult:
     """Execute one event plan or preserve an explicit zero-return session."""
     if plan.intents:
-        return VectorbtIntradayEngine().run(
+        return VectorbtIntradayEngine(cost_model).run(
             trades=plan.intents,
             sessions=(plan.trade_date,),
             initial_cash=plan.portfolio.equity,

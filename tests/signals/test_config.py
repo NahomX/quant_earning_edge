@@ -24,6 +24,11 @@ def test_committed_strategy_config_matches_registered_features() -> None:
     assert config.model.hyperparam_search.n_trials <= 200
     assert config.label.column_name == "forward_1d_open_to_close"
     assert config.portfolio.sizing.calibration_position_pct == 0.01
+    assert config.cost_model_config.half_spread_by_price_tier == (
+        (50.0, 2.0),
+        (10.0, 5.0),
+        (0.0, 15.0),
+    )
 
 
 def test_unknown_feature_is_rejected(tmp_path: Path) -> None:

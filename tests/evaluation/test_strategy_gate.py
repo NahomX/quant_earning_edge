@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -36,10 +36,8 @@ from quant_earning_edge.signals import (
     PlannedEventTrades,
     TradeCohort,
     WalkForwardModelRun,
+    load_strategy_config,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _source_reference(path: Path) -> dict[str, str]:
@@ -144,14 +142,15 @@ def _promotion_cohort_rows() -> list[dict[str, object]]:
 
 
 def _walkforward_run(predictions: tuple[OosPrediction, ...]) -> WalkForwardModelRun:
+    strategy = load_strategy_config(Path("configs/strategies/earnings_v1.yaml"))
     hyperparameters = LightgbmHyperparameters()
     return WalkForwardModelRun(
         plan_sha256="a" * 64,
         dataset_sha256=("b" * 64,),
-        feature_names=("signal",),
-        label_name="forward_1d_open_to_close",
-        threshold=0.0,
-        seed=20260427,
+        feature_names=strategy.features,
+        label_name=strategy.label.column_name,
+        threshold=strategy.label.threshold,
+        seed=strategy.seed,
         hyperparameter_study_sha256="c" * 64,
         hyperparameters=hyperparameters,
         hyperparameters_sha256=hyperparameters.sha256,
@@ -164,7 +163,9 @@ def _walkforward_run(predictions: tuple[OosPrediction, ...]) -> WalkForwardModel
                 fit_count=10,
                 validation_count=2,
                 predictions=predictions,
-                feature_attribution=(FeatureAttribution("signal", 0.0),),
+                feature_attribution=tuple(
+                    FeatureAttribution(name, 0.0) for name in strategy.features
+                ),
             ),
         ),
     )
@@ -321,12 +322,12 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
     )
     second_path = tmp_path / "second.json"
     EventTradePlanner.write(second_plan, second_path)
-    strategy_source = tmp_path / "strategy.yaml"
+    strategy_source = tmp_path / "earnings_v1.yaml"
+    strategy_source.write_bytes(Path("configs/strategies/earnings_v1.yaml").read_bytes())
     session_source = tmp_path / "sessions.json"
     candidate_source = tmp_path / "candidates.parquet"
     bar_source = tmp_path / "bars.parquet"
     for path, content in (
-        (strategy_source, b"strategy"),
         (session_source, b"sessions"),
         (candidate_source, b"candidates"),
         (bar_source, b"bars"),

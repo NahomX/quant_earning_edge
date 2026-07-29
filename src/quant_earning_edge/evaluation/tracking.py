@@ -59,6 +59,7 @@ def log_backtest_run(
     source_files: Sequence[Path],
     artifact_files: Sequence[Path] = (),
     extra_parameters: Mapping[str, str | int | float | bool] | None = None,
+    cost_model_config: CostModelConfig | None = None,
 ) -> BacktestTrackingReference:
     """Persist hashes, parameters, seed, and report to MLflow or fail."""
     if not experiment_name.strip() or not run_kind.strip():
@@ -73,7 +74,11 @@ def log_backtest_run(
         separators=(",", ":"),
     ).encode()
     source_manifest_sha256 = hashlib.sha256(source_manifest_bytes).hexdigest()
-    cost_parameters = asdict(CostModelConfig())
+    cost_parameters = asdict(cost_model_config or CostModelConfig())
+    cost_parameters["half_spread_by_price_tier"] = json.dumps(
+        cost_parameters["half_spread_by_price_tier"],
+        separators=(",", ":"),
+    )
     parameters: dict[str, str | int | float | bool] = {
         "run_kind": run_kind,
         "input_sha256": input_sha256,

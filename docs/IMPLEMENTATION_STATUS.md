@@ -46,7 +46,7 @@ reproducible through `uv.lock`.
 | Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
 | Deterministic 60-session momentum baseline | Complete | PIT membership + adjusted-bar builder, causal next-open ledger, immutable source manifest |
 | Source-bound Phase 3 momentum comparison gate | Complete | rebuilds methodology/calendar/universe/bars/trades/report before strict ±0.1 verdict |
-| Decomposed execution cost model | Complete | commission, spread, impact, borrow, and stop tests |
+| Strategy-bound decomposed execution cost model | Complete | validated YAML-to-engine translation for commission, inclusive spread tiers, impact, and borrow; exact MLflow parameters |
 | Vectorbt daily round-trip engine | Complete | long/short mark-to-market, determinism, rejection tests |
 | Exact daily cost attribution invariant | Complete | gross minus five cost components equals net on every session |
 | Standardized machine-readable evaluation | Complete | headline metrics, 10,000-resample CI, immutable JSON |

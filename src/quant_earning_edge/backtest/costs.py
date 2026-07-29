@@ -16,6 +16,11 @@ class CostModelConfig:
     commission_bps_per_side: float = 1.0
     impact_coefficient_bps: float = 5.0
     borrow_bps_annualized: float = 50.0
+    half_spread_by_price_tier: tuple[tuple[float, float], ...] = (
+        (50.0, 2.0),
+        (10.0, 5.0),
+        (0.0, 15.0),
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -27,6 +32,19 @@ class CostModelConfig:
             < 0
         ):
             raise ValueError("cost assumptions must be non-negative")
+        minimums = tuple(item[0] for item in self.half_spread_by_price_tier)
+        if (
+            not minimums
+            or minimums != tuple(sorted(set(minimums), reverse=True))
+            or minimums[-1] != 0
+        ):
+            raise ValueError("spread tiers require unique descending floors ending at zero")
+        if any(
+            not math.isfinite(value) or value < 0
+            for tier in self.half_spread_by_price_tier
+            for value in tier
+        ):
+            raise ValueError("spread tier values must be finite and non-negative")
 
 
 @dataclass(frozen=True)
@@ -96,7 +114,10 @@ class CostModel:
     def estimate(self, order: ExecutionCostInput) -> CostBreakdown:
         """Return every cost component without netting away attribution."""
         notional = order.shares * order.price
-        spread_bps = _half_spread_bps(order.price)
+        spread_bps = _half_spread_bps(
+            order.price,
+            tiers=self._config.half_spread_by_price_tier,
+        )
         participation = order.shares / order.average_daily_volume_shares
         impact_bps = self._config.impact_coefficient_bps * math.sqrt(participation)
         borrow = (
@@ -118,9 +139,9 @@ class CostModel:
         )
 
 
-def _half_spread_bps(price: float) -> float:
-    if price > 50:
-        return 2.0
-    if price >= 10:
-        return 5.0
-    return 15.0
+def _half_spread_bps(
+    price: float,
+    *,
+    tiers: tuple[tuple[float, float], ...],
+) -> float:
+    return next(spread_bps for minimum, spread_bps in tiers if price >= minimum)

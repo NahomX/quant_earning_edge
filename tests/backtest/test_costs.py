@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from quant_earning_edge.backtest import CostModel, ExecutionCostInput
+from quant_earning_edge.backtest import CostModel, CostModelConfig, ExecutionCostInput
 
 
 def test_cost_model_decomposes_documented_assumptions() -> None:
@@ -29,7 +29,7 @@ def test_cost_model_decomposes_documented_assumptions() -> None:
 
 @pytest.mark.parametrize(
     ("price", "expected_bps"),
-    [(50.01, 2.0), (50.0, 5.0), (10.0, 5.0), (9.99, 15.0)],
+    [(50.01, 2.0), (50.0, 2.0), (10.0, 5.0), (9.99, 15.0)],
 )
 def test_half_spread_price_tiers(price: float, expected_bps: float) -> None:
     result = CostModel().estimate(
@@ -60,6 +60,33 @@ def test_short_borrow_and_sell_stop_slippage_are_attributed() -> None:
 
     assert result.borrow == pytest.approx(5_000 * 0.005 * 10 / 252)
     assert result.stop_slippage == 250.0
+
+
+def test_custom_cost_contract_controls_every_component() -> None:
+    result = CostModel(
+        CostModelConfig(
+            commission_bps_per_side=3.0,
+            impact_coefficient_bps=7.0,
+            borrow_bps_annualized=0.0,
+            half_spread_by_price_tier=((100.0, 1.0), (0.0, 20.0)),
+        )
+    ).estimate(
+        ExecutionCostInput(
+            side="buy",
+            shares=100,
+            price=50.0,
+            average_daily_volume_shares=1_000_000,
+        )
+    )
+
+    assert result.commission / result.notional * 10_000 == pytest.approx(3.0)
+    assert result.half_spread / result.notional * 10_000 == pytest.approx(20.0)
+    assert result.market_impact / result.notional * 10_000 == pytest.approx(0.07)
+
+
+def test_invalid_custom_spread_tiers_are_rejected() -> None:
+    with pytest.raises(ValueError, match="spread tiers"):
+        CostModelConfig(half_spread_by_price_tier=((10.0, 5.0), (50.0, 2.0)))
 
 
 def test_buy_stop_is_rejected_by_documented_long_stop_model() -> None:

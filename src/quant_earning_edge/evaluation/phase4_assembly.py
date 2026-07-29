@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import pyarrow.parquet as pq
 from pydantic import BaseModel, ConfigDict, Field
 
+from quant_earning_edge.backtest import CostModel
 from quant_earning_edge.data import DAILY_BARS_SCHEMA, SessionFileStore
 from quant_earning_edge.evaluation.strategy_gate import (
     FoldArtifactSpec,
@@ -115,6 +116,9 @@ class Phase4AssemblyManifest(_StrictModel):
     def resolved_plan_files(self, manifest_path: Path) -> tuple[Path, ...]:
         return tuple(_resolve(item.path, base=manifest_path.parent) for item in self.plan_files)
 
+    def resolved_strategy_config(self, manifest_path: Path) -> Path:
+        return _resolve(self.strategy_config.path, base=manifest_path.parent)
+
 
 @dataclass(frozen=True)
 class Phase4AssemblyResult:
@@ -199,6 +203,7 @@ class Phase4HistoricalAssembler:
             ),
             minimum_probability=minimum_probability,
         )
+        cost_model = CostModel(strategy.cost_model_config)
         output_root = output_dir.resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         equity = float(initial_cash)
@@ -259,7 +264,7 @@ class Phase4HistoricalAssembler:
                     / f"event-plan-{trade_date.isoformat()}.json"
                 )
                 EventTradePlanner.write(plan, plan_path)
-                result = run_event_plan(plan)
+                result = run_event_plan(plan, cost_model=cost_model)
                 session_return = result.daily[0].net_pnl / result.initial_cash
                 outcomes.append(TradeOutcome(closed_date=trade_date, net_return=session_return))
                 equity = result.final_net_equity

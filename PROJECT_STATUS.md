@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 389 automated tests pass.
+- 390 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 98 source files.
 - The model target matches the traded next-open-to-next-close holding window.

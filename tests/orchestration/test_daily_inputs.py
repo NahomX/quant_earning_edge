@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 
 from quant_earning_edge.data import LakehouseLayout, SessionFileStore
 from quant_earning_edge.data.clients import MarketSession
+from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
 from quant_earning_edge.orchestration.daily_inputs import (
     DailyInputPreparer,
     DailyInputStatus,
@@ -171,3 +172,40 @@ def test_zero_candidate_day_is_feature_ready_without_provider_calls(
     assert result.candidate_file == candidate.resolve()
     assert result.feature_file is None
     assert result.candidate_count == 0
+
+
+def test_daily_inputs_ignore_unbound_feature_artifact(tmp_path: Path) -> None:
+    feature_path = (
+        tmp_path / "gold" / "feature_group=live" / "month=2026-07" / "part-unbound.parquet"
+    )
+    feature_path.parent.mkdir(parents=True)
+    computed_at = datetime(2026, 7, 28, 12, tzinfo=UTC)
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(
+            [
+                {
+                    "symbol": "AAA",
+                    "asof_date": date(2026, 7, 27),
+                    "feature_name": "return_1d",
+                    "value": 0.01,
+                    "feature_code_hash": "a" * 64,
+                    "input_sha256": "b" * 64,
+                    "computed_at": computed_at,
+                }
+            ],
+            schema=FEATURE_VALUE_SCHEMA,
+        ),
+        feature_path,
+    )
+
+    assert (
+        _preparer(tmp_path, computed_at)._feature_file(
+            feature_group="live",
+            asof_date=date(2026, 7, 27),
+            symbols=("AAA",),
+            feature_names=("return_1d",),
+            observed_at=computed_at,
+            target_open=datetime(2026, 7, 28, 13, 30, tzinfo=UTC),
+        )
+        is None
+    )

@@ -450,7 +450,7 @@ class NextWorkflowQueuer:
                 continue
             rows = [
                 row
-                for row in pq.read_table(path).to_pylist()  # type: ignore[no-untyped-call]
+                for row in pq.ParquetFile(path).read().to_pylist()  # type: ignore[no-untyped-call]
                 if row["asof_date"] == asof_date
             ]
             keys = {(str(row["symbol"]).strip().upper(), str(row["feature_name"])) for row in rows}

@@ -440,7 +440,7 @@ class DailyInputPreparer:
                 continue
             rows = [
                 row
-                for row in pq.read_table(path).to_pylist()  # type: ignore[no-untyped-call]
+                for row in pq.ParquetFile(path).read().to_pylist()  # type: ignore[no-untyped-call]
                 if row["asof_date"] == asof_date
             ]
             keys = {(str(row["symbol"]).strip().upper(), str(row["feature_name"])) for row in rows}
@@ -452,7 +452,15 @@ class DailyInputPreparer:
                 and (computed_at := next(iter(computed))) <= observed_at
                 and computed_at < target_open
             ):
-                matches.append((computed_at, path.resolve()))
+                resolved = path.resolve()
+                try:
+                    FeatureSourceCapture.find_for_feature(
+                        resolved,
+                        data_lake_root=self._layout.root,
+                    )
+                except ValueError:
+                    continue
+                matches.append((computed_at, resolved))
         if not matches:
             return None
         latest = max(item[0] for item in matches)

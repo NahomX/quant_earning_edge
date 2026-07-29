@@ -110,6 +110,7 @@ reproducible through `uv.lock`.
 | Isolated credentialed no-trade smoke | Complete | manual zero-order full workflow, live safety controls, separate state/artifacts, no proof credit |
 | Cutoff-safe production model refit | Complete | closed-label cutoff, purged final validation, deterministic immutable booster/evidence, exact-feature inference |
 | Automatic live planning scores | Complete | strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities and planning evidence |
+| Fail-closed proof-start admission | Complete | fresh passing readiness + prior isolated smoke + scheduled spec required before first inbox publication |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 
 ## Phase 1 exit gate
@@ -141,11 +142,10 @@ data completeness or strategy performance.
 
 ## Next implementation slice
 
-Add a proof-start admission command that requires both the readiness report
-and isolated smoke evidence to pass before it writes the first scheduled inbox
-specification. Then close the remaining causal candidate/observation capture
-inputs. After the credentialed historical/strategy gates pass, begin the real
-90-session run.
+Close the remaining causal candidate/observation capture inputs and bind
+production-model promotion to a passing Phase 4 pre-paper gate. After the
+credentialed historical/strategy gates pass, use proof-start admission and
+begin the real 90-session run.
 
 The deterministic replay core now models displayed aggressive liquidity,
 probability-weighted mid/passive limit fills, partial and missed fills,

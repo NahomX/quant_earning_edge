@@ -6,11 +6,12 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
-    from datetime import date, datetime, timedelta
+    from datetime import timedelta
     from pathlib import Path
 
     from quant_earning_edge.data.calendar import SessionFile
@@ -84,6 +85,61 @@ class OperationalReadinessReport:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"operational readiness collision at {output}") from None
+
+    @classmethod
+    def load(cls, path: Path) -> OperationalReadinessReport:
+        """Strictly reload canonical readiness evidence."""
+        raw = json.loads(path.read_bytes())
+        expected = {
+            "schema_version",
+            "evaluated_at",
+            "control_date",
+            "session_file_sha256",
+            "provider_freshness_sha256",
+            "latest_worker_cycle_sha256",
+            "checks",
+            "ready",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected:
+            raise ValueError("operational readiness evidence schema mismatch")
+        try:
+            checks_raw = raw["checks"]
+            if not isinstance(checks_raw, list):
+                raise TypeError
+            checks = tuple(
+                ReadinessCheck(
+                    name=str(item["name"]),
+                    passed=bool(item["passed"]),
+                    detail=str(item["detail"]),
+                )
+                for item in checks_raw
+                if isinstance(item, dict) and set(item) == {"name", "passed", "detail"}
+            )
+            if len(checks) != len(checks_raw):
+                raise ValueError
+            report = cls(
+                schema_version=int(raw["schema_version"]),
+                evaluated_at=datetime.fromisoformat(str(raw["evaluated_at"])),
+                control_date=date.fromisoformat(str(raw["control_date"])),
+                session_file_sha256=str(raw["session_file_sha256"]),
+                provider_freshness_sha256=(
+                    str(raw["provider_freshness_sha256"])
+                    if raw["provider_freshness_sha256"] is not None
+                    else None
+                ),
+                latest_worker_cycle_sha256=(
+                    str(raw["latest_worker_cycle_sha256"])
+                    if raw["latest_worker_cycle_sha256"] is not None
+                    else None
+                ),
+                checks=checks,
+                ready=bool(raw["ready"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("invalid operational readiness evidence") from error
+        if report.canonical_bytes != path.read_bytes():
+            raise ValueError("operational readiness evidence is not canonical")
+        return report
 
 
 class OperationalReadinessEvaluator:

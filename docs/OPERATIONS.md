@@ -1025,6 +1025,29 @@ contain zero intended orders. Its state, artifacts, worker cycles, and
 post-completion Phase 6 report use an isolated data lake; the success evidence
 sets `trigger=manual` and `counts_toward_phase6=false`.
 
+The first scheduled proof specification cannot be prepared normally. Stage it
+with `workflow prepare --stage-for-admission` to a path outside the worker
+inbox, then publish it through the admission boundary:
+
+```powershell
+uv run qee workflow admit-proof-start `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --proof-start 2026-07-30 `
+  --readiness-file .\controls\2026-07-30-readiness.json `
+  --smoke-file .\controls\2026-07-29-smoke.json `
+  --workflow-spec .\staging\2026-07-30.json `
+  --inbox-output .\workflow-inbox\2026-07-30.json `
+  --output .\controls\2026-07-30-proof-start-admission.json
+```
+
+Admission strictly reloads canonical evidence, requires every readiness check
+to pass for the same calendar and proof-start date, limits readiness age to 30
+minutes by default, requires the credentialed manual zero-order smoke to
+precede the proof, and accepts only a `scheduled` workflow for the exact first
+session. Failure writes neither the inbox specification nor admission evidence.
+Successful evidence hashes the calendar, readiness, smoke, and admitted
+workflow. Subsequent proof sessions use normal `workflow prepare`.
+
 Use `--once` for a deployment smoke test. Every scan writes a
 content-addressed heartbeat under `manifests/job=workflow-worker/cycles`,
 including empty inboxes and invalid specifications. A bad spec is reported

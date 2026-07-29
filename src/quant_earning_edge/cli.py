@@ -103,7 +103,10 @@ from quant_earning_edge.orchestration import (
     DailyWorkflowSpecGenerator,
     DailyWorkflowState,
     DailyWorkflowStore,
+    NoTradeSmokeEvidence,
     OperationalReadinessEvaluator,
+    OperationalReadinessReport,
+    ProofStartAdmitter,
     StageStatus,
     WorkflowHealthEvaluator,
     WorkflowHealthReport,
@@ -2510,12 +2513,30 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
         typer.Option(min=1, max=7200, help="Per-command timeout."),
     ] = 1800,
     env_file: EnvFileOption = None,
+    stage_for_admission: Annotated[
+        bool,
+        typer.Option(
+            help="Stage the first scheduled proof spec for separate admission.",
+        ),
+    ] = False,
 ) -> None:
     """Prepare rolling Phase 6 controls and one self-refreshing workflow spec."""
     selected_date = _parse_date(trade_date, option="--trade-date")
     selected_start = _parse_date(proof_start, option="--proof-start")
     selected_end = _parse_date(proof_end, option="--proof-end")
     try:
+        is_first_scheduled = (
+            selected_date == selected_start and trigger is WorkflowTrigger.SCHEDULED
+        )
+        if is_first_scheduled and not stage_for_admission:
+            raise ValueError(
+                "the first scheduled proof session requires --stage-for-admission "
+                "and workflow admit-proof-start"
+            )
+        if stage_for_admission and not is_first_scheduled:
+            raise ValueError(
+                "--stage-for-admission is only valid for the first scheduled proof session"
+            )
         strategy = load_strategy_config(strategy_config)
         artifact_root.mkdir(parents=True, exist_ok=True)
         control_root = (
@@ -2628,6 +2649,87 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
                 else None
             ),
             "breaker_mode": "self_refreshing",
+        }
+    )
+
+
+@workflow_app.command("admit-proof-start")
+def admit_proof_start(  # noqa: PLR0917 - explicit fail-closed admission boundary.
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative proof sessions."),
+    ],
+    proof_start: Annotated[str, typer.Option(help="First proof session (YYYY-MM-DD).")],
+    readiness_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Passing readiness evidence."),
+    ],
+    smoke_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Successful no-trade smoke evidence."),
+    ],
+    workflow_spec: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Staged first scheduled workflow."),
+    ],
+    inbox_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Admitted worker-inbox specification."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable proof-start admission evidence."),
+    ],
+    maximum_readiness_age_minutes: Annotated[
+        int,
+        typer.Option(min=1, max=120, help="Maximum readiness age at admission."),
+    ] = 30,
+    admitted_at: Annotated[
+        str | None,
+        typer.Option(help="Offset-aware admission time; defaults to current UTC."),
+    ] = None,
+) -> None:
+    """Publish the first scheduled workflow only after readiness and smoke pass."""
+    selected_start = _parse_date(proof_start, option="--proof-start")
+    try:
+        if workflow_spec.resolve() == inbox_output.resolve():
+            raise ValueError("staged workflow and admitted inbox output must differ")
+        selected_time = (
+            datetime.fromisoformat(admitted_at) if admitted_at is not None else datetime.now(UTC)
+        )
+        calendar = SessionFileStore.load(session_file)
+        readiness = OperationalReadinessReport.load(readiness_file)
+        smoke = NoTradeSmokeEvidence.load(smoke_file)
+        staged = WorkflowRunSpec.model_validate_json(workflow_spec.read_bytes())
+        if staged.canonical_bytes != workflow_spec.read_bytes():
+            raise ValueError("staged workflow specification is not canonical")
+        admission = ProofStartAdmitter().admit(
+            calendar=calendar,
+            proof_start=selected_start,
+            admitted_at=selected_time,
+            maximum_readiness_age=timedelta(minutes=maximum_readiness_age_minutes),
+            readiness=readiness,
+            smoke=smoke,
+            workflow_spec=staged,
+        )
+        ProofStartAdmitter.write(
+            admission,
+            workflow_spec=staged,
+            inbox_output=inbox_output,
+            evidence_output=output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="proof-start admission") from error
+    _echo_json(
+        {
+            "admitted": True,
+            "proof_start": admission.proof_start,
+            "inbox_output": str(inbox_output.resolve()),
+            "output": str(output.resolve()),
+            "sha256": admission.sha256,
+            "workflow_spec_sha256": admission.workflow_spec_sha256,
+            "readiness_sha256": admission.readiness_sha256,
+            "smoke_sha256": admission.smoke_sha256,
         }
     )
 

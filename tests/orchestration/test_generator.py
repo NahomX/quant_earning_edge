@@ -309,6 +309,7 @@ def test_prepare_cli_builds_phase6_controls_and_self_refreshing_workflow(
         str(output),
         "--worker-id",
         "paper-worker-1",
+        "--stage-for-admission",
         "--env-file",
         str(env_file),
     ]
@@ -444,6 +445,7 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
             str(output),
             "--worker-id",
             "paper-worker-1",
+            "--stage-for-admission",
             "--env-file",
             str(env_file),
         ],

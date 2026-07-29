@@ -367,6 +367,14 @@ bytes exactly. A self-consistent hand-authored pass is rejected; the verified
 report SHA-256 is embedded in the model artifact and is mandatory when that
 artifact is reloaded for live scoring.
 
+Automated proof preparation discovers exactly one
+`production-source-<hash>.json` beside the selected model evidence and captures
+the manifest plus every bound file in the daily workflow. Missing or ambiguous
+lineage stops preparation. Terminal report verification rechecks all hashes and
+performs the deep gate/refit reconstruction once per unchanged model manifest
+for the verification process; every daily report must reference that captured
+attestation.
+
 Re-run the complete attestation independently at any time:
 
 ```powershell

@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 394 automated tests pass.
+- 395 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 101 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -53,6 +53,10 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Each production refit emits a content-addressed source manifest binding the
   model/evidence, training datasets, reconstructed Phase 4 sources, split plan,
   and Optuna study; replaying it must reproduce the exact booster and evidence.
+- Automated proof workflows require the unique manifest adjacent to the chosen
+  model and capture its complete lineage. Terminal daily-report verification
+  validates every captured hash and independently reconstructs the research
+  gate and production refit before accepting model scores.
 - A bounded calibration allocation prevents the fractional-Kelly cold-start
   deadlock; only matched per-trade returns enter its 60-day history, and mature
   negative/undefined edge still shuts risk off.

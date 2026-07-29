@@ -148,8 +148,14 @@ def test_production_model_reproduces_from_complete_training_lineage(
     manifest, model, _ = _fixture(tmp_path, monkeypatch)
 
     reproduced = ProductionModelSourceCapture.reproduce(manifest)
+    model_evidence, model_file = manifest.model_paths()
+    discovered = ProductionModelSourceCapture.find_for_model(
+        model_evidence=model_evidence,
+        model_file=model_file,
+    )
 
     assert reproduced == model
+    assert discovered == manifest
     assert manifest.lineage_paths[0] == manifest.path
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
@@ -47,7 +48,11 @@ if TYPE_CHECKING:
         DailyOrderPlanningSpec,
         FrozenDailyOrders,
     )
-    from quant_earning_edge.signals.live_planning import LivePlanningSourceSpec
+    from quant_earning_edge.signals.live_planning import (
+        LivePlanningSourceSpec,
+        ScoredPlanningArtifact,
+    )
+    from quant_earning_edge.signals.production_model import ProductionModelArtifact
     from quant_earning_edge.universe import EventCandidateManifest
 
 
@@ -232,6 +237,12 @@ class Phase6DailyReportVerifier:
             evidence_path=model_evidence_paths[0],
             model_path=model_paths[0],
         )
+        Phase6DailyReportVerifier._verify_production_model_generation(
+            state=state,
+            model=model,
+            scored=scored,
+            paths_by_sha=paths_by_sha,
+        )
         feature_paths = tuple(sorted((paths[0] for paths in feature_matches), key=str))
         Phase6DailyReportVerifier._verify_feature_generation(
             state=state,
@@ -245,6 +256,52 @@ class Phase6DailyReportVerifier:
         )
         if reproduced.canonical_bytes != scored.canonical_bytes:
             raise ValueError("scored planning differs from captured source/model/features")
+
+    @staticmethod
+    def _verify_production_model_generation(
+        *,
+        state: DailyWorkflowState,
+        model: ProductionModelArtifact,
+        scored: ScoredPlanningArtifact,
+        paths_by_sha: dict[str, list[Path]],
+    ) -> None:
+        from quant_earning_edge.signals.production_source import (  # noqa: PLC0415
+            ProductionModelSourceManifest,
+        )
+
+        model_sources = []
+        for stage in state.stages:
+            for artifact in stage.output_artifacts:
+                candidate = Path(artifact.path).resolve()
+                if candidate.suffix != ".json":
+                    continue
+                try:
+                    manifest = ProductionModelSourceManifest.load(candidate)
+                except (OSError, ValueError):
+                    continue
+                if (
+                    manifest.raw["model_evidence"]["sha256"] == scored.model_artifact_sha256
+                    and manifest.raw["model_file"]["sha256"] == scored.model_sha256
+                ):
+                    model_sources.append(manifest)
+        if len(model_sources) != 1:
+            raise ValueError("production model must bind to one captured source manifest")
+        model_source = model_sources[0]
+        if any(
+            path
+            not in paths_by_sha.get(
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+                [],
+            )
+            for path in model_source.lineage_paths
+        ):
+            raise ValueError("production model source lineage is not workflow-captured")
+        reproduced_identity = _reproduce_production_model_source(
+            str(model_source.path),
+            hashlib.sha256(model_source.path.read_bytes()).hexdigest(),
+        )
+        if reproduced_identity != (model.sha256, model.model_sha256):
+            raise ValueError("captured production model differs from reconstructed sources")
 
     @staticmethod
     def _verify_feature_generation(
@@ -1029,3 +1086,21 @@ class Phase6DailyReportVerifier:
                 NbboReplayEvidence.load(evidence_directory / file_name)
                 for file_name in reproduced_index.evidence_files
             )
+
+
+@lru_cache(maxsize=8)
+def _reproduce_production_model_source(
+    manifest_path: str,
+    manifest_sha256: str,
+) -> tuple[str, str]:
+    """Perform one deep model refit per unchanged source manifest in this process."""
+    from quant_earning_edge.signals.production_source import (  # noqa: PLC0415
+        ProductionModelSourceCapture,
+        ProductionModelSourceManifest,
+    )
+
+    path = Path(manifest_path).resolve()
+    if hashlib.sha256(path.read_bytes()).hexdigest() != manifest_sha256:
+        raise ValueError("production model source manifest changed during verification")
+    model = ProductionModelSourceCapture.reproduce(ProductionModelSourceManifest.load(path))
+    return model.sha256, model.model_sha256

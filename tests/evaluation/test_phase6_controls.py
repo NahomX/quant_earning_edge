@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from functools import cache
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -90,6 +91,10 @@ from quant_earning_edge.signals import (
     load_strategy_config,
     strategy_file_sha256,
 )
+from quant_earning_edge.signals.production_source import (
+    ProductionModelSourceCapture,
+    ProductionModelSourceManifest,
+)
 from quant_earning_edge.universe import (
     CandidateObservation,
     EventCandidateJob,
@@ -128,16 +133,72 @@ def _production_model() -> ProductionModelArtifact:
     )
 
 
+@pytest.fixture(autouse=True)
+def _use_fixture_model_reconstruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ProductionModelSourceCapture,
+        "reproduce",
+        staticmethod(lambda manifest: _production_model()),
+    )
+
+
+def _write_model_source_fixture(
+    daily: Path,
+    *,
+    model_evidence: Path,
+    model_file: Path,
+) -> ProductionModelSourceManifest:
+    def entry(path: Path) -> dict[str, str]:
+        resolved = path.resolve()
+        return {
+            "path": resolved.as_posix(),
+            "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        }
+
+    root = daily / "production-model-lineage"
+    root.mkdir(parents=True, exist_ok=True)
+    sources = []
+    for name in ("gate", "aggregation", "assembly", "split", "study"):
+        path = root / f"{name}.json"
+        path.write_text(name, encoding="utf-8")
+        sources.append(path)
+    strategy = Path("configs/strategies/earnings_v1.yaml").resolve()
+    dataset = Path(_MODEL_TEMP.name) / "training.parquet"
+    raw = {
+        "schema_version": 1,
+        "model_evidence": entry(model_evidence),
+        "model_file": entry(model_file),
+        "dataset_files": [entry(dataset)],
+        "phase4_gate": entry(sources[0]),
+        "phase4_aggregation": entry(sources[1]),
+        "phase4_source_files": sorted(
+            (entry(sources[2]), entry(strategy)),
+            key=lambda item: item["path"],
+        ),
+        "split_plan": entry(sources[3]),
+        "hyperparameter_study": entry(sources[4]),
+    }
+    encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    path = model_evidence.parent / "production-source-fixture.json"
+    path.write_bytes(encoded)
+    return ProductionModelSourceManifest.load(path)
+
+
 def _write_scored_planning(
     daily: Path,
     *,
     source: LivePlanningSourceSpec,
     feature_files: tuple[Path, ...] = (),
-) -> tuple[DailyOrderPlanningSpec, tuple[Path, ...], Path]:
+) -> tuple[DailyOrderPlanningSpec, tuple[Path, ...], Path, tuple[Path, ...]]:
     model = _production_model()
     model_path, model_evidence_path = ProductionModelTrainer.write(
         model,
         daily / "production-model",
+    )
+    model_source = _write_model_source_fixture(
+        daily,
+        model_evidence=model_evidence_path,
+        model_file=model_path,
     )
     source_path = daily / "live-source.json"
     source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +219,16 @@ def _write_scored_planning(
         scored.planning,
         (source_path, model_evidence_path, model_path, *feature_files),
         scored_path,
+        tuple(
+            path
+            for path in model_source.lineage_paths
+            if path
+            not in {
+                model_evidence_path.resolve(),
+                model_path.resolve(),
+                Path("configs/strategies/earnings_v1.yaml").resolve(),
+            }
+        ),
     )
 
 
@@ -656,7 +727,7 @@ def _no_trade_replay_sources(
     *,
     session_date: date,
     report_initial_cash: float = 100_000,
-) -> dict[str, Path]:
+) -> dict[str, Any]:
     strategy = Path("configs/strategies/earnings_v1.yaml").resolve()
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
     frozen_path = daily / "frozen-daily-orders.json"
@@ -695,9 +766,11 @@ def _no_trade_replay_sources(
         split_path,
         dividend_path,
     ) = live_capture_paths
-    planning, planning_sources, planning_evidence_path = _write_scored_planning(
-        daily,
-        source=planning_source,
+    planning, planning_sources, planning_evidence_path, model_lineage_paths = (
+        _write_scored_planning(
+            daily,
+            source=planning_source,
+        )
     )
     _, model_evidence_path, model_path = planning_sources
     planning_path = daily / "daily-order-planning.json"
@@ -808,6 +881,7 @@ def _no_trade_replay_sources(
         "live_source_evidence": live_evidence_path,
         "model_evidence": model_evidence_path,
         "model_file": model_path,
+        "model_lineage": model_lineage_paths,
         "planning_evidence": planning_evidence_path,
         "frozen": frozen_path,
         "breaker": breaker_path,
@@ -865,6 +939,7 @@ def _complete_source_workflow(
                 sources["live_source_evidence"],
                 sources["model_evidence"],
                 sources["model_file"],
+                *sources["model_lineage"],
             )
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (
@@ -925,6 +1000,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_event_lineage: bool = True,
     capture_calendar_lineage: bool = True,
     capture_feature_lineage: bool = True,
+    capture_model_lineage: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -1111,10 +1187,12 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         *feature_source.provider_paths(data_lake_root=feature_layout.root),
         *feature_source.earnings_lineage_paths(data_lake_root=feature_layout.root),
     )
-    planning, planning_sources, planning_evidence_path = _write_scored_planning(
-        daily,
-        source=planning_source,
-        feature_files=(feature_path,),
+    planning, planning_sources, planning_evidence_path, model_lineage_paths = (
+        _write_scored_planning(
+            daily,
+            source=planning_source,
+            feature_files=(feature_path,),
+        )
     )
     _, model_evidence_path, model_path, captured_feature_path = planning_sources
     frozen = LiveOrderPlanner(
@@ -1347,6 +1425,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                         *((live_evidence_path,) if capture_live_source_evidence else ()),
                         model_evidence_path,
                         model_path,
+                        *(model_lineage_paths if capture_model_lineage else ()),
                         captured_feature_path,
                         *(feature_lineage_paths if capture_feature_lineage else ()),
                     )
@@ -1826,6 +1905,25 @@ def test_daily_report_verifier_requires_feature_generation_lineage(
         tmp_path=tmp_path,
         session_date=session_date,
         capture_feature_lineage=False,
+    )
+
+    with pytest.raises(ValueError, match="captured source manifest"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_production_model_lineage(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_model_lineage=False,
     )
 
     with pytest.raises(ValueError, match="captured source manifest"):

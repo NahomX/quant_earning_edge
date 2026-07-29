@@ -29,6 +29,45 @@ def _strategy_path() -> Path:
     return Path(__file__).parents[2] / "configs/strategies/earnings_v1.yaml"
 
 
+def _write_model_source_fixture(
+    *,
+    model_evidence: Path,
+    model_file: Path,
+    dataset: Path,
+    root: Path,
+) -> Path:
+    def entry(path: Path) -> dict[str, str]:
+        resolved = path.resolve()
+        return {
+            "path": resolved.as_posix(),
+            "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        }
+
+    sources = []
+    for name in ("gate", "aggregation", "assembly", "split", "study"):
+        path = root / f"model-source-{name}.json"
+        path.write_text(name, encoding="utf-8")
+        sources.append(path)
+    raw = {
+        "schema_version": 1,
+        "model_evidence": entry(model_evidence),
+        "model_file": entry(model_file),
+        "dataset_files": [entry(dataset)],
+        "phase4_gate": entry(sources[0]),
+        "phase4_aggregation": entry(sources[1]),
+        "phase4_source_files": sorted(
+            (entry(sources[2]), entry(_strategy_path())),
+            key=lambda item: item["path"],
+        ),
+        "split_plan": entry(sources[3]),
+        "hyperparameter_study": entry(sources[4]),
+    }
+    encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    path = model_evidence.parent / "production-source-fixture.json"
+    path.write_bytes(encoded)
+    return path
+
+
 def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     trade_date = date(2026, 7, 28)
     decision = datetime(2026, 7, 27, 22, 0, tzinfo=UTC)
@@ -447,6 +486,10 @@ def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
             tmp_path / "feature-source.json",
             tmp_path / "feature-input.parquet",
         ),
+        model_lineage_files=(
+            tmp_path / "production-source.json",
+            tmp_path / "training.parquet",
+        ),
     )
 
     spec = DailyWorkflowSpecGenerator().generate(
@@ -516,6 +559,12 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
         phase4_gate_sha256="f" * 64,
     )
     model_file, model_evidence = ProductionModelTrainer.write(model, tmp_path / "models")
+    model_source_path = _write_model_source_fixture(
+        model_evidence=model_evidence,
+        model_file=model_file,
+        dataset=training,
+        root=tmp_path,
+    )
     decision = datetime(2026, 7, 27, 22, tzinfo=UTC)
     features = tmp_path / "features.parquet"
     pq.write_table(  # type: ignore[no-untyped-call]
@@ -672,4 +721,5 @@ def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
         "model",
         "capture-live-source",
     )
+    assert model_source_path.resolve() in automated_workflow.stages[0].output_files
     assert automated_workflow.stages[0].not_before == datetime(2026, 7, 28, 1, 30, tzinfo=UTC)

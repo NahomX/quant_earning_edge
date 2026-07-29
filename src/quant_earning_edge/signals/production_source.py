@@ -126,6 +126,26 @@ class ProductionModelSourceCapture:
     """Write and independently verify a complete production refit lineage."""
 
     @staticmethod
+    def find_for_model(
+        *,
+        model_evidence: Path,
+        model_file: Path,
+    ) -> ProductionModelSourceManifest:
+        """Resolve exactly one adjacent source manifest for the selected model."""
+        expected = (model_evidence.resolve(), model_file.resolve())
+        roots = {expected[0].parent, expected[1].parent}
+        matches = []
+        for path in sorted(
+            {candidate for root in roots for candidate in root.glob("production-source-*.json")}
+        ):
+            manifest = ProductionModelSourceManifest.load(path)
+            if manifest.model_paths() == expected:
+                matches.append(manifest)
+        if len(matches) != 1:
+            raise ValueError("production model lacks unique retained source lineage")
+        return matches[0]
+
+    @staticmethod
     def write(
         *,
         output_directory: Path,

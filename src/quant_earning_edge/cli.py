@@ -3658,6 +3658,10 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                     )
                 )
             )
+            model_source = ProductionModelSourceCapture.find_for_model(
+                model_evidence=model_evidence,
+                model_file=model_file,
+            )
             automated_planning = AutomatedPlanningInputs(
                 candidate_file=candidate_file,
                 candidate_lineage_files=candidate_lineage_files,
@@ -3669,6 +3673,7 @@ def prepare_daily_workflow(  # noqa: PLR0912,PLR0915,PLR0917 - complete boundary
                 initial_cash=initial_cash,
                 capture_not_before=capture_not_before,
                 feature_lineage_files=feature_lineage_files,
+                model_lineage_files=model_source.lineage_paths,
             )
             planning = None
         if planning is not None and planning.trade_date != selected_date:

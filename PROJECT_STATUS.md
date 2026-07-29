@@ -65,6 +65,10 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Every included daily report also requires a succeeded, captured paper
   reconciliation bound to the same replay evidence; unresolved operational
   breaks cannot enter the terminal verdict.
+- A worker accepts a post-completion marker only after independently
+  reproducing its workflow health, rolling controls, daily source evidence,
+  and terminal gate bytes; hash-consistent arbitrary JSON cannot suppress
+  finalization.
 - Paper submission is locked to Alpaca's paper host. Circuit breakers and
   reconciliation failures halt new orders.
 

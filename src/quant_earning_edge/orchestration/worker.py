@@ -200,6 +200,7 @@ class WorkflowInboxWorker:
         self._worker_id = normalized
         self._clock = clock
         self._executor = executor
+        self._verified_finalizations: dict[Path, str] = {}
 
     def run_once(self, inbox: Path) -> tuple[WorkerCycleReport, Path]:
         """Run every JSON spec in lexical order and persist one cycle heartbeat."""
@@ -313,6 +314,9 @@ class WorkflowInboxWorker:
             marker,
             output_directory=output_directory,
             state_sha256=state_sha256,
+            artifact_root=artifact_root,
+            workflow_store=self._store,
+            verified_fingerprints=self._verified_finalizations,
         ):
             return None
         result = self._executor(
@@ -340,6 +344,9 @@ class WorkflowInboxWorker:
             marker,
             output_directory=output_directory,
             state_sha256=state_sha256,
+            artifact_root=artifact_root,
+            workflow_store=self._store,
+            verified_fingerprints=self._verified_finalizations,
         ):
             return "post-completion Phase 6 finalizer produced no intact manifest"
         return None
@@ -367,29 +374,45 @@ def _finalization_marker_is_intact(
     *,
     output_directory: Path,
     state_sha256: str,
+    artifact_root: Path,
+    workflow_store: DailyWorkflowStore,
+    verified_fingerprints: dict[Path, str],
 ) -> bool:
     try:
-        raw = json.loads(path.read_bytes())
-        if (
-            not isinstance(raw, dict)
-            or raw.get("schema_version") != 1
-            or raw.get("workflow_state_sha256") != state_sha256
-        ):
+        from quant_earning_edge.evaluation.phase6_finalize import (  # noqa: PLC0415
+            Phase6CompletionFinalizer,
+            Phase6FinalizationEvidence,
+        )
+
+        evidence = Phase6FinalizationEvidence.load(path)
+        if evidence.workflow_state_sha256 != state_sha256:
             return False
-        for path_key, hash_key in (
-            ("health_path", "health_sha256"),
-            ("aggregation_path", "aggregation_sha256"),
-            ("gate_report_path", "gate_report_sha256"),
+        linked_payloads = []
+        for path_key, digest in (
+            (evidence.health_path, evidence.health_sha256),
+            (evidence.aggregation_path, evidence.aggregation_sha256),
+            (evidence.gate_report_path, evidence.gate_report_sha256),
         ):
-            artifact = Path(str(raw[path_key])).resolve()
-            digest = str(raw[hash_key])
+            artifact = Path(path_key).resolve()
+            payload = artifact.read_bytes()
             if (
-                not artifact.is_relative_to(output_directory.resolve())
-                or not artifact.is_file()
-                or not _is_sha256(digest)
-                or hashlib.sha256(artifact.read_bytes()).hexdigest() != digest
+                artifact.parent != output_directory.resolve()
+                or hashlib.sha256(payload).hexdigest() != digest
             ):
                 return False
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            linked_payloads.append(payload)
+        fingerprint = hashlib.sha256(path.read_bytes() + b"".join(linked_payloads)).hexdigest()
+        resolved_marker = path.resolve()
+        if verified_fingerprints.get(resolved_marker) == fingerprint:
+            return True
+        Phase6CompletionFinalizer().verify(
+            manifest_path=path,
+            artifact_root=artifact_root,
+            output_directory=output_directory,
+            workflow_store=workflow_store,
+            expected_state_sha256=state_sha256,
+        )
+        verified_fingerprints[resolved_marker] = fingerprint
+    except (OSError, TypeError, ValueError, RuntimeError):
         return False
     return True

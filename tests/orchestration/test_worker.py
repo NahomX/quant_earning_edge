@@ -6,10 +6,12 @@ import hashlib
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
+from quant_earning_edge.evaluation import Phase6CompletionFinalizer
 from quant_earning_edge.orchestration import (
     DailyWorkflowStore,
     QeeCommandResult,
@@ -17,6 +19,9 @@ from quant_earning_edge.orchestration import (
     WorkflowInboxWorker,
     WorkflowStage,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 _PREFIXES = {
     WorkflowStage.FREEZE_INPUTS: ("calendar", "sessions"),
@@ -134,7 +139,10 @@ def test_worker_cli_once_writes_empty_inbox_heartbeat(tmp_path: Path) -> None:
     assert payload["all_complete"]
 
 
-def test_worker_finalizes_phase6_once_after_workflow_completion(tmp_path: Path) -> None:
+def test_worker_finalizes_phase6_once_after_workflow_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     spec_path = _write_spec(inbox)
@@ -160,6 +168,11 @@ def test_worker_finalizes_phase6_once_after_workflow_completion(tmp_path: Path) 
     spec_path.write_text(json.dumps(raw), encoding="utf-8")
     finalizer_calls = 0
     data_lake = tmp_path / "lake"
+    monkeypatch.setattr(
+        Phase6CompletionFinalizer,
+        "verify",
+        lambda *_, **__: None,
+    )
 
     def execute(
         argv: tuple[str, ...],
@@ -185,6 +198,7 @@ def test_worker_finalizes_phase6_once_after_workflow_completion(tmp_path: Path) 
                 json.dumps(
                     {
                         "schema_version": 1,
+                        "trade_date": "2026-07-28",
                         "workflow_state_sha256": state.sha256,
                         "health_path": str(artifacts["health"][0]),
                         "health_sha256": artifacts["health"][1],
@@ -192,6 +206,8 @@ def test_worker_finalizes_phase6_once_after_workflow_completion(tmp_path: Path) 
                         "aggregation_sha256": artifacts["aggregation"][1],
                         "gate_report_path": str(artifacts["gate_report"][0]),
                         "gate_report_sha256": artifacts["gate_report"][1],
+                        "verdict": "insufficient-evidence",
+                        "passes_phase6_gate": False,
                     }
                 ),
                 encoding="utf-8",
@@ -212,10 +228,16 @@ def test_worker_finalizes_phase6_once_after_workflow_completion(tmp_path: Path) 
     )
     first, _ = worker.run_once(inbox)
     second, _ = worker.run_once(inbox)
+    (daily_root / "post-completion" / "gate_report.json").write_text(
+        '{"tampered":true}',
+        encoding="utf-8",
+    )
+    third, _ = worker.run_once(inbox)
 
     assert first.all_complete
     assert second.all_complete
-    assert finalizer_calls == 1
+    assert third.all_complete
+    assert finalizer_calls == 2
 
 
 def test_worker_emits_one_attention_record_for_expired_order_window(

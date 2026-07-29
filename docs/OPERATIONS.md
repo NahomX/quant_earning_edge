@@ -1344,6 +1344,18 @@ cycle incomplete and is retried; an intact manifest suppresses duplicate
 bootstrap work. This post-completion report is the one that can count the
 current session's scheduled completion.
 
+Marker integrity is semantic, not merely hash-based. Before skipping a
+completed finalization on a later scan, the worker reloads the exact latest
+workflow state, reconstructs workflow health and rolling controls,
+independently verifies every included daily report from its captured sources
+and clean paper reconciliation, and recalculates the terminal gate. The
+reconstructed canonical bytes must equal all three linked artifacts and the
+manifest verdict. Arbitrary JSON with self-consistent replacement hashes is
+rejected and finalization runs again. A persistent worker caches a successful
+semantic verification by the combined manifest/artifact fingerprint; unchanged
+later scans use hash checks, while a restart or any byte change forces full
+reproduction again.
+
 When `workflow worker --env-file` is used, dotenv settings are merged into a
 child-only subprocess environment. Existing process variables still take
 precedence, the parent environment is not mutated, and secrets never become

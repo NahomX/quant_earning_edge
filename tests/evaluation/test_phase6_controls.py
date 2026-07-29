@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,7 @@ from quant_earning_edge.data import (
 from quant_earning_edge.data.clients import MarketSession, StockQuote
 from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
+    Phase6CompletionFinalizer,
     Phase6DailyReportVerifier,
     ReplaySessionAggregator,
 )
@@ -501,7 +503,33 @@ def test_finalize_phase6_refreshes_health_after_workflow_completion(
     gate = json.loads(Path(payload["gate_report_path"]).read_bytes())
     assert gate["scheduled_complete_session_count"] == 1
     assert gate["observed_session_count"] == 1
-    assert Path(payload["manifest_path"]).is_file()
+    manifest_path = Path(payload["manifest_path"])
+    verified = Phase6CompletionFinalizer().verify(
+        manifest_path=manifest_path,
+        artifact_root=artifact_root,
+        output_directory=output_directory,
+        workflow_store=store,
+        expected_state_sha256=state.sha256,
+    )
+    assert verified.report.canonical_bytes == Path(payload["gate_report_path"]).read_bytes()
+
+    forged_gate = output_directory / f"phase6-gate-{hashlib.sha256(b'{}').hexdigest()}.json"
+    forged_gate.write_bytes(b"{}")
+    forged_manifest = json.loads(manifest_path.read_bytes())
+    forged_manifest["gate_report_path"] = str(forged_gate)
+    forged_manifest["gate_report_sha256"] = hashlib.sha256(b"{}").hexdigest()
+    manifest_path.write_text(
+        json.dumps(forged_manifest, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="gate verdict does not reproduce"):
+        Phase6CompletionFinalizer().verify(
+            manifest_path=manifest_path,
+            artifact_root=artifact_root,
+            output_directory=output_directory,
+            workflow_store=store,
+            expected_state_sha256=state.sha256,
+        )
 
 
 def test_daily_report_verifier_rejects_rehashed_summary_not_matching_sources(

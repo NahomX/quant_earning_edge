@@ -42,12 +42,17 @@ class Phase4GateReproduction:
     plan_paths: tuple[Path, ...]
 
     @property
+    def strategy_path(self) -> Path:
+        assembly = Phase4AssemblyManifest.load(self.assembly_manifest_path)
+        return assembly.resolved_strategy_config(self.assembly_manifest_path)
+
+    @property
     def source_paths(self) -> tuple[Path, ...]:
         assembly = Phase4AssemblyManifest.load(self.assembly_manifest_path)
         return (
             self.aggregation_spec_path,
             self.assembly_manifest_path,
-            assembly.resolved_strategy_config(self.assembly_manifest_path),
+            self.strategy_path,
             self.walkforward_run_path,
             assembly.resolved_session_file(self.assembly_manifest_path),
             *assembly.resolved_candidate_files(self.assembly_manifest_path),

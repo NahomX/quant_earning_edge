@@ -353,7 +353,10 @@ that block. The command writes a content-addressed booster and canonical
 evidence containing the source hashes, exact feature order, causal date
 boundaries, partition counts, seed, LightGBM version, and model hash.
 The exact Optuna-selected parameters and immutable study SHA-256 are embedded
-as well. Production refitting rejects any study that does not match the
+as well. It also emits `production-source-<hash>.json`, which binds every
+training dataset, the Phase 4 gate/aggregation and complete assembly lineage,
+the split plan, study, booster, and model evidence. Replaying that manifest
+must regenerate the exact booster and evidence. Production refitting rejects any study that does not match the
 dataset, split plan, and current strategy configuration. The continuous proof
 queue rejects production artifacts without this study binding.
 The command independently rebuilds the Phase 4 event plans from their assembly
@@ -363,6 +366,13 @@ embedded in the report. The supplied report must match those reconstructed
 bytes exactly. A self-consistent hand-authored pass is rejected; the verified
 report SHA-256 is embedded in the model artifact and is mandatory when that
 artifact is reloaded for live scoring.
+
+Re-run the complete attestation independently at any time:
+
+```powershell
+uv run qee model verify-production-source `
+  --source-manifest .\data\models\earnings-v1-production\production-source-<hash>.json
+```
 
 ## Assemble the complete OOS Phase 4 history
 

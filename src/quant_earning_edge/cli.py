@@ -168,6 +168,10 @@ from quant_earning_edge.signals import (
     run_event_plan,
     strategy_file_sha256,
 )
+from quant_earning_edge.signals.production_source import (
+    ProductionModelSourceCapture,
+    ProductionModelSourceManifest,
+)
 from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
@@ -1321,12 +1325,23 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
             hyperparameter_study_sha256=study.sha256,
         )
         model_path, evidence_path = trainer.write(artifact, output_dir)
-    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        source_manifest = ProductionModelSourceCapture.write(
+            output_directory=output_dir,
+            model_evidence=evidence_path,
+            model_file=model_path,
+            dataset_files=dataset_files,
+            phase4_gate=phase4_gate,
+            phase4_aggregation=phase4_aggregation,
+            split_plan=split_plan,
+            hyperparameter_study=hyperparameter_study,
+        )
+    except (KeyError, OSError, ValidationError, ValueError, RuntimeError) as error:
         raise typer.BadParameter(str(error), param_hint="model inputs") from error
     _echo_json(
         {
             "model": str(model_path.resolve()),
             "evidence": str(evidence_path.resolve()),
+            "source_manifest": str(source_manifest.path),
             "artifact_sha256": artifact.sha256,
             "model_sha256": artifact.model_sha256,
             "training_cutoff": artifact.training_cutoff,
@@ -1335,6 +1350,35 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
             "hyperparameters_sha256": artifact.hyperparameters_sha256,
             "fit_count": artifact.fit_count,
             "validation_count": artifact.validation_count,
+        }
+    )
+
+
+@model_app.command("verify-production-source")
+def verify_production_model_source(
+    source_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Content-addressed production-model source manifest.",
+        ),
+    ],
+) -> None:
+    """Replay the Phase 4 gate and production refit from retained sources."""
+    try:
+        manifest = ProductionModelSourceManifest.load(source_manifest)
+        artifact = ProductionModelSourceCapture.reproduce(manifest)
+    except (KeyError, OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="production source") from error
+    _echo_json(
+        {
+            "source_manifest": str(manifest.path),
+            "artifact_sha256": artifact.sha256,
+            "model_sha256": artifact.model_sha256,
+            "phase4_gate_sha256": artifact.phase4_gate_sha256,
+            "hyperparameter_study_sha256": artifact.hyperparameter_study_sha256,
+            "verified": True,
         }
     )
 

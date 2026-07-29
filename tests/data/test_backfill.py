@@ -111,7 +111,7 @@ class CapturingBarsProvider:
                     "t": int(
                         (
                             datetime.combine(session, datetime.min.time(), tzinfo=UTC)
-                            + timedelta(hours=4)
+                            + timedelta(hours=16)
                         ).timestamp()
                         * 1000
                     ),
@@ -232,6 +232,33 @@ def test_backfill_resumes_batches_and_keeps_silver_content_stable(tmp_path: Path
     assert len(final_paths) == 4
     assert set(initial_paths).issubset(final_paths)
     assert store.successful_batch_indices(plan.plan_id) == frozenset({0, 1})
+
+
+def test_backfill_resume_rejects_event_rewritten_under_original_path(tmp_path: Path) -> None:
+    layout = LakehouseLayout(tmp_path)
+    store = BarBackfillStore(layout)
+    session = date(2026, 7, 20)
+    plan = store.prepare_plan(
+        symbols=("AAPL",),
+        start_date=session,
+        end_date=session,
+        batch_size=1,
+        created_at=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    BarBackfillJob(
+        provider=FakeBarsProvider(sessions=(session,)),
+        silver_writer=SilverWriter(layout),
+        store=store,
+        clock=Clock(),
+        attempt_id_factory=lambda: "immutable-attempt",
+    ).run(plan)
+    event_path = next((tmp_path / "manifests").rglob("*-success.json"))
+    raw = json.loads(event_path.read_bytes())
+    raw["symbols"] = ["MSFT"]
+    event_path.write_bytes(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(ValueError, match="immutable plan contract"):
+        store.successful_batch_indices(plan.plan_id)
 
 
 def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> None:
@@ -370,11 +397,12 @@ def test_coverage_requires_full_batches_five_years_and_1200_sessions(
         if cursor.weekday() < 5:
             sessions.append(cursor)
         cursor += timedelta(days=1)
-    provider = FakeBarsProvider(sessions=tuple(sessions))
+    provider = CapturingBarsProvider(layout, tuple(sessions))
     BarBackfillJob(
         provider=provider,
         silver_writer=SilverWriter(layout),
         store=store,
+        source_capture=DailyBarsSourceCapture(layout),
         clock=Clock(),
         attempt_id_factory=lambda: "coverage-attempt",
     ).run(plan)
@@ -392,6 +420,74 @@ def test_coverage_requires_full_batches_five_years_and_1200_sessions(
         tmp_path / "manifests" / "job=bars-backfill" / f"plan={plan.plan_id}" / "coverage"
     )
     assert len(list(coverage_root.glob("coverage-*.json"))) == 1
+    coverage_path = next(coverage_root.glob("coverage-*.json"))
+    coverage_path.write_bytes(b"{}")
+    with pytest.raises(RuntimeError, match="coverage collision"):
+        BarCoverageAuditor(layout=layout, store=store).audit(
+            plan,
+            expected_sessions=tuple(sessions),
+        )
+
+
+def test_coverage_rejects_completed_batch_without_plan_bound_provider_lineage(
+    tmp_path: Path,
+) -> None:
+    layout = LakehouseLayout(tmp_path)
+    store = BarBackfillStore(layout)
+    session = date(2026, 7, 20)
+    plan = store.prepare_plan(
+        symbols=("AAPL",),
+        start_date=session,
+        end_date=session,
+        batch_size=1,
+        created_at=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    BarBackfillJob(
+        provider=FakeBarsProvider(sessions=(session,)),
+        silver_writer=SilverWriter(layout),
+        store=store,
+        clock=Clock(),
+        attempt_id_factory=lambda: "unbound-attempt",
+    ).run(plan)
+
+    with pytest.raises(ValueError, match="lack plan-bound Polygon source lineage"):
+        BarCoverageAuditor(layout=layout, store=store).audit(
+            plan,
+            expected_sessions=(session,),
+        )
+
+
+def test_coverage_rejects_success_event_detached_from_source_artifacts(
+    tmp_path: Path,
+) -> None:
+    layout = LakehouseLayout(tmp_path)
+    store = BarBackfillStore(layout)
+    session = date(2026, 7, 20)
+    plan = store.prepare_plan(
+        symbols=("AAPL",),
+        start_date=session,
+        end_date=session,
+        batch_size=1,
+        created_at=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    BarBackfillJob(
+        provider=CapturingBarsProvider(layout, (session,)),
+        silver_writer=SilverWriter(layout),
+        store=store,
+        source_capture=DailyBarsSourceCapture(layout),
+        clock=Clock(),
+        attempt_id_factory=lambda: "detached-attempt",
+    ).run(plan)
+    event_path = next((tmp_path / "manifests").rglob("*-success.json"))
+    raw = json.loads(event_path.read_bytes())
+    raw["artifact_sha256"] = ["0" * 64]
+    event_path.write_bytes(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(ValueError, match="uniquely match its success-event artifacts"):
+        BarCoverageAuditor(layout=layout, store=store).audit(
+            plan,
+            expected_sessions=(session,),
+        )
 
 
 def test_coverage_reports_missing_sessions_and_rejects_inferred_empty_calendar(

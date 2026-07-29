@@ -897,7 +897,10 @@ uv run qee backfill bars `
 Successful batches are skipped on the next invocation. Failed attempts remain
 as evidence. Retries reuse the plan's fixed ingestion timestamp and therefore
 cannot create different content-addressed Parquet files solely because time
-passed. Every successful batch also emits a raw-Polygon-to-Silver source
+passed. The plan and every append-only attempt event are reloaded from their
+canonical bytes and checked against their immutable path, batch, symbols,
+timestamps, status fields, and artifact hashes before resume decisions are
+made. Every successful batch also emits a raw-Polygon-to-Silver source
 manifest, so later historical feature and label materialization rejects
 unattested backfill partitions.
 
@@ -930,7 +933,13 @@ uv run qee backfill coverage `
 
 Readiness requires every batch, no missing symbol/session pairs, a five-year
 date span, and at least 1,200 explicit sessions. It never infers the expected
-calendar from the data being audited.
+calendar from the data being audited. It also does not scan ambient Silver
+partitions. For each successful batch it requires matching plan-bound Polygon
+source lineage, independently rebuilds Silver in an isolated temporary lake,
+matches the rebuilt logical artifact hashes and row count to the success event,
+and counts sessions only from those reconstructed rows. A row imported by
+another job, a detached success event, or a modified coverage report therefore
+fails closed.
 
 ## Evaluate paper-order circuit breakers
 

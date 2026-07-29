@@ -7,22 +7,30 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
-from quant_earning_edge.data.silver import DAILY_BAR_SESSION_CLOSE_15M
-from quant_earning_edge.data.store import DuckDBStore
+import pyarrow.parquet as pq
+
+from quant_earning_edge.data.bars_source import (
+    DailyBarsSourceCapture,
+    DailyBarsSourceManifest,
+)
+from quant_earning_edge.data.layout import LakehouseLayout
+from quant_earning_edge.data.silver import (
+    DAILY_BAR_SESSION_CLOSE_15M,
+    DAILY_BARS_SCHEMA,
+)
 
 MIN_FIVE_YEAR_SESSIONS = 1_200
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
-    from quant_earning_edge.data.bars_source import DailyBarsSourceCapture
     from quant_earning_edge.data.bronze import BronzeArtifact
     from quant_earning_edge.data.clients.polygon import EquityBar
-    from quant_earning_edge.data.layout import LakehouseLayout
     from quant_earning_edge.data.silver import SilverArtifact, SilverWriter
 
 
@@ -234,29 +242,39 @@ class BarBackfillStore:
 
     def write_event(self, event: BackfillBatchEvent) -> Path:
         """Append one batch attempt without replacing prior evidence."""
+        plan = self.load_plan(event.plan_id)
+        _validate_event(event, plan=plan)
         root = self._plan_root(event.plan_id) / "events" / f"batch={event.batch_index:06d}"
         root.mkdir(parents=True, exist_ok=True)
         path = root / f"{event.attempt_id}-{event.status.value}.json"
+        encoded = _event_bytes(event)
         with path.open("x", encoding="utf-8") as output:
-            json.dump(
-                asdict(event),
-                output,
-                default=_json_default,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+            output.write(encoded.decode())
         return path
 
     def read_events(self, plan_id: str) -> tuple[BackfillBatchEvent, ...]:
         """Load attempts in deterministic completion order."""
+        plan = self.load_plan(plan_id)
         root = self._plan_root(plan_id) / "events"
         if not root.exists():
             return ()
-        events = [
-            _event_from_dict(json.loads(path.read_text(encoding="utf-8")))
-            for path in root.rglob("*.json")
-        ]
-        return tuple(sorted(events, key=lambda item: item.completed_at))
+        events = []
+        for path in sorted(root.rglob("*.json")):
+            encoded = path.read_bytes()
+            try:
+                event = _event_from_dict(json.loads(encoded))
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"invalid backfill event: {path}") from error
+            _validate_event(event, plan=plan)
+            expected_path = (
+                root
+                / f"batch={event.batch_index:06d}"
+                / f"{event.attempt_id}-{event.status.value}.json"
+            )
+            if path.resolve() != expected_path.resolve() or encoded != _event_bytes(event):
+                raise RuntimeError("backfill event differs from its immutable path or encoding")
+            events.append(event)
+        return tuple(sorted(events, key=lambda item: (item.completed_at, item.attempt_id)))
 
     def successful_batch_indices(self, plan_id: str) -> frozenset[int]:
         """Return batches with at least one durable success event."""
@@ -283,7 +301,14 @@ class BarBackfillStore:
                     separators=(",", ":"),
                 )
         except FileExistsError:
-            pass
+            expected = json.dumps(
+                payload,
+                default=_json_default,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            if path.read_bytes() != expected:
+                raise RuntimeError(f"backfill coverage collision at {path}") from None
         return path
 
     def _plan_root(self, plan_id: str) -> Path:
@@ -481,29 +506,25 @@ class BarCoverageAuditor:
             raise ValueError("coverage audit requires expected market sessions")
         if expected[0] < plan.start_date or expected[-1] > plan.end_date:
             raise ValueError("expected sessions must fall within the backfill plan")
-        observed: dict[str, set[date]] = {symbol: set() for symbol in plan.symbols}
-        glob = (
-            self._layout.root
-            / "silver"
-            / "asset_class=us-equity"
-            / "dataset=daily-bars"
-            / "date=*"
-            / "part-*.parquet"
+        success_events = tuple(
+            event
+            for event in self._store.read_events(plan.plan_id)
+            if event.status is BackfillEventStatus.SUCCESS
         )
-        if list(self._layout.root.glob(str(glob.relative_to(self._layout.root)))):
-            with DuckDBStore() as database:
-                rows = database.execute(
-                    """
-                    SELECT DISTINCT symbol, session_date
-                    FROM read_parquet(?, hive_partitioning = true)
-                    WHERE session_date BETWEEN ? AND ?
-                    """,
-                    (str(glob), plan.start_date, plan.end_date),
-                ).fetchall()
-            for symbol, session_date in rows:
-                normalized = str(symbol)
-                if normalized in observed:
-                    observed[normalized].add(session_date)
+        completed_batches = tuple(sorted({event.batch_index for event in success_events}))
+        source_rows = self._reproduced_plan_rows(
+            plan,
+            success_events=success_events,
+        )
+        observed: dict[str, set[date]] = {symbol: set() for symbol in plan.symbols}
+        for symbol, session_date, adjusted in source_rows:
+            if (
+                symbol not in observed
+                or not plan.start_date <= session_date <= plan.end_date
+                or adjusted is not plan.adjusted
+            ):
+                raise ValueError("backfill coverage source contains a row outside its plan")
+            observed[symbol].add(session_date)
         expected_set = set(expected)
         missing = {
             symbol: tuple(sorted(expected_set - dates))
@@ -511,7 +532,6 @@ class BarCoverageAuditor:
             if expected_set - dates
         }
         complete_symbols = tuple(symbol for symbol in plan.symbols if symbol not in missing)
-        completed_batches = tuple(sorted(self._store.successful_batch_indices(plan.plan_id)))
         all_batches_complete = len(completed_batches) == len(plan.batches)
         five_years = _covers_five_years(plan.start_date, plan.end_date)
         sufficient_sessions = len(expected) >= MIN_FIVE_YEAR_SESSIONS
@@ -526,6 +546,84 @@ class BarCoverageAuditor:
         )
         self._store.write_coverage_report(report)
         return report
+
+    def _reproduced_plan_rows(
+        self,
+        plan: BarBackfillPlan,
+        *,
+        success_events: tuple[BackfillBatchEvent, ...],
+    ) -> tuple[tuple[str, date, bool], ...]:
+        if not success_events:
+            return ()
+        source_root = self._layout.root / "manifests" / "daily-bars-sources"
+        sources = tuple(
+            source
+            for path in sorted(source_root.glob("source-*.json"))
+            if (source := DailyBarsSourceManifest.load(path)).raw["backfill_plan_id"]
+            == plan.plan_id
+        )
+        expected_batch_indices = {event.batch_index for event in success_events}
+        batch_indices = {batch: index for index, batch in enumerate(plan.batches)}
+        matched_events: set[tuple[int, str]] = set()
+        reproduced_rows: list[tuple[str, date, bool]] = []
+        with TemporaryDirectory(prefix="qee-backfill-coverage-reproduction-") as temporary:
+            output_layout = LakehouseLayout(Path(temporary))
+            for source in sources:
+                symbols = tuple(source.raw["symbols"])
+                batch_index = batch_indices.get(symbols)
+                if batch_index not in expected_batch_indices:
+                    raise ValueError("backfill source symbols differ from completed plan batches")
+                if (
+                    source.raw["start_date"] != plan.start_date.isoformat()
+                    or source.raw["end_date"] != plan.end_date.isoformat()
+                    or source.raw["ingested_at"] != plan.created_at.isoformat()
+                    or source.raw["adjusted"] is not plan.adjusted
+                    or source.raw["availability_policy"] != DAILY_BAR_SESSION_CLOSE_15M
+                ):
+                    raise ValueError("backfill source metadata differs from its immutable plan")
+                reproduced = DailyBarsSourceCapture.reproduce(
+                    source,
+                    data_lake_root=self._layout.root,
+                    output_layout=output_layout,
+                )
+                reproduced_hashes = tuple(sorted(artifact.sha256 for artifact in reproduced))
+                matching_events = tuple(
+                    event
+                    for event in success_events
+                    if event.batch_index == batch_index
+                    and tuple(sorted(event.artifact_sha256)) == reproduced_hashes
+                )
+                if len(matching_events) != 1:
+                    raise ValueError(
+                        "backfill source does not uniquely match its success-event artifacts"
+                    )
+                rows: list[dict[str, Any]] = []
+                for artifact in reproduced:
+                    if pq.read_schema(artifact.path) != DAILY_BARS_SCHEMA:  # type: ignore[no-untyped-call]
+                        raise ValueError(
+                            f"backfill coverage daily-bar schema mismatch: {artifact.path}"
+                        )
+                    rows.extend(
+                        pq.read_table(
+                            artifact.path,
+                            columns=["symbol", "session_date", "adjusted"],
+                        ).to_pylist()  # type: ignore[no-untyped-call]
+                    )
+                event = matching_events[0]
+                if len(rows) != event.bar_count:
+                    raise ValueError("backfill source row count differs from its success event")
+                matched_events.add((event.batch_index, event.attempt_id))
+                reproduced_rows.extend(
+                    (
+                        str(row["symbol"]).strip().upper(),
+                        cast("date", row["session_date"]),
+                        bool(row["adjusted"]),
+                    )
+                    for row in rows
+                )
+        if matched_events != {(event.batch_index, event.attempt_id) for event in success_events}:
+            raise ValueError("completed backfill batches lack plan-bound Polygon source lineage")
+        return tuple(reproduced_rows)
 
 
 def _covers_five_years(start_date: date, end_date: date) -> bool:
@@ -555,6 +653,33 @@ def _json_default(value: Any) -> str:
 
 
 def _event_from_dict(raw: dict[str, Any]) -> BackfillBatchEvent:
+    required = {
+        "attempt_id",
+        "plan_id",
+        "batch_index",
+        "symbols",
+        "status",
+        "started_at",
+        "completed_at",
+        "bar_count",
+        "artifact_count",
+        "artifact_sha256",
+        "error_type",
+        "error_message",
+    }
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != required
+        or not isinstance(raw["batch_index"], int)
+        or isinstance(raw["batch_index"], bool)
+        or not isinstance(raw["symbols"], list)
+        or not isinstance(raw["bar_count"], int)
+        or isinstance(raw["bar_count"], bool)
+        or not isinstance(raw["artifact_count"], int)
+        or isinstance(raw["artifact_count"], bool)
+        or not isinstance(raw["artifact_sha256"], list)
+    ):
+        raise ValueError("backfill event schema mismatch")
     return BackfillBatchEvent(
         attempt_id=str(raw["attempt_id"]),
         plan_id=str(raw["plan_id"]),
@@ -569,3 +694,60 @@ def _event_from_dict(raw: dict[str, Any]) -> BackfillBatchEvent:
         error_type=raw.get("error_type"),
         error_message=raw.get("error_message"),
     )
+
+
+def _validate_event(event: BackfillBatchEvent, *, plan: BarBackfillPlan) -> None:
+    valid_attempt = (
+        bool(event.attempt_id)
+        and "/" not in event.attempt_id
+        and "\\" not in event.attempt_id
+        and event.attempt_id not in {".", ".."}
+    )
+    valid_hashes = all(
+        len(item) == 64 and all(character in "0123456789abcdef" for character in item)
+        for item in event.artifact_sha256
+    )
+    valid_batch = (
+        0 <= event.batch_index < len(plan.batches)
+        and event.symbols == plan.batches[event.batch_index]
+    )
+    valid_times = (
+        event.started_at.tzinfo is not None
+        and event.started_at.utcoffset() is not None
+        and event.completed_at.tzinfo is not None
+        and event.completed_at.utcoffset() is not None
+        and event.completed_at >= event.started_at
+    )
+    valid_success = event.status is not BackfillEventStatus.SUCCESS or (
+        event.error_type is None
+        and event.error_message is None
+        and event.artifact_count == len(event.artifact_sha256)
+    )
+    valid_failure = event.status is not BackfillEventStatus.FAILURE or (
+        isinstance(event.error_type, str)
+        and bool(event.error_type)
+        and isinstance(event.error_message, str)
+        and event.artifact_count == 0
+        and not event.artifact_sha256
+    )
+    if (
+        event.plan_id != plan.plan_id
+        or not valid_attempt
+        or not valid_hashes
+        or not valid_batch
+        or not valid_times
+        or event.bar_count < 0
+        or event.artifact_count < 0
+        or not valid_success
+        or not valid_failure
+    ):
+        raise ValueError("backfill event differs from its immutable plan contract")
+
+
+def _event_bytes(event: BackfillBatchEvent) -> bytes:
+    return json.dumps(
+        asdict(event),
+        default=_json_default,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()

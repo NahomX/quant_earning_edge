@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 413 automated tests pass; Ruff and strict mypy pass across all 204 source
+- 416 automated tests pass; Ruff and strict mypy pass across all 204 source
   and test modules under the same commands used by CI.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 109 source files.
@@ -61,6 +61,11 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Every adjustment-explicit daily- and premarket minute-bar ingestion emits a strict
   retained-Polygon source manifest; the resumable five-year backfill does the
   same for every completed symbol batch.
+- Backfill plans and append-only attempt events are revalidated from canonical
+  bytes on every resume. Coverage counts only rows independently rebuilt from
+  the exact plan-bound Polygon observations and matched to the corresponding
+  successful batch artifact hashes; unrelated or hand-edited lake rows cannot
+  satisfy readiness.
 - Historical feature files independently rebuild their daily/minute/earnings
   Silver inputs and fully source-bound event candidates before recomputing the
   registered features. Forward labels independently rebuild raw Polygon bars,

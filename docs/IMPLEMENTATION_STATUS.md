@@ -28,9 +28,9 @@ reproducible through `uv.lock`.
 | US-equity bars silver schema and writer | Complete | `data/silver.py`; truthful physical `ingested_at` is separate from explicit causal `available_at`; bars ingestion/backfill tests |
 | Provider-source daily-bar reconstruction | Complete | single-symbol ingestion and resumable backfill emit strict raw-Polygon-to-Silver manifests, including availability, adjustment mode, and backfill-plan identity; every captured file is byte-exactly replayable |
 | Provider-source minute-bar reconstruction | Complete | minute ingestion emits the exact interval/event-date/ingestion-time manifest and byte-exactly rebuilds Silver from retained Polygon pages |
-| Resumable historical backfill tooling | Complete | immutable plans now default to provider-unadjusted bars plus one complete, independently replayable Polygon split-history interval; 16:15 America/New_York session availability remains separate from physical ingestion |
+| Resumable historical backfill tooling | Complete | immutable plans and append-only events are canonically revalidated on resume; plans default to provider-unadjusted bars plus one complete, independently replayable Polygon split-history interval; 16:15 America/New_York session availability remains separate from physical ingestion |
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
-| Explicit-session coverage auditing | Complete | coverage auditor/tests |
+| Explicit-session coverage auditing | Complete | only plan-bound Polygon observations independently rebuilt to exact Silver and matched to successful-event artifact hashes can satisfy the authoritative-session audit |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Provider-source calendar reconstruction | Complete | exact Alpaca calendar Bronze response; strict source manifest; byte-exact session-file reproduction |
 | Combined PIT earnings/split/dividend candidate audit | Complete | `universe/events.py`, cutoff/timing/overlap tests |

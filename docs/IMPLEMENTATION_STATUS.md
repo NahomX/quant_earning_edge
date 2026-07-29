@@ -62,6 +62,7 @@ reproducible through `uv.lock`.
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 | OOS prediction-to-Phase 4 provenance | Complete | canonical run reload, exact probability checks, complete row coverage, shared Optuna/run hashes |
+| Automated historical Phase 4 assembly | Complete | exact OOS/candidate key join, authoritative session mapping, adjusted execution bars, chained equity/outcomes, source-and-plan manifest |
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
 | Explicit event-model abstention sessions | Complete | zero-return ledgers preserve non-trading OOS dates in Phase 4 metrics |

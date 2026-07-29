@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -24,6 +25,7 @@ from quant_earning_edge.evaluation import (
     Phase4GateEvaluator,
     Phase4PromotionEvidence,
 )
+from quant_earning_edge.evaluation.phase4_assembly import Phase4AssemblyManifest
 from quant_earning_edge.portfolio import PortfolioPlan
 from quant_earning_edge.signals import (
     EventTradePlanner,
@@ -38,6 +40,13 @@ from quant_earning_edge.signals import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def _source_reference(path: Path) -> dict[str, str]:
+    return {
+        "path": path.name,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
 
 
 def _result(session: date, *, initial_cash: float, pnl: float, index: int) -> BacktestResult:
@@ -312,12 +321,44 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
     )
     second_path = tmp_path / "second.json"
     EventTradePlanner.write(second_plan, second_path)
+    strategy_source = tmp_path / "strategy.yaml"
+    session_source = tmp_path / "sessions.json"
+    candidate_source = tmp_path / "candidates.parquet"
+    bar_source = tmp_path / "bars.parquet"
+    for path, content in (
+        (strategy_source, b"strategy"),
+        (session_source, b"sessions"),
+        (candidate_source, b"candidates"),
+        (bar_source, b"bars"),
+    ):
+        path.write_bytes(content)
+    assembly = Phase4AssemblyManifest.model_validate(
+        {
+            "schema_version": 1,
+            "strategy_config": _source_reference(strategy_source),
+            "walkforward_run_evidence": _source_reference(run_path),
+            "session_file": _source_reference(session_source),
+            "candidate_files": [_source_reference(candidate_source)],
+            "daily_bar_files": [_source_reference(bar_source)],
+            "initial_cash": 100_000,
+            "minimum_probability": 0.5,
+            "execution_price_contract": "adjusted_session_open_to_close",
+            "iv_regime_contract": "unavailable",
+            "plan_files": [
+                _source_reference(first_path),
+                _source_reference(second_path),
+            ],
+        }
+    )
+    assembly_path = tmp_path / "assembly.json"
+    assembly_path.write_bytes(assembly.canonical_bytes)
     spec = tmp_path / "aggregation.json"
     output = tmp_path / "gate.json"
     tearsheet = tmp_path / "gate.html"
     spec.write_text(
         json.dumps(
             {
+                "assembly_manifest": assembly_path.name,
                 "walkforward_run_evidence": run_path.name,
                 "folds": [
                     {

@@ -7,6 +7,7 @@ from quant_earning_edge.signals.event_trades import (
     EventTradePlanningSpec,
     PlannedEventTrades,
     TradeCohort,
+    run_event_plan,
 )
 from quant_earning_edge.signals.hyperparameter_search import (
     OptunaLightgbmSearch,
@@ -82,5 +83,6 @@ __all__ = [
     "TradeCohort",
     "WalkForwardModelRun",
     "load_strategy_config",
+    "run_event_plan",
     "strategy_file_sha256",
 ]

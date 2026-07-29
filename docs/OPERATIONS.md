@@ -356,7 +356,40 @@ pre-paper thresholds from canonical report metrics. A false or inconsistent
 verdict is rejected; the passing report SHA-256 is embedded in the model
 artifact and is mandatory when that artifact is reloaded for live scoring.
 
-## Plan and evaluate one OOS event session
+## Assemble the complete OOS Phase 4 history
+
+Do not hand-author the production Phase 4 session set. Once the walk-forward
+run, point-in-time candidate partitions, adjusted daily bars, and authoritative
+calendar are available, materialize every fold and session in one pass:
+
+```powershell
+uv run qee evaluation assemble-phase4 `
+  --walkforward-run-evidence .\data\models\earnings-v1\run-<hash>.json `
+  --strategy-config .\configs\strategies\earnings_v1.yaml `
+  --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
+  --candidate-file .\data\gold\event-candidates\for_trade_date=2026-01-05\candidates-<hash>.parquet `
+  --candidate-file .\data\gold\event-candidates\for_trade_date=2026-01-06\candidates-<hash>.parquet `
+  --daily-bar-file .\data\silver\daily-bars\year=2026\part-<hash>.parquet `
+  --initial-cash 100000 `
+  --output-dir .\data\manifests\backtest\phase4-plans `
+  --manifest-output .\data\manifests\backtest\phase4-assembly.json `
+  --aggregation-output .\data\manifests\backtest\phase4-folds.json
+```
+
+The assembler requires the candidate key set to equal the complete OOS
+prediction ledger. Each candidate must bind the supplied session file and use
+the immediately prior authoritative session. Entry and exit evidence comes
+only from adjusted open/close bars on the mapped trade session. Missing,
+duplicate, unadjusted, or schema-drifted sources fail closed.
+
+Plans are built chronologically across fold boundaries. Equity and realized
+session returns flow into the next decision automatically, including explicit
+zero-return abstention sessions. The canonical assembly manifest hashes the
+strategy, OOS run, calendar, every candidate/bar partition, and every generated
+plan. `phase4-gate` re-hashes that complete graph and rejects a fold map whose
+ordered plan set differs from the manifest.
+
+## Plan and evaluate one OOS event session (diagnostic)
 
 Prepare a strict JSON object containing `equity`, the session's OOS
 `predictions`, matching `observations`, and prior `outcomes`. Observations
@@ -389,8 +422,9 @@ an explicit zero-return ledger rather than disappearing from evaluation.
 
 ## Aggregate the Phase 4 gates
 
-Create an aggregation JSON with `walkforward_run_evidence` plus `folds`
-entries declaring consecutive `fold_index`, test start/end dates, and ordered
+Use the aggregation JSON emitted by `assemble-phase4`. It contains
+`assembly_manifest`, `walkforward_run_evidence`, and `folds` entries declaring
+consecutive `fold_index`, test start/end dates, and ordered
 `event_plan_files`. Relative paths resolve from the aggregation file:
 
 ```powershell

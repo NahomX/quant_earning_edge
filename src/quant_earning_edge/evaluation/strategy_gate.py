@@ -43,6 +43,7 @@ class Phase4AggregationSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    assembly_manifest: Path
     walkforward_run_evidence: Path
     folds: tuple[FoldArtifactSpec, ...]
 

@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from quant_earning_edge.backtest import TradeIntent
+from quant_earning_edge.backtest import (
+    BacktestResult,
+    DailyLedger,
+    TradeIntent,
+    VectorbtIntradayEngine,
+)
 from quant_earning_edge.portfolio import (
     FractionalKellyPortfolioConstructor,
     PortfolioPlan,
@@ -393,6 +398,38 @@ def _intent(
         holding_sessions=0,
         entry_at=observation.entry_at,
         exit_at=observation.exit_at,
+    )
+
+
+def run_event_plan(plan: PlannedEventTrades) -> BacktestResult:
+    """Execute one event plan or preserve an explicit zero-return session."""
+    if plan.intents:
+        return VectorbtIntradayEngine().run(
+            trades=plan.intents,
+            sessions=(plan.trade_date,),
+            initial_cash=plan.portfolio.equity,
+        )
+    equity = plan.portfolio.equity
+    return BacktestResult(
+        engine="event-no-trade",
+        input_sha256=plan.sha256,
+        initial_cash=equity,
+        trades=(),
+        daily=(
+            DailyLedger(
+                session_date=plan.trade_date,
+                gross_pnl=0.0,
+                commission=0.0,
+                half_spread=0.0,
+                market_impact=0.0,
+                borrow=0.0,
+                stop_slippage=0.0,
+                net_pnl=0.0,
+                gross_equity=equity,
+                net_equity=equity,
+                gross_exposure=0.0,
+            ),
+        ),
     )
 
 

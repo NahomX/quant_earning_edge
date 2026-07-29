@@ -16,9 +16,7 @@ from pydantic import ValidationError
 
 from quant_earning_edge import __version__
 from quant_earning_edge.backtest import (
-    BacktestResult,
     BacktestSpec,
-    DailyLedger,
     NbboReplayEvidence,
     NbboReplaySpec,
     ReplayConfigSpec,
@@ -75,6 +73,10 @@ from quant_earning_edge.evaluation import (
     default_artifact_location,
     default_tracking_uri,
     log_backtest_run,
+)
+from quant_earning_edge.evaluation.phase4_assembly import (
+    Phase4AssemblyManifest,
+    Phase4HistoricalAssembler,
 )
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
@@ -156,12 +158,12 @@ from quant_earning_edge.signals import (
     OosPrediction,
     OptunaLightgbmSearch,
     OptunaStudyArtifact,
-    PlannedEventTrades,
     ProductionModelArtifact,
     ProductionModelTrainer,
     TradeCohort,
     WalkForwardModelRun,
     load_strategy_config,
+    run_event_plan,
     strategy_file_sha256,
 )
 from quant_earning_edge.universe import (
@@ -1614,7 +1616,7 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
             walkforward_run_sha256=model_run.sha256,
         )
         planner.write(plan, plan_output)
-        result = _run_event_plan(plan)
+        result = run_event_plan(plan)
         evaluator = PerformanceEvaluator()
         report = evaluator.evaluate(result)
         evaluator.write(report, evaluation_output)
@@ -1668,6 +1670,87 @@ def plan_event_backtest(  # noqa: PLR0917 - explicit run and provenance contract
     )
 
 
+@evaluation_app.command("assemble-phase4")
+def assemble_phase4_history(  # noqa: PLR0917 - explicit immutable source boundary.
+    walkforward_run_evidence: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical complete OOS model run."),
+    ],
+    strategy_config: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Validated earnings strategy YAML."),
+    ],
+    session_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Authoritative Alpaca session file."),
+    ],
+    candidate_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--candidate-file",
+            exists=True,
+            dir_okay=False,
+            help="Canonical event candidates; repeat for the complete OOS ledger.",
+        ),
+    ],
+    daily_bar_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--daily-bar-file",
+            exists=True,
+            dir_okay=False,
+            help="Adjusted execution bars; repeat as needed.",
+        ),
+    ],
+    initial_cash: Annotated[
+        float,
+        typer.Option(min=0.01, help="Initial research equity chained across every OOS session."),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(file_okay=False, help="Directory receiving immutable event plans."),
+    ],
+    manifest_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Canonical source-and-plan assembly manifest."),
+    ],
+    aggregation_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Generated Phase 4 fold aggregation JSON."),
+    ],
+    minimum_probability: Annotated[
+        float,
+        typer.Option(min=0.5, max=0.999999, help="Precommitted long selection threshold."),
+    ] = 0.5,
+) -> None:
+    """Materialize the complete Phase 4 plan set without hand-authored sessions."""
+    try:
+        result = Phase4HistoricalAssembler().assemble(
+            walkforward_run_evidence=walkforward_run_evidence,
+            strategy_config=strategy_config,
+            session_file=session_file,
+            candidate_files=candidate_files,
+            daily_bar_files=daily_bar_files,
+            initial_cash=initial_cash,
+            output_dir=output_dir,
+            manifest_output=manifest_output,
+            aggregation_output=aggregation_output,
+            minimum_probability=minimum_probability,
+        )
+    except (KeyError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="Phase 4 source assembly") from error
+    _echo_json(
+        {
+            "manifest_output": str(result.manifest_path),
+            "manifest_sha256": result.manifest_sha256,
+            "aggregation_output": str(result.aggregation_path),
+            "session_count": result.session_count,
+            "trade_count": result.trade_count,
+            "final_equity": result.final_equity,
+        }
+    )
+
+
 @evaluation_app.command("phase4-gate")
 def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contract.
     aggregation_spec: Annotated[
@@ -1703,12 +1786,20 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
     """Replay event plans and evaluate both documented strategy gates."""
     try:
         spec = Phase4AggregationSpec.model_validate_json(aggregation_spec.read_bytes())
+        manifest_path = (
+            spec.assembly_manifest
+            if spec.assembly_manifest.is_absolute()
+            else aggregation_spec.parent / spec.assembly_manifest
+        )
+        assembly_manifest = Phase4AssemblyManifest.load(manifest_path)
         run_path = (
             spec.walkforward_run_evidence
             if spec.walkforward_run_evidence.is_absolute()
             else aggregation_spec.parent / spec.walkforward_run_evidence
         )
         model_run = WalkForwardModelRun.load_evidence(run_path)
+        if assembly_manifest.walkforward_run_evidence.sha256 != model_run.sha256:
+            raise ValueError("Phase 4 assembly manifest differs from the walk-forward run")
         if model_run.hyperparameter_study_sha256 is None:
             raise ValueError("walk-forward run lacks an Optuna study binding")
         fold_results = []
@@ -1730,7 +1821,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                 model_run.validate_predictions(plan.source_predictions)
                 all_predictions.extend(plan.source_predictions)
                 cohorts.extend(plan.cohorts)
-                results.append(_run_event_plan(plan))
+                results.append(run_event_plan(plan))
             fold_results.append(
                 FoldBacktestResults(
                     fold_index=fold.fold_index,
@@ -1740,6 +1831,10 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
                     cohorts=tuple(cohorts),
                 )
             )
+        if tuple(path.resolve() for path in plan_paths) != assembly_manifest.resolved_plan_files(
+            manifest_path
+        ):
+            raise ValueError("Phase 4 aggregation plan files differ from the assembly manifest")
         model_run.validate_predictions(tuple(all_predictions), require_complete=True)
         evaluator = Phase4GateEvaluator(
             bootstrap_resamples=bootstrap_resamples,
@@ -1775,7 +1870,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
             session_count=report.overall.session_count,
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
-            source_files=(aggregation_spec, run_path, *plan_paths),
+            source_files=(aggregation_spec, manifest_path, run_path, *plan_paths),
             artifact_files=(tearsheet_output,),
             extra_parameters={
                 "fold_count": len(report.walk_forward.folds),
@@ -4683,37 +4778,6 @@ def backfill_coverage(
     )
     if not report.ready:
         raise typer.Exit(code=1)
-
-
-def _run_event_plan(plan: PlannedEventTrades) -> BacktestResult:
-    if plan.intents:
-        return VectorbtIntradayEngine().run(
-            trades=plan.intents,
-            sessions=(plan.trade_date,),
-            initial_cash=plan.portfolio.equity,
-        )
-    equity = plan.portfolio.equity
-    return BacktestResult(
-        engine="event-no-trade",
-        input_sha256=plan.sha256,
-        initial_cash=equity,
-        trades=(),
-        daily=(
-            DailyLedger(
-                session_date=plan.trade_date,
-                gross_pnl=0.0,
-                commission=0.0,
-                half_spread=0.0,
-                market_impact=0.0,
-                borrow=0.0,
-                stop_slippage=0.0,
-                net_pnl=0.0,
-                gross_equity=equity,
-                net_equity=equity,
-                gross_exposure=0.0,
-            ),
-        ),
-    )
 
 
 def _environment(env_file: Path | None) -> RuntimeEnvironment:

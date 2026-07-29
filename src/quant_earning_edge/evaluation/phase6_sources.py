@@ -329,7 +329,7 @@ class Phase6DailyReportVerifier:
             raise ValueError("live source differs from captured provider or workflow inputs")
 
     @staticmethod
-    def _verify_candidate_generation(
+    def _verify_candidate_generation(  # noqa: PLR0912 - complete source chain.
         *,
         state: DailyWorkflowState,
         source: LivePlanningSourceSpec,
@@ -341,6 +341,8 @@ class Phase6DailyReportVerifier:
         from quant_earning_edge.universe import (  # noqa: PLC0415
             EventCandidateJob,
             EventCandidateManifest,
+            EventSourceCapture,
+            EventSourceCaptureManifest,
             UniverseSourceCapture,
             UniverseSourceCaptureManifest,
         )
@@ -362,8 +364,8 @@ class Phase6DailyReportVerifier:
                 "live source must bind to exactly one captured candidate-generation manifest"
             )
         manifest = manifests[0]
-        if manifest.raw["schema_version"] != 3:
-            raise ValueError("candidate generation lacks source-bound universe lineage")
+        if manifest.raw["schema_version"] != 4:
+            raise ValueError("candidate generation lacks complete provider source lineage")
         source_root, sources = Phase6DailyReportVerifier._candidate_sources(
             manifest=manifest,
             paths_by_sha=paths_by_sha,
@@ -375,12 +377,26 @@ class Phase6DailyReportVerifier:
         ):
             raise ValueError("live source candidate identity differs from its generation manifest")
         source_groups = manifest.raw["source_files"]
-        lineage_count = len(manifest.universe_lineage_entries)
+        universe_lineage_count = len(manifest.universe_lineage_entries)
+        event_lineage_count = len(manifest.event_lineage_entries)
         universe_manifest_path = sources[0]
         universe_manifest = UniverseSourceCaptureManifest.load(universe_manifest_path)
-        if universe_manifest.source_paths(data_lake_root=source_root) != sources[1:lineage_count]:
+        if (
+            universe_manifest.source_paths(data_lake_root=source_root)
+            != sources[1:universe_lineage_count]
+        ):
             raise ValueError("candidate universe lineage differs from its source manifest")
-        candidate_sources = sources[lineage_count:]
+        event_manifest_path = sources[universe_lineage_count]
+        event_manifest = EventSourceCaptureManifest.load(event_manifest_path)
+        event_provider_end = universe_lineage_count + event_lineage_count
+        if (
+            event_manifest.provider_paths(data_lake_root=source_root)
+            != sources[universe_lineage_count + 1 : event_provider_end]
+        ):
+            raise ValueError("candidate event lineage differs from its source manifest")
+        candidate_sources = sources[event_provider_end:]
+        if event_manifest.silver_paths(data_lake_root=source_root) != (candidate_sources[2:]):
+            raise ValueError("candidate event inputs differ from their source manifest")
         earnings_end = 2 + len(source_groups["earnings_files"])
         splits_end = earnings_end + len(source_groups["split_files"])
         with TemporaryDirectory(prefix="qee-candidate-reconstruction-") as temporary:
@@ -392,6 +408,11 @@ class Phase6DailyReportVerifier:
             )
             if reproduced_universe.path.read_bytes() != candidate_sources[0].read_bytes():
                 raise ValueError("candidate universe differs from independent reconstruction")
+            EventSourceCapture.reproduce(
+                event_manifest,
+                data_lake_root=source_root,
+                output_layout=LakehouseLayout(Path(temporary) / "events"),
+            )
             reproduced = EventCandidateJob(
                 LakehouseLayout(Path(temporary) / "candidates"),
                 source_root=source_root,
@@ -404,6 +425,7 @@ class Phase6DailyReportVerifier:
                 split_files=candidate_sources[earnings_end:splits_end],
                 dividend_files=candidate_sources[splits_end:],
                 universe_source_manifest=universe_manifest_path,
+                event_source_manifest=event_manifest_path,
             )
             if (
                 hashlib.sha256(reproduced.path.read_bytes()).hexdigest()

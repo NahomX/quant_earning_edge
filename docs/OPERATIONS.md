@@ -1458,10 +1458,11 @@ uv run qee model capture-live-source `
   --evidence-output .\live-market-observations-evidence.json
 ```
 
-The event-candidate artifact now carries a strict production schema-v3 manifest that binds
-the exact universe snapshot, authoritative session file, earnings inputs, and
-split/dividend inputs used to generate it. The proof queue will not dispatch a
-candidate without that complete lineage. The artifact also carries its
+The event-candidate artifact now carries a strict production schema-v4 manifest that binds
+the exact universe snapshot, authoritative session file, earnings inputs,
+split/dividend inputs, and their Finnhub/Polygon Bronze provider observations.
+The proof queue will not dispatch a candidate without that complete lineage.
+The artifact also carries its
 point-in-time SIC-division exposure bucket, prior-close sizing price, and frozen
 20-session ADV from the universe snapshot. Capture reads authenticated Alpaca paper equity for
 operational evidence and obtains one Polygon two-sided NBBO/last-trade
@@ -1475,7 +1476,8 @@ replay reports must be canonical, reconciled, chronological, and
 equity-continuous.
 
 Terminal verification reloads all of those captured inputs, independently
-regenerates the candidate Parquet and manifest from the captured upstream data,
+regenerates the point-in-time universe and event Silver partitions from raw
+provider payloads, then regenerates the candidate Parquet and manifest,
 reconstructs the paper-account and provider snapshots from raw JSON, reruns
 session validation and replay-equity chaining, and requires the
 probability-free source bytes to match before model scoring is allowed.

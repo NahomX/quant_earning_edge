@@ -84,6 +84,7 @@ def test_earnings_calendar_validates_contract_and_captures_bronze(tmp_path: Path
     assert events[0].symbol == "AAPL"
     assert events[0].timing is EarningsTiming.AFTER_MARKET_CLOSE
     assert events[0].eps_estimate == 1.42
+    assert len(client.earnings_observation_artifacts) == 1
     assert len(list((tmp_path / "bronze").rglob("*.json"))) == 1
 
 

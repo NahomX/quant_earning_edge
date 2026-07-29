@@ -1,6 +1,10 @@
 """Point-in-time tradable-universe construction."""
 
 from quant_earning_edge.universe.builder import UniverseBuilder, UniverseSnapshot
+from quant_earning_edge.universe.event_source_capture import (
+    EventSourceCapture,
+    EventSourceCaptureManifest,
+)
 from quant_earning_edge.universe.events import (
     EVENT_CANDIDATE_SCHEMA,
     CandidateExclusion,
@@ -47,6 +51,8 @@ __all__ = [
     "EventCandidateArtifact",
     "EventCandidateJob",
     "EventCandidateManifest",
+    "EventSourceCapture",
+    "EventSourceCaptureManifest",
     "HaltSnapshot",
     "ReadinessEvidence",
     "RejectionReason",

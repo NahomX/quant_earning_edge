@@ -30,8 +30,9 @@ reproducible through `uv.lock`.
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Combined PIT earnings/split/dividend candidate audit | Complete | `universe/events.py`, cutoff/timing/overlap tests |
-| Source-bound candidate regeneration | Complete | production schema-v3 manifest binds universe provider lineage plus exact calendar/earnings/split/dividend files; queue requires complete lineage; terminal verifier independently regenerates universe and candidate bytes |
+| Source-bound candidate regeneration | Complete | production schema-v4 manifest binds universe and event-provider lineage plus exact calendar/earnings/split/dividend files; queue requires complete lineage; terminal verifier independently regenerates universe, event Silver, and candidate bytes |
 | Polygon splits/dividends ingestion | Complete | current `/stocks/v1` clients, silver schemas, integration tests |
+| Provider-source event reconstruction | Complete | exact Finnhub earnings and Polygon split/dividend Bronze pages; strict manifest; byte-exact Silver reproduction; candidate/workflow capture; terminal Phase 6 verification |
 | Stable schema-validated DuckDB silver views | Complete | `data/store.py`, view query tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |

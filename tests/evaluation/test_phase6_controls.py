@@ -31,14 +31,10 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import (
-    CashDividend,
-    DividendDistributionType,
-    EarningsEvent,
+    FinnhubClient,
     MarketSession,
     PolygonClient,
-    SplitAdjustmentType,
     StockQuote,
-    StockSplit,
 )
 from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
@@ -85,6 +81,7 @@ from quant_earning_edge.signals import (
 from quant_earning_edge.universe import (
     CandidateObservation,
     EventCandidateJob,
+    EventSourceCapture,
     UniverseBuilder,
     UniverseConfig,
     UniverseSnapshotWriter,
@@ -331,48 +328,97 @@ def _write_live_source_capture(
     )
     universe_path = universe_snapshot.path
     writer = SilverWriter(candidate_layout)
-    earnings = writer.write_earnings(
-        (
-            EarningsEvent.model_validate(
-                {
-                    "date": prior_date if snapshot is not None else trade_date + timedelta(days=10),
-                    "symbol": "AAA",
-                    "hour": "amc",
-                    "year": trade_date.year,
-                    "quarter": 3,
-                    "epsEstimate": 1.0,
-                    "revenueEstimate": 100.0,
-                }
-            ),
+    earnings_raw = {
+        "earningsCalendar": [
+            {
+                "date": prior_date.isoformat(),
+                "symbol": "AAA" if snapshot is not None else "ZZZ",
+                "hour": "amc",
+                "year": trade_date.year,
+                "quarter": 3,
+                "epsEstimate": 1.0,
+                "revenueEstimate": 100.0,
+            }
+        ]
+    }
+    splits_raw = {
+        "status": "OK",
+        "results": [
+            {
+                "id": "irrelevant-split",
+                "ticker": "ZZZ",
+                "execution_date": trade_date.isoformat(),
+                "adjustment_type": "forward_split",
+                "split_from": 1,
+                "split_to": 2,
+            }
+        ],
+    }
+    dividends_raw = {
+        "status": "OK",
+        "results": [
+            {
+                "id": "irrelevant-dividend",
+                "ticker": "ZZZ",
+                "ex_dividend_date": trade_date.isoformat(),
+                "distribution_type": "recurring",
+                "cash_amount": 0.25,
+                "currency": "USD",
+                "frequency": 4,
+            }
+        ],
+    }
+    earnings_observations = (
+        bronze.write_json(
+            earnings_raw,
+            source="finnhub",
+            dataset="earnings-calendar",
+            event_date=prior_date,
+            received_at=captured_at,
         ),
+    )
+    action_observations = tuple(
+        bronze.write_json(
+            payload,
+            source="polygon",
+            dataset=dataset,
+            event_date=trade_date,
+            received_at=captured_at,
+        )
+        for dataset, payload in (
+            ("stock-splits", splits_raw),
+            ("cash-dividends", dividends_raw),
+        )
+    )
+    earnings = writer.write_earnings(
+        FinnhubClient.earnings_calendar_from_payload(earnings_raw),
         ingested_at=captured_at,
     )
     splits = writer.write_splits(
-        (
-            StockSplit(
-                event_id="irrelevant-split",
-                symbol="ZZZ",
-                execution_date=trade_date + timedelta(days=10),
-                adjustment_type=SplitAdjustmentType.FORWARD_SPLIT,
-                split_from=1,
-                split_to=2,
-            ),
+        PolygonClient.stock_splits_from_payloads(
+            (splits_raw,),
+            start_date=prior_date,
+            end_date=trade_date,
         ),
         ingested_at=captured_at,
     )
     dividends = writer.write_dividends(
-        (
-            CashDividend(
-                event_id="irrelevant-dividend",
-                symbol="ZZZ",
-                ex_dividend_date=trade_date + timedelta(days=10),
-                distribution_type=DividendDistributionType.RECURRING,
-                cash_amount=0.25,
-                currency="USD",
-                frequency=4,
-            ),
+        PolygonClient.cash_dividends_from_payloads(
+            (dividends_raw,),
+            start_date=prior_date,
+            end_date=trade_date,
         ),
         ingested_at=captured_at,
+    )
+    event_source = EventSourceCapture(candidate_layout).write(
+        start_date=prior_date,
+        end_date=trade_date,
+        ingested_at=captured_at,
+        earnings_files=earnings,
+        split_files=splits,
+        dividend_files=dividends,
+        earnings_observations=earnings_observations,
+        corporate_action_observations=action_observations,
     )
     candidate = EventCandidateJob(candidate_layout).run(
         trade_date=trade_date,
@@ -383,6 +429,7 @@ def _write_live_source_capture(
         split_files=tuple(item.path for item in splits),
         dividend_files=tuple(item.path for item in dividends),
         universe_source_manifest=universe_source.path,
+        event_source_manifest=event_source.path,
     )
 
     def write_raw(path: Path, payload: object) -> Path:
@@ -468,6 +515,8 @@ def _write_live_source_capture(
             candidate.manifest_path,
             universe_source.path,
             *universe_source.source_paths(data_lake_root=candidate_root),
+            event_source.path,
+            *event_source.provider_paths(data_lake_root=candidate_root),
             universe_path,
             *(item.path for item in earnings),
             *(item.path for item in splits),
@@ -629,6 +678,10 @@ def _no_trade_replay_sources(
         universe_bar_raw_path,
         universe_details_raw_path,
         universe_reference_raw_path,
+        event_source_manifest_path,
+        event_earnings_raw_path,
+        event_split_raw_path,
+        event_dividend_raw_path,
         universe_path,
         earnings_path,
         split_path,
@@ -732,6 +785,10 @@ def _no_trade_replay_sources(
         "universe_bar_raw": universe_bar_raw_path,
         "universe_details_raw": universe_details_raw_path,
         "universe_reference_raw": universe_reference_raw_path,
+        "event_source_manifest": event_source_manifest_path,
+        "event_earnings_raw": event_earnings_raw_path,
+        "event_split_raw": event_split_raw_path,
+        "event_dividend_raw": event_dividend_raw_path,
         "candidate_universe": universe_path,
         "candidate_earnings": earnings_path,
         "candidate_splits": split_path,
@@ -783,6 +840,10 @@ def _complete_source_workflow(
                 sources["universe_bar_raw"],
                 sources["universe_details_raw"],
                 sources["universe_reference_raw"],
+                sources["event_source_manifest"],
+                sources["event_earnings_raw"],
+                sources["event_split_raw"],
+                sources["event_dividend_raw"],
                 sources["candidate_universe"],
                 sources["candidate_earnings"],
                 sources["candidate_splits"],
@@ -849,6 +910,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_live_provider_inputs: bool = True,
     capture_candidate_lineage: bool = True,
     capture_universe_lineage: bool = True,
+    capture_event_lineage: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -885,6 +947,10 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         universe_bar_raw_path,
         universe_details_raw_path,
         universe_reference_raw_path,
+        event_source_manifest_path,
+        event_earnings_raw_path,
+        event_split_raw_path,
+        event_dividend_raw_path,
         universe_path,
         earnings_path,
         split_path,
@@ -1124,6 +1190,16 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                             universe_reference_raw_path,
                         )
                         if capture_universe_lineage
+                        else ()
+                    ),
+                    *(
+                        (
+                            event_source_manifest_path,
+                            event_earnings_raw_path,
+                            event_split_raw_path,
+                            event_dividend_raw_path,
+                        )
+                        if capture_event_lineage
                         else ()
                     ),
                     *((live_evidence_path,) if capture_live_source_evidence else ()),
@@ -1672,6 +1748,25 @@ def test_daily_report_verifier_requires_universe_generation_lineage(
         )
 
 
+def test_daily_report_verifier_requires_event_generation_lineage(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_event_lineage=False,
+    )
+
+    with pytest.raises(ValueError, match="exact captured data-lake sources"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
 def test_daily_report_verifier_rejects_changed_candidate_source(
     tmp_path: Path,
 ) -> None:
@@ -1684,6 +1779,28 @@ def test_daily_report_verifier_rejects_changed_candidate_source(
     )
     universe_path = next(tmp_path.glob("**/candidate-lake/**/snapshot-*.parquet"))
     universe_path.write_bytes(b"changed after candidate generation")
+
+    with pytest.raises(ValueError, match="workflow artifact changed after capture"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_rejects_changed_event_provider_source(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+    )
+    event_path = next(
+        tmp_path.glob("**/candidate-lake/bronze/source=finnhub/dataset=earnings-calendar/**/*.json")
+    )
+    event_path.write_bytes(b"{}")
 
     with pytest.raises(ValueError, match="workflow artifact changed after capture"):
         Phase6DailyReportVerifier().verify(

@@ -115,12 +115,16 @@ def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Pat
     universe_manifest_path.write_bytes(b"universe-source")
     universe_raw_path = lake_root / "universe-provider.json"
     universe_raw_path.write_bytes(b"universe-provider")
+    event_manifest_path = lake_root / "event-source.json"
+    event_manifest_path.write_bytes(b"event-source")
+    event_raw_path = lake_root / "event-provider.json"
+    event_raw_path.write_bytes(b"event-provider")
     session = entry(session_file)
     earnings_hash = hashlib.sha256(earnings["sha256"].encode()).hexdigest()
     split_hash = hashlib.sha256(splits["sha256"].encode()).hexdigest()
     dividend_hash = hashlib.sha256(dividends["sha256"].encode()).hexdigest()
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
         "trade_date": "2026-07-28",
         "decision_at": "2026-07-28T01:30:00+00:00",
         "records": [],
@@ -137,6 +141,8 @@ def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Pat
         "source_files": {
             "universe_source_manifest": entry(universe_manifest_path),
             "universe_source_files": [entry(universe_raw_path)],
+            "event_source_manifest": entry(event_manifest_path),
+            "event_provider_files": [entry(event_raw_path)],
             "universe_snapshot": universe,
             "session_file": session,
             "earnings_files": [earnings],

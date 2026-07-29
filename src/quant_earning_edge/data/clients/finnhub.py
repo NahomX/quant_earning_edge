@@ -15,7 +15,7 @@ from quant_earning_edge.data.clients.errors import ProviderRequestError, Provide
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from quant_earning_edge.data.bronze import BronzeWriter
+    from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
@@ -90,6 +90,23 @@ class FinnhubClient:
         self._max_attempts = max_attempts
         self._retry_delay_seconds = retry_delay_seconds
         self._sleeper = sleeper
+        self._earnings_observation_artifacts: list[BronzeArtifact] = []
+
+    @property
+    def earnings_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return retained raw earnings-calendar responses."""
+        return tuple(self._earnings_observation_artifacts)
+
+    @staticmethod
+    def earnings_calendar_from_payload(raw: Any) -> tuple[EarningsEvent, ...]:
+        """Reconstruct retained earnings events without a provider request."""
+        try:
+            validated = _EarningsCalendarResponse.model_validate(raw)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Finnhub earnings response failed validation: {error}"
+            ) from error
+        return tuple(validated.earnings_calendar)
 
     def earnings_calendar(
         self,
@@ -114,20 +131,15 @@ class FinnhubClient:
         response = self._request(params)
         raw = self._decode_json(response)
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="finnhub",
-                dataset="earnings-calendar",
-                event_date=start_date,
+            self._earnings_observation_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="finnhub",
+                    dataset="earnings-calendar",
+                    event_date=start_date,
+                )
             )
-
-        try:
-            validated = _EarningsCalendarResponse.model_validate(raw)
-        except ValidationError as error:
-            raise ProviderResponseError(
-                f"Finnhub earnings response failed validation: {error}"
-            ) from error
-        return tuple(validated.earnings_calendar)
+        return self.earnings_calendar_from_payload(raw)
 
     def _request(self, params: dict[str, str]) -> httpx.Response:
         headers = {"X-Finnhub-Token": self._api_key}

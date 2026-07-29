@@ -484,6 +484,7 @@ class PolygonClient:
         self._sleeper = sleeper
         self._decision_snapshot_artifacts: list[BronzeArtifact] = []
         self._universe_observation_artifacts: list[BronzeArtifact] = []
+        self._corporate_action_observation_artifacts: list[BronzeArtifact] = []
 
     @property
     def decision_snapshot_artifacts(self) -> tuple[BronzeArtifact, ...]:
@@ -494,6 +495,83 @@ class PolygonClient:
     def universe_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
         """Return raw reference, details, and daily-bar universe responses."""
         return tuple(self._universe_observation_artifacts)
+
+    @property
+    def corporate_action_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return raw split and dividend responses retained by this client."""
+        return tuple(self._corporate_action_observation_artifacts)
+
+    @classmethod
+    def stock_splits_from_payloads(
+        cls,
+        raws: tuple[Any, ...],
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[StockSplit, ...]:
+        """Reconstruct retained split pages without provider requests."""
+        results: list[StockSplit] = []
+        for raw in raws:
+            page = cls._corporate_action_page_from_payload(raw, dataset="stock-splits")
+            for raw_item in page.results:
+                try:
+                    item = _SplitPayload.model_validate(raw_item)
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon stock-splits response failed validation: {error}"
+                    ) from error
+                results.append(StockSplit.model_validate(item.model_dump()))
+        cls._validate_corporate_actions(
+            results,
+            start_date=start_date,
+            end_date=end_date,
+            date_field="execution_date",
+        )
+        return tuple(sorted(results, key=lambda item: (item.execution_date, item.symbol)))
+
+    @classmethod
+    def cash_dividends_from_payloads(
+        cls,
+        raws: tuple[Any, ...],
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[CashDividend, ...]:
+        """Reconstruct retained dividend pages without provider requests."""
+        results: list[CashDividend] = []
+        for raw in raws:
+            page = cls._corporate_action_page_from_payload(raw, dataset="cash-dividends")
+            for raw_item in page.results:
+                try:
+                    item = _DividendPayload.model_validate(raw_item)
+                except ValidationError as error:
+                    raise ProviderResponseError(
+                        f"Polygon cash-dividends response failed validation: {error}"
+                    ) from error
+                results.append(CashDividend.model_validate(item.model_dump()))
+        cls._validate_corporate_actions(
+            results,
+            start_date=start_date,
+            end_date=end_date,
+            date_field="ex_dividend_date",
+        )
+        return tuple(sorted(results, key=lambda item: (item.ex_dividend_date, item.symbol)))
+
+    @staticmethod
+    def _corporate_action_page_from_payload(
+        raw: Any,
+        *,
+        dataset: str,
+    ) -> _CorporateActionsResponse:
+        try:
+            page = _CorporateActionsResponse.model_validate(raw)
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Polygon {dataset} response failed validation: {error}"
+            ) from error
+        if page.status != "OK":
+            raise ProviderResponseError(f"Polygon {dataset} status was {page.status!r}")
+        return page
 
     @classmethod
     def daily_bars_from_payload(
@@ -1116,20 +1194,15 @@ class PolygonClient:
             response = self._request(url=url, params=request_params)
             raw = self._decode_json(response)
             if self._bronze_writer is not None:
-                self._bronze_writer.write_json(
-                    raw,
-                    source="polygon",
-                    dataset=dataset,
-                    event_date=event_date,
+                self._corporate_action_observation_artifacts.append(
+                    self._bronze_writer.write_json(
+                        raw,
+                        source="polygon",
+                        dataset=dataset,
+                        event_date=event_date,
+                    )
                 )
-            try:
-                page = _CorporateActionsResponse.model_validate(raw)
-            except ValidationError as error:
-                raise ProviderResponseError(
-                    f"Polygon {dataset} response failed validation: {error}"
-                ) from error
-            if page.status != "OK":
-                raise ProviderResponseError(f"Polygon {dataset} status was {page.status!r}")
+            page = self._corporate_action_page_from_payload(raw, dataset=dataset)
             pages.append(page)
             if page.next_url is None:
                 return pages

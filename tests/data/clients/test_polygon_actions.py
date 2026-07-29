@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 
+from quant_earning_edge.data import BronzeWriter, LakehouseLayout
 from quant_earning_edge.data.clients import (
     DividendDistributionType,
     PolygonClient,
@@ -14,8 +16,11 @@ from quant_earning_edge.data.clients import (
 )
 from quant_earning_edge.data.clients.errors import ProviderResponseError
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
-def test_splits_paginate_validate_and_sort() -> None:
+
+def test_splits_paginate_validate_sort_and_capture(tmp_path: Path) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -60,7 +65,12 @@ def test_splits_paginate_validate_and_sort() -> None:
         base_url="https://api.polygon.io",
         transport=httpx.MockTransport(handler),
     ) as http_client:
-        events = PolygonClient(api_key="secret", http_client=http_client).stock_splits(
+        client = PolygonClient(
+            api_key="secret",
+            http_client=http_client,
+            bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
+        )
+        events = client.stock_splits(
             start_date=date(2026, 7, 1),
             end_date=date(2026, 7, 31),
         )
@@ -70,6 +80,7 @@ def test_splits_paginate_validate_and_sort() -> None:
     assert requests[0].url.params["execution_date.gte"] == "2026-07-01"
     assert requests[1].headers["Authorization"] == "Bearer secret"
     assert "cursor=abc" in str(requests[1].url)
+    assert len(client.corporate_action_observation_artifacts) == 2
 
 
 def test_dividends_validate_current_endpoint_fields() -> None:

@@ -27,6 +27,7 @@ from quant_earning_edge.features import (
 from quant_earning_edge.universe import (
     DailyUniverseJob,
     EventCandidateJob,
+    EventSourceCapture,
     RunTrigger,
     UniverseBuilder,
     UniverseManifestStore,
@@ -208,6 +209,7 @@ class DailyInputPreparer:
         if halt_snapshot.captured_at > decision_at:
             raise ValueError("daily halt snapshot was captured after the decision")
         config = load_universe_job_config(universe_config_file)
+        earnings_observation_start = len(self._finnhub.earnings_observation_artifacts)
         earnings = EarningsIngestor(
             client=self._finnhub,
             silver_writer=SilverWriter(self._layout),
@@ -216,6 +218,7 @@ class DailyInputPreparer:
             end_date=trade_date,
             ingested_at=decision_at,
         )
+        action_observation_start = len(self._polygon.corporate_action_observation_artifacts)
         actions = CorporateActionsIngestor(
             client=self._polygon,
             silver_writer=SilverWriter(self._layout),
@@ -251,15 +254,25 @@ class DailyInputPreparer:
             halt_snapshot=halt_snapshot_file,
             provider_observations=universe_observations,
         )
-        split_files = tuple(
-            item.path
-            for item in actions.silver_artifacts
-            if "dataset=stock-splits" in str(item.path)
+        split_artifacts = tuple(
+            item for item in actions.silver_artifacts if "dataset=stock-splits" in str(item.path)
         )
-        dividend_files = tuple(
-            item.path
-            for item in actions.silver_artifacts
-            if "dataset=cash-dividends" in str(item.path)
+        dividend_artifacts = tuple(
+            item for item in actions.silver_artifacts if "dataset=cash-dividends" in str(item.path)
+        )
+        event_source = EventSourceCapture(self._layout).write(
+            start_date=prior_date,
+            end_date=trade_date,
+            ingested_at=decision_at,
+            earnings_files=earnings.silver_artifacts,
+            split_files=split_artifacts,
+            dividend_files=dividend_artifacts,
+            earnings_observations=self._finnhub.earnings_observation_artifacts[
+                earnings_observation_start:
+            ],
+            corporate_action_observations=(
+                self._polygon.corporate_action_observation_artifacts[action_observation_start:]
+            ),
         )
         artifact = EventCandidateJob(self._layout).run(
             trade_date=trade_date,
@@ -267,9 +280,10 @@ class DailyInputPreparer:
             universe_snapshot=universe.snapshot.path,
             session_file=session_file,
             earnings_files=tuple(item.path for item in earnings.silver_artifacts),
-            split_files=split_files,
-            dividend_files=dividend_files,
+            split_files=tuple(item.path for item in split_artifacts),
+            dividend_files=tuple(item.path for item in dividend_artifacts),
             universe_source_manifest=universe_source.path,
+            event_source_manifest=event_source.path,
         )
         return artifact.path.resolve()
 
@@ -363,7 +377,11 @@ class DailyInputPreparer:
             if not manifest_path.is_file():
                 continue
             manifest = EventCandidateManifest.load(manifest_path)
-            if manifest.raw["schema_version"] == 3 and manifest.universe_lineage_entries:
+            if (
+                manifest.raw["schema_version"] == 4
+                and manifest.universe_lineage_entries
+                and manifest.event_lineage_entries
+            ):
                 manifest.source_paths(data_lake_root=self._layout.root)
                 paths.append(candidate)
         if not paths:

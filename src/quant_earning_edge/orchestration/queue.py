@@ -387,7 +387,11 @@ class NextWorkflowQueuer:
             if not manifest_path.is_file():
                 continue
             manifest = EventCandidateManifest.load(manifest_path)
-            if manifest.raw["schema_version"] == 3 and manifest.universe_lineage_entries:
+            if (
+                manifest.raw["schema_version"] == 4
+                and manifest.universe_lineage_entries
+                and manifest.event_lineage_entries
+            ):
                 candidates.append(candidate)
         if not candidates:
             return None

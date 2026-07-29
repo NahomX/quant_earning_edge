@@ -30,12 +30,12 @@ reproducible through `uv.lock`.
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Combined PIT earnings/split/dividend candidate audit | Complete | `universe/events.py`, cutoff/timing/overlap tests |
-| Source-bound candidate regeneration | Complete | schema-v2 manifest binds exact universe/calendar/earnings/split/dividend files; queue requires complete lineage; terminal verifier independently regenerates candidate bytes |
+| Source-bound candidate regeneration | Complete | production schema-v3 manifest binds universe provider lineage plus exact calendar/earnings/split/dividend files; queue requires complete lineage; terminal verifier independently regenerates universe and candidate bytes |
 | Polygon splits/dividends ingestion | Complete | current `/stocks/v1` clients, silver schemas, integration tests |
 | Stable schema-validated DuckDB silver views | Complete | `data/store.py`, view query tests |
 | Point-in-time universe eligibility engine | Complete | `universe/builder.py`, PIT property tests |
 | Immutable universe snapshot persistence | Complete | `universe/snapshot.py`, idempotency test |
-| Provider-source universe reconstruction | Complete, pending terminal workflow binding | exact Polygon reference/details/daily-bar Bronze set plus retained config/halt inputs; strict manifest and byte-exact standalone snapshot reproduction |
+| Provider-source universe reconstruction | Complete | exact Polygon reference/details/daily-bar Bronze set plus retained config/halt inputs; strict manifest; candidate/workflow capture; byte-exact terminal Phase 6 reproduction |
 | Daily universe snapshot production job | Implemented, not operationally proven | `universe/job.py`, production-path tests |
 | Five-run unattended readiness evidence | Implemented, awaiting real scheduled runs | manifest store/readiness tests |
 | Credential-safe CLI and validated universe config | Complete | `cli.py`, `runtime.py`, CLI/config tests |

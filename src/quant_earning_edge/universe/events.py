@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 
 from quant_earning_edge.data.calendar import SessionFileStore
 from quant_earning_edge.data.clients import EarningsTiming
+from quant_earning_edge.universe.source_capture import UniverseSourceCaptureManifest
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -115,16 +116,22 @@ class EventCandidateManifest:
             "excluded_counts",
             "source_files",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] not in {2, 3}:
             raise ValueError("event-candidate manifest schema mismatch")
         sources = raw["source_files"]
-        if not isinstance(sources, dict) or set(sources) != {
+        base_source_keys = {
             "universe_snapshot",
             "session_file",
             "earnings_files",
             "split_files",
             "dividend_files",
-        }:
+        }
+        expected_source_keys = (
+            base_source_keys
+            if raw["schema_version"] == 2
+            else base_source_keys | {"universe_source_manifest", "universe_source_files"}
+        )
+        if not isinstance(sources, dict) or set(sources) != expected_source_keys:
             raise ValueError("event-candidate manifest source schema mismatch")
         if (
             not isinstance(sources["universe_snapshot"], dict)
@@ -136,9 +143,25 @@ class EventCandidateManifest:
             or not sources["earnings_files"]
             or not sources["split_files"]
             or not sources["dividend_files"]
+            or (
+                raw["schema_version"] == 3
+                and (
+                    not isinstance(sources["universe_source_manifest"], dict)
+                    or not isinstance(sources["universe_source_files"], list)
+                    or not sources["universe_source_files"]
+                )
+            )
         ):
             raise ValueError("event-candidate manifest source collection is invalid")
         entries = (
+            *(
+                (
+                    sources["universe_source_manifest"],
+                    *sources["universe_source_files"],
+                )
+                if raw["schema_version"] == 3
+                else ()
+            ),
             sources["universe_snapshot"],
             sources["session_file"],
             *sources["earnings_files"],
@@ -202,6 +225,20 @@ class EventCandidateManifest:
 
     @property
     def source_entries(self) -> tuple[dict[str, str], ...]:
+        return (*self.universe_lineage_entries, *self.candidate_source_entries)
+
+    @property
+    def universe_lineage_entries(self) -> tuple[dict[str, str], ...]:
+        if self.raw["schema_version"] == 2:
+            return ()
+        sources = self.raw["source_files"]
+        return (
+            sources["universe_source_manifest"],
+            *sources["universe_source_files"],
+        )
+
+    @property
+    def candidate_source_entries(self) -> tuple[dict[str, str], ...]:
         sources = self.raw["source_files"]
         return (
             sources["universe_snapshot"],
@@ -231,7 +268,7 @@ class EventCandidateJob:
         self._layout = layout
         self._source_root = (source_root or layout.root).resolve()
 
-    def run(
+    def run(  # noqa: PLR0912,PLR0915 - complete causal join boundary.
         self,
         *,
         trade_date: date,
@@ -241,6 +278,7 @@ class EventCandidateJob:
         earnings_files: Sequence[Path],
         split_files: Sequence[Path],
         dividend_files: Sequence[Path],
+        universe_source_manifest: Path | None = None,
     ) -> EventCandidateArtifact:
         """Build candidates without reading observations newer than ``decision_at``."""
         if decision_at.tzinfo is None or decision_at.utcoffset() is None:
@@ -267,6 +305,17 @@ class EventCandidateJob:
             raise ValueError("decision_at must be before the trade session open")
 
         universe_hash = _file_sha256(universe_snapshot)
+        universe_lineage = (
+            UniverseSourceCaptureManifest.load(universe_source_manifest)
+            if universe_source_manifest is not None
+            else None
+        )
+        if universe_lineage is not None and (
+            universe_lineage.raw["trade_date"] != trade_date.isoformat()
+            or universe_lineage.raw["asof_date"] != asof_date.isoformat()
+            or universe_lineage.raw["snapshot_file_sha256"] != universe_hash
+        ):
+            raise ValueError("universe source manifest differs from the candidate snapshot")
         eligible_symbols = self._read_eligible_universe(
             universe_snapshot,
             trade_date=trade_date,
@@ -344,6 +393,7 @@ class EventCandidateJob:
             earnings_files=earnings_files,
             split_files=split_files,
             dividend_files=dividend_files,
+            universe_lineage=universe_lineage,
         )
 
     @staticmethod
@@ -492,6 +542,7 @@ class EventCandidateJob:
         earnings_files: Sequence[Path],
         split_files: Sequence[Path],
         dividend_files: Sequence[Path],
+        universe_lineage: UniverseSourceCaptureManifest | None,
     ) -> EventCandidateArtifact:
         records = [
             {
@@ -532,7 +583,14 @@ class EventCandidateJob:
                 reason.value: count for reason, count in exclusions.items() if count
             },
         }
-        digest = _digest_records(core_evidence)
+        digest = _digest_records(
+            {
+                **core_evidence,
+                "universe_source_manifest_sha256": _file_sha256(universe_lineage.path),
+            }
+            if universe_lineage is not None
+            else core_evidence
+        )
         root = self._layout.root / "gold" / "event-candidates" / f"for_trade_date={trade_date}"
         root.mkdir(parents=True, exist_ok=True)
         path = root / f"candidates-{digest[:20]}.parquet"
@@ -544,13 +602,28 @@ class EventCandidateJob:
             existing = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
             if existing.schema != EVENT_CANDIDATE_SCHEMA or not existing.equals(table):
                 raise RuntimeError(f"candidate artifact schema collision at {path}") from None
+        universe_source_files = (
+            universe_lineage.source_paths(data_lake_root=self._source_root)
+            if universe_lineage is not None
+            else ()
+        )
         evidence = {
-            "schema_version": 2,
+            "schema_version": 3 if universe_lineage is not None else 2,
             "trade_date": trade_date,
             "decision_at": decision_at,
             **core_evidence,
             "candidate_file_sha256": _file_sha256(path),
             "source_files": {
+                **(
+                    {
+                        "universe_source_manifest": self._source_entry(universe_lineage.path),
+                        "universe_source_files": [
+                            self._source_entry(item) for item in universe_source_files
+                        ],
+                    }
+                    if universe_lineage is not None
+                    else {}
+                ),
                 "universe_snapshot": self._source_entry(universe_snapshot),
                 "session_file": self._source_entry(session_file),
                 "earnings_files": [self._source_entry(item) for item in sorted(earnings_files)],

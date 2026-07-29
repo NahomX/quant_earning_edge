@@ -34,7 +34,10 @@ from quant_earning_edge.universe import (
     UniverseSourceCapture,
 )
 from quant_earning_edge.universe.config import load_halt_snapshot, load_universe_job_config
-from quant_earning_edge.universe.events import EVENT_CANDIDATE_SCHEMA
+from quant_earning_edge.universe.events import (
+    EVENT_CANDIDATE_SCHEMA,
+    EventCandidateManifest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -237,7 +240,7 @@ class DailyInputPreparer:
             trigger=RunTrigger.SCHEDULED,
         )
         universe_observations = self._polygon.universe_observation_artifacts[observation_start:]
-        UniverseSourceCapture(self._layout).write(
+        universe_source = UniverseSourceCapture(self._layout).write(
             trade_date=trade_date,
             asof_date=prior_date,
             lookback_start=prior_date - timedelta(days=90),
@@ -266,6 +269,7 @@ class DailyInputPreparer:
             earnings_files=tuple(item.path for item in earnings.silver_artifacts),
             split_files=split_files,
             dividend_files=dividend_files,
+            universe_source_manifest=universe_source.path,
         )
         return artifact.path.resolve()
 
@@ -352,7 +356,16 @@ class DailyInputPreparer:
             / "event-candidates"
             / f"for_trade_date={trade_date.isoformat()}"
         )
-        paths = tuple(sorted(root.glob("candidates-*.parquet")))
+        paths = []
+        for candidate in sorted(root.glob("candidates-*.parquet")):
+            identity = candidate.stem.removeprefix("candidates-")
+            manifest_path = candidate.with_name(f"manifest-{identity}.json")
+            if not manifest_path.is_file():
+                continue
+            manifest = EventCandidateManifest.load(manifest_path)
+            if manifest.raw["schema_version"] == 3 and manifest.universe_lineage_entries:
+                manifest.source_paths(data_lake_root=self._layout.root)
+                paths.append(candidate)
         if not paths:
             return None
         if len(paths) > 1:

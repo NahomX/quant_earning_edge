@@ -179,6 +179,10 @@ def _write_empty_candidate(lake: Path) -> Path:
         }
 
     universe_entry = entry(upstream[0])
+    universe_manifest_path = lake / "queue-universe-source.json"
+    universe_manifest_path.write_bytes(b"queue-universe-source")
+    universe_raw_path = lake / "queue-universe-provider.json"
+    universe_raw_path.write_bytes(b"queue-universe-provider")
     session_entry = entry(session)
     earnings_entry = entry(upstream[1])
     split_entry = entry(upstream[2])
@@ -187,7 +191,7 @@ def _write_empty_candidate(lake: Path) -> Path:
     split_hash = hashlib.sha256(split_entry["sha256"].encode()).hexdigest()
     dividend_hash = hashlib.sha256(dividend_entry["sha256"].encode()).hexdigest()
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "trade_date": "2026-07-28",
         "decision_at": "2026-07-28T01:30:00+00:00",
         "records": [],
@@ -202,6 +206,8 @@ def _write_empty_candidate(lake: Path) -> Path:
         "candidate_dividend_overlap_count": 0,
         "excluded_counts": {},
         "source_files": {
+            "universe_source_manifest": entry(universe_manifest_path),
+            "universe_source_files": [entry(universe_raw_path)],
             "universe_snapshot": universe_entry,
             "session_file": session_entry,
             "earnings_files": [earnings_entry],

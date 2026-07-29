@@ -380,7 +380,15 @@ class NextWorkflowQueuer:
             / "event-candidates"
             / f"for_trade_date={trade_date.isoformat()}"
         )
-        candidates = tuple(sorted(root.glob("candidates-*.parquet")))
+        candidates = []
+        for candidate in sorted(root.glob("candidates-*.parquet")):
+            identity = candidate.stem.removeprefix("candidates-")
+            manifest_path = candidate.with_name(f"manifest-{identity}.json")
+            if not manifest_path.is_file():
+                continue
+            manifest = EventCandidateManifest.load(manifest_path)
+            if manifest.raw["schema_version"] == 3 and manifest.universe_lineage_entries:
+                candidates.append(candidate)
         if not candidates:
             return None
         if len(candidates) > 1:

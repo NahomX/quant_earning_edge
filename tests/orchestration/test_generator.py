@@ -111,12 +111,16 @@ def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Pat
         }
 
     universe, earnings, splits, dividends = (entry(path) for path in upstream)
+    universe_manifest_path = lake_root / "universe-source.json"
+    universe_manifest_path.write_bytes(b"universe-source")
+    universe_raw_path = lake_root / "universe-provider.json"
+    universe_raw_path.write_bytes(b"universe-provider")
     session = entry(session_file)
     earnings_hash = hashlib.sha256(earnings["sha256"].encode()).hexdigest()
     split_hash = hashlib.sha256(splits["sha256"].encode()).hexdigest()
     dividend_hash = hashlib.sha256(dividends["sha256"].encode()).hexdigest()
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "trade_date": "2026-07-28",
         "decision_at": "2026-07-28T01:30:00+00:00",
         "records": [],
@@ -131,6 +135,8 @@ def _empty_candidate_with_lineage(*, lake_root: Path, session_file: Path) -> Pat
         "candidate_dividend_overlap_count": 0,
         "excluded_counts": {},
         "source_files": {
+            "universe_source_manifest": entry(universe_manifest_path),
+            "universe_source_files": [entry(universe_raw_path)],
             "universe_snapshot": universe,
             "session_file": session,
             "earnings_files": [earnings],

@@ -21,6 +21,7 @@ from quant_earning_edge.backtest import (
 )
 from quant_earning_edge.cli import app
 from quant_earning_edge.data import (
+    BronzeWriter,
     LakehouseLayout,
     ReplayEvidenceIndex,
     ReplayManifestRunner,
@@ -81,8 +82,15 @@ from quant_earning_edge.signals import (
     load_strategy_config,
     strategy_file_sha256,
 )
-from quant_earning_edge.universe import EventCandidateJob
-from quant_earning_edge.universe.snapshot import UNIVERSE_SNAPSHOT_SCHEMA
+from quant_earning_edge.universe import (
+    CandidateObservation,
+    EventCandidateJob,
+    UniverseBuilder,
+    UniverseConfig,
+    UniverseSnapshotWriter,
+    UniverseSourceCapture,
+    sector_from_sic_code,
+)
 
 _MODEL_TEMP = TemporaryDirectory(prefix="qee-phase6-model-")
 
@@ -194,34 +202,134 @@ def _write_live_source_capture(
             ),
         )
     )
-    universe_path = candidate_root / "universe-snapshot.parquet"
-    pq.write_table(  # type: ignore[no-untyped-call]
-        pa.Table.from_pylist(
-            [
-                {
-                    "trade_date": trade_date,
-                    "asof_date": prior_date,
-                    "generated_at": captured_at,
-                    "config_sha256": "a" * 64,
-                    "symbol": "AAA",
-                    "eligible": True,
-                    "rejection_reasons": [],
-                    "close": 100.0,
-                    "avg_daily_volume": 1_000_000.0,
-                    "market_cap_usd": 1_000_000_000.0,
-                    "primary_exchange": "XNAS",
-                    "security_type": "CS",
-                    "active": True,
-                    "halted": False,
-                    "sector": "TECHNOLOGY",
-                    "list_date": date(2000, 1, 1),
-                    "delisted_date": None,
-                }
-            ],
-            schema=UNIVERSE_SNAPSHOT_SCHEMA,
-        ),
-        universe_path,
+    universe_config = UniverseConfig(
+        min_price=5.0,
+        min_market_cap_usd=100_000_000.0,
+        min_avg_daily_volume=500_000.0,
+        allowed_exchanges=frozenset({"XNAS"}),
+        allowed_security_types=frozenset({"CS"}),
+        exclude_halts=True,
     )
+    universe_snapshot = UniverseSnapshotWriter(candidate_layout).write(
+        UniverseBuilder(universe_config).build(
+            trade_date=trade_date,
+            asof_date=prior_date,
+            generated_at=captured_at,
+            candidates=(
+                CandidateObservation(
+                    symbol="AAA",
+                    asof_date=prior_date,
+                    close=100.0,
+                    avg_daily_volume=1_000_000.0,
+                    market_cap_usd=1_000_000_000.0,
+                    primary_exchange="XNAS",
+                    security_type="CS",
+                    active=True,
+                    halted=False,
+                    sector=sector_from_sic_code("3571"),
+                    list_date=date(2000, 1, 1),
+                    delisted_date=None,
+                ),
+            ),
+        )
+    )
+    config_path = candidate_root / "universe.yaml"
+    config_path.write_text(
+        "adv_sessions: 1\neligibility:\n"
+        "  min_price: 5\n  min_market_cap_usd: 100000000\n"
+        "  min_avg_daily_volume: 500000\n  allowed_exchanges: [XNAS]\n"
+        "  allowed_security_types: [CS]\n  exclude_halts: true\n",
+        encoding="utf-8",
+    )
+    halt_path = candidate_root / "halts.json"
+    halt_path.write_text(
+        json.dumps(
+            {
+                "asof_date": prior_date.isoformat(),
+                "captured_at": captured_at.isoformat(),
+                "symbols": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    reference_raw = {
+        "status": "OK",
+        "results": [
+            {
+                "ticker": "AAA",
+                "name": "AAA Corp",
+                "active": True,
+                "locale": "us",
+                "market": "stocks",
+                "primary_exchange": "XNAS",
+                "type": "CS",
+            }
+        ],
+    }
+    details_raw = {
+        "status": "OK",
+        "results": {
+            "ticker": "AAA",
+            "name": "AAA Corp",
+            "active": True,
+            "locale": "us",
+            "market": "stocks",
+            "primary_exchange": "XNAS",
+            "type": "CS",
+            "market_cap": 1_000_000_000,
+            "sic_code": "3571",
+            "list_date": "2000-01-01",
+        },
+    }
+    bars_raw = {
+        "ticker": "AAA",
+        "adjusted": True,
+        "status": "OK",
+        "results": [
+            {
+                "t": int(
+                    datetime(
+                        prior_date.year, prior_date.month, prior_date.day, 20, tzinfo=UTC
+                    ).timestamp()
+                    * 1000
+                ),
+                "o": 99,
+                "h": 101,
+                "l": 98,
+                "c": 100,
+                "v": 1_000_000,
+                "vw": 100,
+                "n": 1000,
+            }
+        ],
+    }
+    bronze = BronzeWriter(candidate_layout)
+    provider_observations = tuple(
+        bronze.write_json(
+            payload,
+            source="polygon",
+            dataset=dataset,
+            event_date=prior_date,
+            received_at=captured_at,
+        )
+        for dataset, payload in (
+            ("ticker-reference", reference_raw),
+            ("ticker-details", details_raw),
+            ("daily-aggregate-bars", bars_raw),
+        )
+    )
+    universe_source = UniverseSourceCapture(candidate_layout).write(
+        trade_date=trade_date,
+        asof_date=prior_date,
+        lookback_start=prior_date,
+        decision_at=captured_at,
+        adv_sessions=1,
+        snapshot=universe_snapshot,
+        universe_config=config_path,
+        halt_snapshot=halt_path,
+        provider_observations=provider_observations,
+    )
+    universe_path = universe_snapshot.path
     writer = SilverWriter(candidate_layout)
     earnings = writer.write_earnings(
         (
@@ -274,6 +382,7 @@ def _write_live_source_capture(
         earnings_files=tuple(item.path for item in earnings),
         split_files=tuple(item.path for item in splits),
         dividend_files=tuple(item.path for item in dividends),
+        universe_source_manifest=universe_source.path,
     )
 
     def write_raw(path: Path, payload: object) -> Path:
@@ -357,6 +466,8 @@ def _write_live_source_capture(
             *snapshot_paths,
             evidence_path,
             candidate.manifest_path,
+            universe_source.path,
+            *universe_source.source_paths(data_lake_root=candidate_root),
             universe_path,
             *(item.path for item in earnings),
             *(item.path for item in splits),
@@ -512,6 +623,12 @@ def _no_trade_replay_sources(
         account_path,
         live_evidence_path,
         candidate_manifest_path,
+        universe_source_manifest_path,
+        universe_config_path,
+        universe_halt_path,
+        universe_bar_raw_path,
+        universe_details_raw_path,
+        universe_reference_raw_path,
         universe_path,
         earnings_path,
         split_path,
@@ -609,6 +726,12 @@ def _no_trade_replay_sources(
         "planning_source": source_path,
         "candidate_file": candidate_path,
         "candidate_manifest": candidate_manifest_path,
+        "universe_source_manifest": universe_source_manifest_path,
+        "universe_config": universe_config_path,
+        "universe_halts": universe_halt_path,
+        "universe_bar_raw": universe_bar_raw_path,
+        "universe_details_raw": universe_details_raw_path,
+        "universe_reference_raw": universe_reference_raw_path,
         "candidate_universe": universe_path,
         "candidate_earnings": earnings_path,
         "candidate_splits": split_path,
@@ -654,6 +777,12 @@ def _complete_source_workflow(
                 sources["planning_source"],
                 sources["candidate_file"],
                 sources["candidate_manifest"],
+                sources["universe_source_manifest"],
+                sources["universe_config"],
+                sources["universe_halts"],
+                sources["universe_bar_raw"],
+                sources["universe_details_raw"],
+                sources["universe_reference_raw"],
                 sources["candidate_universe"],
                 sources["candidate_earnings"],
                 sources["candidate_splits"],
@@ -719,6 +848,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_live_source_evidence: bool = True,
     capture_live_provider_inputs: bool = True,
     capture_candidate_lineage: bool = True,
+    capture_universe_lineage: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -749,6 +879,12 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         live_snapshot_path,
         live_evidence_path,
         candidate_manifest_path,
+        universe_source_manifest_path,
+        universe_config_path,
+        universe_halt_path,
+        universe_bar_raw_path,
+        universe_details_raw_path,
+        universe_reference_raw_path,
         universe_path,
         earnings_path,
         split_path,
@@ -976,6 +1112,18 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                             dividend_path,
                         )
                         if capture_candidate_lineage
+                        else ()
+                    ),
+                    *(
+                        (
+                            universe_source_manifest_path,
+                            universe_config_path,
+                            universe_halt_path,
+                            universe_bar_raw_path,
+                            universe_details_raw_path,
+                            universe_reference_raw_path,
+                        )
+                        if capture_universe_lineage
                         else ()
                     ),
                     *((live_evidence_path,) if capture_live_source_evidence else ()),
@@ -1505,6 +1653,25 @@ def test_daily_report_verifier_requires_candidate_generation_lineage(
         )
 
 
+def test_daily_report_verifier_requires_universe_generation_lineage(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_universe_lineage=False,
+    )
+
+    with pytest.raises(ValueError, match="exact captured data-lake sources"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
 def test_daily_report_verifier_rejects_changed_candidate_source(
     tmp_path: Path,
 ) -> None:
@@ -1515,7 +1682,7 @@ def test_daily_report_verifier_rejects_changed_candidate_source(
         tmp_path=tmp_path,
         session_date=session_date,
     )
-    universe_path = next(tmp_path.glob("**/candidate-lake/universe-snapshot.parquet"))
+    universe_path = next(tmp_path.glob("**/candidate-lake/**/snapshot-*.parquet"))
     universe_path.write_bytes(b"changed after candidate generation")
 
     with pytest.raises(ValueError, match="workflow artifact changed after capture"):

@@ -1458,7 +1458,7 @@ uv run qee model capture-live-source `
   --evidence-output .\live-market-observations-evidence.json
 ```
 
-The event-candidate artifact now carries a strict schema-v2 manifest that binds
+The event-candidate artifact now carries a strict production schema-v3 manifest that binds
 the exact universe snapshot, authoritative session file, earnings inputs, and
 split/dividend inputs used to generate it. The proof queue will not dispatch a
 candidate without that complete lineage. The artifact also carries its

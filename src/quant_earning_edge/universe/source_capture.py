@@ -245,11 +245,15 @@ class UniverseSourceCapture:
             halt_snapshot=halt,
             trigger=RunTrigger.SCHEDULED,
         )
+        reproduced_file_sha256 = _file_sha256(result.snapshot.path)
         if (
             result.snapshot.sha256 != manifest.raw["snapshot_semantic_sha256"]
-            or _file_sha256(result.snapshot.path) != manifest.raw["snapshot_file_sha256"]
+            or reproduced_file_sha256 != manifest.raw["snapshot_file_sha256"]
         ):
-            raise ValueError("universe snapshot differs from captured provider inputs")
+            raise ValueError(
+                "universe snapshot differs from captured provider inputs: "
+                f"semantic={result.snapshot.sha256}, file={reproduced_file_sha256}"
+            )
         return result.snapshot
 
     def _source_entry(self, path: Path) -> dict[str, str]:

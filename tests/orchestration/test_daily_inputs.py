@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -73,6 +75,7 @@ def test_daily_inputs_wait_before_candidate_boundary(tmp_path: Path) -> None:
 def test_zero_candidate_day_is_feature_ready_without_provider_calls(
     tmp_path: Path,
 ) -> None:
+    session_file = _sessions(tmp_path)
     candidate_root = tmp_path / "gold" / "event-candidates" / "for_trade_date=2026-07-28"
     candidate_root.mkdir(parents=True)
     candidate = candidate_root / "candidates-empty.parquet"
@@ -80,13 +83,67 @@ def test_zero_candidate_day_is_feature_ready_without_provider_calls(
         pa.Table.from_pylist([], schema=EVENT_CANDIDATE_SCHEMA),
         candidate,
     )
+    source_paths = tuple(
+        tmp_path / f"{name}.source"
+        for name in (
+            "universe",
+            "earnings",
+            "splits",
+            "dividends",
+            "universe-manifest",
+            "universe-provider",
+        )
+    )
+    for index, path in enumerate(source_paths):
+        path.write_bytes(f"source-{index}".encode())
+
+    def entry(path: Path) -> dict[str, str]:
+        return {
+            "path": path.relative_to(tmp_path).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
+    universe, earnings, splits, dividends, universe_manifest, universe_provider = (
+        entry(path) for path in source_paths
+    )
+    session = entry(session_file)
+    split_hash = hashlib.sha256(splits["sha256"].encode()).hexdigest()
+    dividend_hash = hashlib.sha256(dividends["sha256"].encode()).hexdigest()
+    manifest = {
+        "schema_version": 3,
+        "trade_date": "2026-07-28",
+        "decision_at": "2026-07-28T01:30:00+00:00",
+        "records": [],
+        "candidate_file_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        "universe_snapshot_sha256": universe["sha256"],
+        "session_file_sha256": session["sha256"],
+        "earnings_input_sha256": hashlib.sha256(earnings["sha256"].encode()).hexdigest(),
+        "corporate_actions_input_sha256": hashlib.sha256(
+            f"{split_hash}{dividend_hash}".encode()
+        ).hexdigest(),
+        "candidate_split_overlap_count": 0,
+        "candidate_dividend_overlap_count": 0,
+        "excluded_counts": {},
+        "source_files": {
+            "universe_source_manifest": universe_manifest,
+            "universe_source_files": [universe_provider],
+            "universe_snapshot": universe,
+            "session_file": session,
+            "earnings_files": [earnings],
+            "split_files": [splits],
+            "dividend_files": [dividends],
+        },
+    }
+    candidate.with_name("manifest-empty.json").write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    )
 
     result = _preparer(
         tmp_path,
         datetime(2026, 7, 28, 1, 30, tzinfo=UTC),
     ).run(
         trade_date=date(2026, 7, 28),
-        session_file=_sessions(tmp_path),
+        session_file=session_file,
         halt_snapshot_file=tmp_path / "unused-halts.json",
         universe_config_file=tmp_path / "unused-universe.yaml",
         feature_names=("signal",),

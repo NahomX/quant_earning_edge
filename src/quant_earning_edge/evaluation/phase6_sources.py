@@ -341,6 +341,8 @@ class Phase6DailyReportVerifier:
         from quant_earning_edge.universe import (  # noqa: PLC0415
             EventCandidateJob,
             EventCandidateManifest,
+            UniverseSourceCapture,
+            UniverseSourceCaptureManifest,
         )
 
         manifests = []
@@ -360,6 +362,8 @@ class Phase6DailyReportVerifier:
                 "live source must bind to exactly one captured candidate-generation manifest"
             )
         manifest = manifests[0]
+        if manifest.raw["schema_version"] != 3:
+            raise ValueError("candidate generation lacks source-bound universe lineage")
         source_root, sources = Phase6DailyReportVerifier._candidate_sources(
             manifest=manifest,
             paths_by_sha=paths_by_sha,
@@ -371,20 +375,35 @@ class Phase6DailyReportVerifier:
         ):
             raise ValueError("live source candidate identity differs from its generation manifest")
         source_groups = manifest.raw["source_files"]
+        lineage_count = len(manifest.universe_lineage_entries)
+        universe_manifest_path = sources[0]
+        universe_manifest = UniverseSourceCaptureManifest.load(universe_manifest_path)
+        if universe_manifest.source_paths(data_lake_root=source_root) != sources[1:lineage_count]:
+            raise ValueError("candidate universe lineage differs from its source manifest")
+        candidate_sources = sources[lineage_count:]
         earnings_end = 2 + len(source_groups["earnings_files"])
         splits_end = earnings_end + len(source_groups["split_files"])
         with TemporaryDirectory(prefix="qee-candidate-reconstruction-") as temporary:
+            universe_output = LakehouseLayout(Path(temporary) / "universe")
+            reproduced_universe = UniverseSourceCapture.reproduce(
+                universe_manifest,
+                data_lake_root=source_root,
+                output_layout=universe_output,
+            )
+            if reproduced_universe.path.read_bytes() != candidate_sources[0].read_bytes():
+                raise ValueError("candidate universe differs from independent reconstruction")
             reproduced = EventCandidateJob(
-                LakehouseLayout(Path(temporary)),
+                LakehouseLayout(Path(temporary) / "candidates"),
                 source_root=source_root,
             ).run(
                 trade_date=source.trade_date,
                 decision_at=datetime.fromisoformat(manifest.raw["decision_at"]),
-                universe_snapshot=sources[0],
-                session_file=sources[1],
-                earnings_files=sources[2:earnings_end],
-                split_files=sources[earnings_end:splits_end],
-                dividend_files=sources[splits_end:],
+                universe_snapshot=candidate_sources[0],
+                session_file=candidate_sources[1],
+                earnings_files=candidate_sources[2:earnings_end],
+                split_files=candidate_sources[earnings_end:splits_end],
+                dividend_files=candidate_sources[splits_end:],
+                universe_source_manifest=universe_manifest_path,
             )
             if (
                 hashlib.sha256(reproduced.path.read_bytes()).hexdigest()

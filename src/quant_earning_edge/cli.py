@@ -115,6 +115,7 @@ from quant_earning_edge.orchestration import (
     WorkflowHealthEvaluator,
     WorkflowHealthReport,
     WorkflowInboxWorker,
+    WorkflowLoopSpec,
     WorkflowRunSpec,
     WorkflowTrigger,
     WorkflowWorkerStore,
@@ -3559,6 +3560,8 @@ def run_workflow_worker(  # noqa: PLR0917 - persistent loop deployment contract.
     """Continuously queue and resume authoritative proof workflows."""
     environment = _environment(env_file)
     try:
+        if loop_spec is not None and WorkflowLoopSpec.load(loop_spec).worker_id != worker_id:
+            raise ValueError("workflow loop and worker CLI identities differ")
         command_executor = partial(
             execute_qee_command,
             environment=load_subprocess_environment(env_file=env_file),

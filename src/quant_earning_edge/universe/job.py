@@ -279,15 +279,17 @@ class DailyUniverseJob:
             (bar for bar in bars if bar.session_date <= asof_date),
             key=lambda bar: bar.session_date,
         )
-        if len(eligible_bars) < self._adv_sessions:
-            raise ValueError(
-                f"{reference.symbol} has {len(eligible_bars)} bars; "
-                f"{self._adv_sessions} required for ADV"
-            )
-        window = eligible_bars[-self._adv_sessions :]
-        if window[-1].session_date != asof_date:
+        if not eligible_bars or eligible_bars[-1].session_date != asof_date:
             raise ValueError(f"{reference.symbol} has no prior-close bar on {asof_date}")
-        average_volume = sum(bar.volume for bar in window) / self._adv_sessions
+        window = eligible_bars[-self._adv_sessions :]
+        # A newly listed security with a valid prior close is a normal,
+        # auditable exclusion, not a reason to abort the entire US universe.
+        # Zero ADV deterministically fails every non-negative production floor.
+        average_volume = (
+            sum(bar.volume for bar in window) / self._adv_sessions
+            if len(window) == self._adv_sessions
+            else 0.0
+        )
         return CandidateObservation(
             symbol=reference.symbol,
             asof_date=asof_date,

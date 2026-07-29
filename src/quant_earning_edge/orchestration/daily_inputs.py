@@ -17,6 +17,7 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.features import (
+    FEATURE_VALUE_SCHEMA,
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
     FeatureEngine,
@@ -370,6 +371,8 @@ class DailyInputPreparer:
         expected = {(symbol, feature_name) for symbol in symbols for feature_name in feature_names}
         matches = []
         for path in sorted(root.glob("part-*.parquet")):
+            if pq.read_schema(path) != FEATURE_VALUE_SCHEMA:  # type: ignore[no-untyped-call]
+                continue
             rows = [
                 row
                 for row in pq.read_table(path).to_pylist()  # type: ignore[no-untyped-call]

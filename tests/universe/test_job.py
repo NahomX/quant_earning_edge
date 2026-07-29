@@ -198,7 +198,7 @@ def test_missing_prior_close_aborts_and_persists_failure_manifest(tmp_path: Path
         market_data=FakeMarketData(omit_prior_close=True),
     )
 
-    with pytest.raises(ValueError, match="bars; 20 required"):
+    with pytest.raises(ValueError, match="no prior-close bar"):
         job.run(
             trade_date=TRADE_DATE,
             asof_date=ASOF_DATE,
@@ -218,6 +218,48 @@ def test_missing_prior_close_aborts_and_persists_failure_manifest(tmp_path: Path
     assert manifests[0].candidate_count == 0
     assert manifests[0].error_type == "ValueError"
     assert not list((tmp_path / "gold").rglob("*.parquet"))
+
+
+def test_new_listing_with_short_history_is_conservatively_rejected(
+    tmp_path: Path,
+) -> None:
+    market_data = FakeMarketData()
+    original = market_data.daily_bars
+
+    def short_history(
+        *,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[EquityBar, ...]:
+        bars = original(symbol=symbol, start_date=start_date, end_date=end_date)
+        return bars[-5:] if symbol == "AAPL" else bars
+
+    market_data.daily_bars = short_history  # type: ignore[method-assign]
+    job, _ = _job(tmp_path, market_data=market_data)
+
+    result = job.run(
+        trade_date=TRADE_DATE,
+        asof_date=ASOF_DATE,
+        lookback_start=date(2026, 6, 1),
+        halt_snapshot=HaltSnapshot(
+            asof_date=ASOF_DATE,
+            symbols=frozenset(),
+            captured_at=datetime(2026, 7, 27, 21, tzinfo=UTC),
+        ),
+        trigger=RunTrigger.SCHEDULED,
+    )
+
+    table = pq.read_table(result.snapshot.path)  # type: ignore[no-untyped-call]
+    rows = {
+        row["symbol"]: row
+        for row in table.select(
+            ["symbol", "avg_daily_volume", "eligible", "rejection_reasons"]
+        ).to_pylist()
+    }
+    assert rows["AAPL"]["avg_daily_volume"] == 0
+    assert not rows["AAPL"]["eligible"]
+    assert rows["AAPL"]["rejection_reasons"] == ["adv_below_minimum"]
 
 
 def _manifest(

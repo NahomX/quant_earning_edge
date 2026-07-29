@@ -13,11 +13,17 @@ from quant_earning_edge.labels.forward import (
     LabelStore,
 )
 from quant_earning_edge.labels.inputs import LabelBarsLoader
+from quant_earning_edge.labels.source_capture import (
+    ForwardLabelSourceCapture,
+    ForwardLabelSourceManifest,
+)
 
 __all__ = [
     "FORWARD_LABEL_SCHEMA",
     "ForwardLabel",
     "ForwardLabelMaker",
+    "ForwardLabelSourceCapture",
+    "ForwardLabelSourceManifest",
     "LabelArtifact",
     "LabelBar",
     "LabelBarsLoader",

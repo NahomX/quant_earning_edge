@@ -27,9 +27,10 @@ uv run qee ingest minute-bars `
 ```
 
 These commands write the raw response to bronze before writing validated,
-partitioned silver Parquet. Earnings ingestion also writes a strict source
-manifest binding each Silver output to the exact retained Finnhub observations
-that reproduce it.
+partitioned silver Parquet. Earnings, adjusted daily-bar, and minute-bar
+ingestion each emit a strict source manifest binding every Silver output to
+the exact retained provider pages, request interval, and ingestion time needed
+to reproduce it byte-for-byte.
 
 The corporate-action command uses Polygon/Massive's current `/stocks/v1/splits`
 and `/stocks/v1/dividends` endpoints. Splits partition by execution date and
@@ -77,6 +78,12 @@ implementation hash, a hash of only its allowed PIT inputs, and the computation
 cutoff. Registered feature property tests append arbitrary future observations
 and require exact output and lineage equality.
 
+The command also emits `historical-source-<hash>.json`. Every daily-bar input
+must have unique retained Polygon source coverage. Minute, earnings, and event
+candidate inputs require their corresponding complete provider manifests.
+Replaying the historical manifest first rebuilds all upstream Silver/candidate
+artifacts and then requires the feature Parquet to match exactly.
+
 The registered baseline also includes Kalman-filtered 7/30-session volume,
 relative volume, RSI(14), MACD 12/26/9 histogram, distance to the 252-session
 high, earnings timing, days since the prior report, and prior EPS surprise.
@@ -109,6 +116,9 @@ Repeat `--bars-file` through the fifth subsequent market session. The three
 labels are next-session open-to-close, next-session close versus the as-of
 close, and fifth-session close versus the as-of close. Offsets come only from
 the explicit market-session file, never weekdays or calendar-day arithmetic.
+The command emits `label-source-<hash>.json`; it requires unique Polygon
+daily-bar lineage and unique Alpaca calendar lineage and reproduces both before
+recomputing the exact label file.
 
 Join complete feature and label key sets:
 
@@ -123,7 +133,11 @@ uv run qee labels assemble `
 Assembly rejects missing keys, incomplete feature vectors, mixed code versions,
 mixed input lineage, schema drift, non-next-session targets, and features
 computed at or after the target open. Features and labels remain separate
-artifacts; only this immutable training table combines them.
+artifacts; only this immutable training table combines them. Assembly now also
+requires exactly one historical-feature source manifest and one forward-label
+source manifest for every supplied input. Its schema-v2 source manifest retains
+their complete provider lineage, and downstream tuning replays both chains
+before rebuilding the wide table.
 
 ## Plan purged walk-forward folds
 
@@ -821,7 +835,9 @@ uv run qee backfill bars `
 Successful batches are skipped on the next invocation. Failed attempts remain
 as evidence. Retries reuse the plan's fixed ingestion timestamp and therefore
 cannot create different content-addressed Parquet files solely because time
-passed.
+passed. Every successful batch also emits a raw-Polygon-to-Silver source
+manifest, so later historical feature and label materialization rejects
+unattested backfill partitions.
 
 Coverage requires an authoritative JSON `sessions` list or line-delimited
 market-calendar file:

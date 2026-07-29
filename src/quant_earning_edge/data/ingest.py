@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from datetime import date
     from pathlib import Path
 
+    from quant_earning_edge.data.bars_source import DailyBarsSourceCapture
     from quant_earning_edge.data.clients.finnhub import FinnhubClient
     from quant_earning_edge.data.clients.polygon import PolygonClient
     from quant_earning_edge.data.earnings_source import EarningsSourceCapture
@@ -36,6 +37,7 @@ class BarsIngestionResult:
     end_date: date
     bar_count: int
     silver_artifacts: tuple[SilverArtifact, ...]
+    source_manifest: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -121,9 +123,16 @@ class EarningsIngestor:
 class BarsIngestor:
     """Fetch adjusted Polygon bars and persist them to the silver tier."""
 
-    def __init__(self, *, client: PolygonClient, silver_writer: SilverWriter) -> None:
+    def __init__(
+        self,
+        *,
+        client: PolygonClient,
+        silver_writer: SilverWriter,
+        source_capture: DailyBarsSourceCapture | None = None,
+    ) -> None:
         self._client = client
         self._silver_writer = silver_writer
+        self._source_capture = source_capture
 
     def ingest(
         self,
@@ -134,6 +143,8 @@ class BarsIngestor:
         ingested_at: datetime | None = None,
     ) -> BarsIngestionResult:
         """Ingest one symbol over an inclusive date range."""
+        observation_start = len(self._client.feature_observation_artifacts)
+        effective_ingested_at = ingested_at or datetime.now(UTC)
         bars = self._client.daily_bars(
             symbol=symbol,
             start_date=start_date,
@@ -141,15 +152,30 @@ class BarsIngestor:
         )
         artifacts = self._silver_writer.write_daily_bars(
             bars,
-            ingested_at=ingested_at,
+            ingested_at=effective_ingested_at,
         )
         normalized_symbol = symbol.strip().upper()
+        source_manifest = (
+            self._source_capture.write(
+                symbols=(normalized_symbol,),
+                start_date=start_date,
+                end_date=end_date,
+                ingested_at=effective_ingested_at,
+                silver_files=artifacts,
+                provider_observations=self._client.feature_observation_artifacts[
+                    observation_start:
+                ],
+            )
+            if self._source_capture is not None
+            else None
+        )
         return BarsIngestionResult(
             symbol=normalized_symbol,
             start_date=start_date,
             end_date=end_date,
             bar_count=len(bars),
             silver_artifacts=artifacts,
+            source_manifest=(source_manifest.path if source_manifest is not None else None),
         )
 
 

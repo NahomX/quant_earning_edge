@@ -7,7 +7,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
 from quant_earning_edge.data.store import DuckDBStore
@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from quant_earning_edge.data.bars_source import DailyBarsSourceCapture
+    from quant_earning_edge.data.bronze import BronzeArtifact
     from quant_earning_edge.data.clients.polygon import EquityBar
     from quant_earning_edge.data.layout import LakehouseLayout
     from quant_earning_edge.data.silver import SilverArtifact, SilverWriter
@@ -245,12 +247,14 @@ class BarBackfillJob:
         provider: BarsProvider,
         silver_writer: SilverWriter,
         store: BarBackfillStore,
+        source_capture: DailyBarsSourceCapture | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         attempt_id_factory: Callable[[], str] = lambda: uuid4().hex,
     ) -> None:
         self._provider = provider
         self._silver_writer = silver_writer
         self._store = store
+        self._source_capture = source_capture
         self._clock = clock
         self._attempt_id_factory = attempt_id_factory
 
@@ -299,6 +303,9 @@ class BarBackfillJob:
         attempt_id = self._attempt_id_factory()
         started_at = self._aware_now()
         bars: list[EquityBar] = []
+        observation_start = (
+            len(self._provider_observations()) if self._source_capture is not None else 0
+        )
         try:
             for symbol in symbols:
                 fetched = self._provider.daily_bars(
@@ -318,6 +325,15 @@ class BarBackfillJob:
                 tuple(bars),
                 ingested_at=plan.created_at,
             )
+            if self._source_capture is not None:
+                self._source_capture.write(
+                    symbols=symbols,
+                    start_date=plan.start_date,
+                    end_date=plan.end_date,
+                    ingested_at=plan.created_at,
+                    silver_files=artifacts,
+                    provider_observations=self._provider_observations()[observation_start:],
+                )
             event = self._success_event(
                 plan=plan,
                 attempt_id=attempt_id,
@@ -375,6 +391,12 @@ class BarBackfillJob:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("backfill clock must return timezone-aware datetimes")
         return value.astimezone(UTC)
+
+    def _provider_observations(self) -> tuple[BronzeArtifact, ...]:
+        observations = getattr(self._provider, "feature_observation_artifacts", None)
+        if not isinstance(observations, tuple):
+            raise ValueError("source-bound backfill provider does not expose observations")
+        return cast("tuple[BronzeArtifact, ...]", observations)
 
 
 class BarCoverageAuditor:

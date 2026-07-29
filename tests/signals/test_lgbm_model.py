@@ -184,7 +184,15 @@ def test_walk_forward_training_cli_persists_models(
     study_output = tmp_path / "study.json"
     _dataset(dataset)
     source_inputs = []
-    for name in ("features", "labels", "sessions"):
+    for name in (
+        "features",
+        "labels",
+        "sessions",
+        "feature-manifest",
+        "feature-lineage",
+        "label-manifest",
+        "label-lineage",
+    ):
         path = tmp_path / f"{name}.source"
         path.write_text(name, encoding="utf-8")
         source_inputs.append(path)
@@ -197,12 +205,16 @@ def test_walk_forward_training_cli_persists_models(
         }
 
     source_raw = {
-        "schema_version": 1,
+        "schema_version": 2,
         "assembled_at": "2025-03-20T00:00:00+00:00",
         "dataset_file": entry(dataset),
         "feature_files": [entry(source_inputs[0])],
         "label_files": [entry(source_inputs[1])],
         "session_file": entry(source_inputs[2]),
+        "feature_source_manifests": [entry(source_inputs[3])],
+        "feature_source_files": [entry(source_inputs[4])],
+        "label_source_manifests": [entry(source_inputs[5])],
+        "label_source_files": [entry(source_inputs[6])],
     }
     (tmp_path / "training-source-fixture.json").write_bytes(
         json.dumps(source_raw, sort_keys=True, separators=(",", ":")).encode()

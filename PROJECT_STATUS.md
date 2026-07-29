@@ -33,9 +33,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 395 automated tests pass.
+- 400 automated tests pass.
 - Ruff formatting and lint pass.
-- Mypy strict checking passes across 104 source files.
+- Mypy strict checking passes across 109 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
@@ -56,9 +56,16 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Each Optuna artifact is bound to its datasets, purged split plan, and strategy;
   walk-forward attestation reruns the deterministic nested search and requires
   the exact trial ledger, winner, score, and selected parameters.
-- Every wide training dataset is source-bound to exact long-form feature files,
-  forward-label files, authoritative sessions, and assembly time; tuning first
-  rebuilds and byte-compares each Parquet input.
+- Every adjusted daily- and premarket minute-bar ingestion now emits a strict
+  retained-Polygon source manifest; the resumable five-year backfill does the
+  same for every completed symbol batch.
+- Historical feature files independently rebuild their daily/minute/earnings
+  Silver inputs and fully source-bound event candidates before recomputing the
+  registered features. Forward labels independently rebuild raw Polygon bars
+  and the raw Alpaca calendar before recomputing D+1/D+5 targets.
+- Every wide training dataset requires those unique feature and label source
+  manifests, deeply replays them, and then byte-compares the reconstructed
+  wide Parquet before tuning can begin.
 - Each production refit emits a content-addressed source manifest binding the
   model/evidence, training datasets, reconstructed Phase 4 sources, split plan,
   and Optuna study; replaying it must reproduce the exact booster and evidence.
@@ -159,7 +166,7 @@ binding, readiness audit, and isolated smoke admission all pass.
 ## Current next action
 
 Obtain/configure the three provider credentials and Polygon NBBO entitlement,
-then execute the credentialed historical backfill and coverage audit. Until
-those external inputs exist, further progress is limited to additional
-code-level hardening and documentation; it is not valid to claim that the
-strategy or 90-session proof passed.
+then execute the now provider-source-bound historical backfill and coverage
+audit. Until those external inputs exist, further progress is limited to
+additional code-level hardening and documentation; it is not valid to claim
+that the strategy or 90-session proof passed.

@@ -26,6 +26,8 @@ reproducible through `uv.lock`.
 | Provider-source earnings reconstruction | Complete | every production/CLI Finnhub ingestion emits a strict raw-to-Silver manifest; historical live-feature inputs require unique manifest coverage and byte-exact reproduction |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
 | US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
+| Provider-source daily-bar reconstruction | Complete | single-symbol ingestion and resumable backfill emit strict raw-Polygon-to-Silver manifests; every captured file is byte-exactly replayable |
+| Provider-source minute-bar reconstruction | Complete | minute ingestion emits the exact interval/event-date/ingestion-time manifest and byte-exactly rebuilds Silver from retained Polygon pages |
 | Resumable historical backfill tooling | Complete | `data/backfill.py`, resume tests |
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
@@ -45,9 +47,11 @@ reproducible through `uv.lock`.
 | Typed feature registry with code hashes and PIT input boundary | Complete | `features/registry.py`, active property tests |
 | Baseline causal feature set | 16 scalar features complete | price, gap, Kalman volume, momentum, and earnings-event features |
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
+| Source-bound historical feature reconstruction | Complete | price/event/premarket inputs bind daily/minute/earnings/candidate provider chains; exact registered-feature recomputation and Parquet equality are required |
 | Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, including next-session open-to-close target and explicit-offset tests |
+| Source-bound forward-label reconstruction | Complete | raw Polygon adjusted bars and raw Alpaca sessions are independently replayed before exact D+1/D+5 label regeneration |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
-| Source-bound training-dataset reconstruction | Complete | exact feature/label/session/timestamp lineage; byte-exact wide Parquet rebuild required before Optuna selection |
+| Source-bound training-dataset reconstruction | Complete | historical feature and forward-label provider manifests are mandatory and deeply replayed before byte-exact wide Parquet rebuild and Optuna selection |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |
 | Immutable walk-forward plan manifests | Complete | Parquet schema/source hashes, deterministic JSON, CLI test |
 | Deterministic 60-session momentum baseline | Complete | PIT membership + adjusted-bar builder, causal next-open ledger, immutable source manifest |

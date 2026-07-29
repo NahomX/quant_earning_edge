@@ -10,6 +10,7 @@ from quant_earning_edge.data.backfill import (
     BarCoverageAuditor,
     BarCoverageReport,
 )
+from quant_earning_edge.data.bars_source import DailyBarsSourceCapture, DailyBarsSourceManifest
 from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 from quant_earning_edge.data.calendar import SessionFile, SessionFileStore
 from quant_earning_edge.data.calendar_source import CalendarSourceCapture, CalendarSourceManifest
@@ -31,6 +32,10 @@ from quant_earning_edge.data.ingest import (
 )
 from quant_earning_edge.data.layout import DataTier, LakehouseLayout
 from quant_earning_edge.data.market_events import ReplayMarketDataLoader, ReplayMarketEvents
+from quant_earning_edge.data.minute_bars_source import (
+    MinuteBarsSourceCapture,
+    MinuteBarsSourceManifest,
+)
 from quant_earning_edge.data.replay_specs import (
     ReplayEventSourceSpec,
     ReplayEvidenceIndex,
@@ -77,6 +82,8 @@ __all__ = [
     "CalendarSourceManifest",
     "CorporateActionsIngestionResult",
     "CorporateActionsIngestor",
+    "DailyBarsSourceCapture",
+    "DailyBarsSourceManifest",
     "DataTier",
     "DuckDBStore",
     "EarningsIngestionResult",
@@ -89,6 +96,8 @@ __all__ = [
     "LakehouseLayout",
     "MarketEventsIngestionResult",
     "MarketEventsIngestor",
+    "MinuteBarsSourceCapture",
+    "MinuteBarsSourceManifest",
     "ReplayEventSourceSpec",
     "ReplayEvidenceIndex",
     "ReplayManifestRunner",

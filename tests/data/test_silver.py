@@ -14,6 +14,8 @@ from quant_earning_edge.data import (
     EARNINGS_SCHEMA,
     BarsIngestor,
     BronzeWriter,
+    DailyBarsSourceCapture,
+    DailyBarsSourceManifest,
     DuckDBStore,
     EarningsIngestor,
     EarningsSourceCapture,
@@ -237,6 +239,7 @@ def test_bars_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> None
                 bronze_writer=BronzeWriter(layout),
             ),
             silver_writer=SilverWriter(layout),
+            source_capture=DailyBarsSourceCapture(layout),
         ).ingest(
             symbol="aapl",
             start_date=date(2026, 7, 28),
@@ -247,5 +250,26 @@ def test_bars_ingestor_captures_bronze_and_writes_silver(tmp_path: Path) -> None
     assert result.symbol == "AAPL"
     assert result.bar_count == 1
     assert len(result.silver_artifacts) == 1
+    assert result.source_manifest is not None
+    manifest = DailyBarsSourceManifest.load(result.source_manifest)
+    assert DailyBarsSourceCapture.find_for_files(
+        tuple(item.path for item in result.silver_artifacts),
+        data_lake_root=tmp_path,
+    ) == (manifest,)
+    reproduced = DailyBarsSourceCapture.reproduce(
+        manifest,
+        data_lake_root=tmp_path,
+        output_layout=LakehouseLayout(tmp_path / "reproduced"),
+    )
+    assert tuple(item.sha256 for item in reproduced) == tuple(
+        item.sha256 for item in result.silver_artifacts
+    )
     assert len(list((tmp_path / "bronze").rglob("*.json"))) == 1
     assert len(list((tmp_path / "silver").rglob("*.parquet"))) == 1
+    manifest.provider_paths(data_lake_root=tmp_path)[0].write_bytes(b"changed")
+    with pytest.raises(ValueError, match="missing or differs"):
+        DailyBarsSourceCapture.reproduce(
+            manifest,
+            data_lake_root=tmp_path,
+            output_layout=LakehouseLayout(tmp_path / "tampered"),
+        )

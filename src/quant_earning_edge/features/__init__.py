@@ -7,6 +7,10 @@ from quant_earning_edge.features import (
 )
 from quant_earning_edge.features import price as _price  # noqa: F401 - registration side effect
 from quant_earning_edge.features import volume as _volume  # noqa: F401 - registration side effect
+from quant_earning_edge.features.historical_source import (
+    HistoricalFeatureSourceCapture,
+    HistoricalFeatureSourceManifest,
+)
 from quant_earning_edge.features.inputs import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -50,6 +54,8 @@ __all__ = [
     "FeatureSpec",
     "FeatureStore",
     "FeatureValue",
+    "HistoricalFeatureSourceCapture",
+    "HistoricalFeatureSourceManifest",
     "InsufficientHistoryError",
     "PremarketFeatureLoader",
     "PremarketObservation",

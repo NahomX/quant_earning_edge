@@ -35,6 +35,7 @@ from quant_earning_edge.data import (
     BronzeWriter,
     CalendarSourceCapture,
     CorporateActionsIngestor,
+    DailyBarsSourceCapture,
     DuckDBStore,
     EarningsIngestor,
     EarningsSourceCapture,
@@ -42,6 +43,7 @@ from quant_earning_edge.data import (
     FrozenMarketEventsManifest,
     LakehouseLayout,
     MarketEventsIngestor,
+    MinuteBarsSourceCapture,
     ReplayManifestRunner,
     ReplayMaterializationManifest,
     ReplayMaterializationSpec,
@@ -87,10 +89,12 @@ from quant_earning_edge.features import (
     FeatureEngine,
     FeatureSourceCapture,
     FeatureStore,
+    HistoricalFeatureSourceCapture,
     PremarketFeatureLoader,
 )
 from quant_earning_edge.labels import (
     ForwardLabelMaker,
+    ForwardLabelSourceCapture,
     LabelBarsLoader,
     LabelStore,
     TrainingDatasetAssembler,
@@ -420,12 +424,28 @@ def compute_features(  # noqa: PLR0917 - CLI options are the PIT compute contrac
         values=values,
         computed_at=cutoff,
     )
+    source = HistoricalFeatureSourceCapture(LakehouseLayout(environment.data_lake_root)).write(
+        asof_date=_parse_date(asof_date, option="--asof-date"),
+        observed_at=cutoff,
+        target_date=(
+            _parse_date(target_date, option="--target-date") if target_date is not None else None
+        ),
+        feature_group=feature_group,
+        symbols=symbols,
+        feature_names=feature_names,
+        feature_file=artifact,
+        daily_bar_files=bars_files,
+        candidate_files=tuple(candidate_files or ()),
+        minute_bar_files=tuple(minute_files or ()),
+        earnings_files=tuple(earnings_files or ()),
+    )
     _echo_json(
         {
             "path": str(artifact.path),
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
             "feature_names": artifact.feature_names,
+            "source_manifest": str(source.path),
         }
     )
 
@@ -486,11 +506,20 @@ def compute_labels(  # noqa: PLR0917 - CLI options are the label contract.
         labels,
         computed_at=cutoff,
     )
+    source = ForwardLabelSourceCapture(LakehouseLayout(environment.data_lake_root)).write(
+        asof_date=asof,
+        observed_at=cutoff,
+        symbols=symbols,
+        label_file=artifact,
+        daily_bar_files=bars_files,
+        session_file=session_file,
+    )
     _echo_json(
         {
             "path": str(artifact.path),
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
+            "source_manifest": str(source.path),
         }
     )
 
@@ -4467,6 +4496,7 @@ def ingest_bars(
                 bronze_writer=BronzeWriter(layout),
             ),
             silver_writer=SilverWriter(layout),
+            source_capture=DailyBarsSourceCapture(layout),
         ).ingest(
             symbol=symbol,
             start_date=start_date,
@@ -4477,6 +4507,7 @@ def ingest_bars(
             "symbol": result.symbol,
             "bar_count": result.bar_count,
             "silver_artifacts": [str(item.path) for item in result.silver_artifacts],
+            "source_manifest": str(result.source_manifest),
         }
     )
 
@@ -4494,28 +4525,44 @@ def ingest_minute_bars(
     api_key = _required_key(environment.require_polygon_api_key)
     layout = LakehouseLayout(environment.data_lake_root)
     partition_date = _parse_date(event_date, option="--event-date")
+    interval_start = _parse_datetime(start_at, option="--start-at")
+    interval_end = _parse_datetime(end_at, option="--end-at")
+    ingested_at = datetime.now(UTC)
     with httpx.Client(
         base_url=environment.polygon_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
-        bars = PolygonClient(
+        client = PolygonClient(
             api_key=api_key,
             http_client=http_client,
             bronze_writer=BronzeWriter(layout),
-        ).minute_bars(
+        )
+        observation_start = len(client.feature_observation_artifacts)
+        bars = client.minute_bars(
             symbol=symbol,
-            start_at=_parse_datetime(start_at, option="--start-at"),
-            end_at=_parse_datetime(end_at, option="--end-at"),
+            start_at=interval_start,
+            end_at=interval_end,
         )
     artifact = SilverWriter(layout).write_minute_bars(
         bars,
         event_date=partition_date,
+        ingested_at=ingested_at,
+    )
+    source = MinuteBarsSourceCapture(layout).write(
+        symbol=symbol,
+        start_at=interval_start,
+        end_at=interval_end,
+        event_date=partition_date,
+        ingested_at=ingested_at,
+        silver_file=artifact,
+        provider_observations=client.feature_observation_artifacts[observation_start:],
     )
     _echo_json(
         {
             "path": str(artifact.path),
             "sha256": artifact.sha256,
             "row_count": artifact.row_count,
+            "source_manifest": str(source.path),
         }
     )
 
@@ -4937,6 +4984,7 @@ def backfill_bars(  # noqa: PLR0917 - CLI options are the backfill contract.
             ),
             silver_writer=SilverWriter(layout),
             store=store,
+            source_capture=DailyBarsSourceCapture(layout),
         ).run(plan, continue_on_error=continue_on_error)
     _echo_json(
         {

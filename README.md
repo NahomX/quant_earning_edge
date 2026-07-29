@@ -76,7 +76,10 @@ backfill, real-data strategy evaluation, and unattended operational gates
 remain pending observation, while the persistent restart-safe worker and its
 non-secret health evidence, provider-backed daily candidate/feature builder,
 state-driven next-session proof queue, complete eight-stage run-spec generator,
-raw universe/event candidate-generation source capture and terminal regeneration, and post-close
-pending/resume boundary are implemented. See
+raw universe/event candidate-generation source capture and terminal
+regeneration, and post-close pending/resume boundary are implemented.
+Historical daily/minute bars, research features, forward labels, and assembled
+training datasets are likewise chained to retained provider observations and
+deeply reconstructed before model selection. See
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
 deliverables, remaining gates, and the next implementation slice.

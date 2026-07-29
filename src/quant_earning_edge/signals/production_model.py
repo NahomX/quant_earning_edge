@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -14,7 +15,6 @@ import pyarrow.parquet as pq
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from datetime import date
     from pathlib import Path
 
 
@@ -40,6 +40,24 @@ class ProductionModelArtifact:
     model_sha256: str
     model_text: str = field(repr=False, compare=True)
 
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported production model schema version")
+        if not self.feature_names or len(set(self.feature_names)) != len(self.feature_names):
+            raise ValueError("production model feature names must be unique and nonempty")
+        if not (
+            self.fit_start_date
+            <= self.fit_end_date
+            < self.validation_start_date
+            <= self.validation_end_date
+            < self.training_cutoff
+        ):
+            raise ValueError("production model date boundaries are not causal")
+        if min(self.fit_count, self.validation_count, self.best_iteration) < 1:
+            raise ValueError("production model partition counts must be positive")
+        if hashlib.sha256(self.model_text.encode()).hexdigest() != self.model_sha256:
+            raise ValueError("production model content does not match its SHA-256")
+
     def evidence_json_bytes(self) -> bytes:
         payload = asdict(self)
         payload.pop("model_text")
@@ -64,6 +82,56 @@ class ProductionModelArtifact:
         booster = _import_lightgbm().Booster(model_str=self.model_text)
         prediction = booster.predict(values, num_iteration=self.best_iteration)
         return float(prediction[0])
+
+    @classmethod
+    def load(cls, *, evidence_path: Path, model_path: Path) -> ProductionModelArtifact:
+        """Strictly reload linked canonical evidence and booster content."""
+        raw = json.loads(evidence_path.read_bytes())
+        expected = {
+            "schema_version",
+            "training_cutoff",
+            "dataset_sha256",
+            "feature_names",
+            "label_name",
+            "threshold",
+            "seed",
+            "lightgbm_version",
+            "fit_start_date",
+            "fit_end_date",
+            "validation_start_date",
+            "validation_end_date",
+            "fit_count",
+            "validation_count",
+            "best_iteration",
+            "model_sha256",
+        }
+        if not isinstance(raw, dict) or set(raw) != expected:
+            raise ValueError("production model evidence schema mismatch")
+        try:
+            artifact = cls(
+                schema_version=int(raw["schema_version"]),
+                training_cutoff=date.fromisoformat(str(raw["training_cutoff"])),
+                dataset_sha256=tuple(str(item) for item in raw["dataset_sha256"]),
+                feature_names=tuple(str(item) for item in raw["feature_names"]),
+                label_name=str(raw["label_name"]),
+                threshold=float(raw["threshold"]),
+                seed=int(raw["seed"]),
+                lightgbm_version=str(raw["lightgbm_version"]),
+                fit_start_date=date.fromisoformat(str(raw["fit_start_date"])),
+                fit_end_date=date.fromisoformat(str(raw["fit_end_date"])),
+                validation_start_date=date.fromisoformat(str(raw["validation_start_date"])),
+                validation_end_date=date.fromisoformat(str(raw["validation_end_date"])),
+                fit_count=int(raw["fit_count"]),
+                validation_count=int(raw["validation_count"]),
+                best_iteration=int(raw["best_iteration"]),
+                model_sha256=str(raw["model_sha256"]),
+                model_text=model_path.read_text(encoding="utf-8"),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError("invalid production model evidence") from error
+        if artifact.evidence_json_bytes() != evidence_path.read_bytes():
+            raise ValueError("production model evidence is not canonical")
+        return artifact
 
 
 class ProductionModelTrainer:

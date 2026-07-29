@@ -130,6 +130,9 @@ from quant_earning_edge.signals import (
     FrozenDailyOrders,
     LightgbmWalkForwardTrainer,
     LiveOrderPlanner,
+    LivePlanningAssembler,
+    LivePlanningSourceSpec,
+    ProductionModelArtifact,
     ProductionModelTrainer,
     load_strategy_config,
     strategy_file_sha256,
@@ -933,6 +936,73 @@ def train_production_model(
             "training_cutoff": artifact.training_cutoff,
             "fit_count": artifact.fit_count,
             "validation_count": artifact.validation_count,
+        }
+    )
+
+
+@model_app.command("score-live-planning")
+def score_live_planning(  # noqa: PLR0917 - explicit immutable input/output boundary.
+    source_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Causal schedule and market observations without probabilities.",
+        ),
+    ],
+    model_evidence: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Canonical production-model JSON."),
+    ],
+    model_file: Annotated[
+        Path,
+        typer.Option(exists=True, dir_okay=False, help="Linked production booster."),
+    ],
+    feature_files: Annotated[
+        list[Path],
+        typer.Option(
+            "--feature-file",
+            exists=True,
+            dir_okay=False,
+            help="Long-form decision-time feature artifact; repeat as needed.",
+        ),
+    ],
+    planning_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Generated DailyOrderPlanningSpec JSON."),
+    ],
+    evidence_output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Model and feature lineage evidence JSON."),
+    ],
+) -> None:
+    """Generate model scores and a live order-planning input without manual probabilities."""
+    try:
+        source = LivePlanningSourceSpec.model_validate_json(source_spec.read_bytes())
+        model = ProductionModelArtifact.load(
+            evidence_path=model_evidence,
+            model_path=model_file,
+        )
+        artifact = LivePlanningAssembler().assemble(
+            source=source,
+            model=model,
+            feature_files=feature_files,
+        )
+        LivePlanningAssembler.write(
+            artifact,
+            planning_output=planning_output,
+            evidence_output=evidence_output,
+        )
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="live planning inputs") from error
+    _echo_json(
+        {
+            "planning_output": str(planning_output.resolve()),
+            "evidence_output": str(evidence_output.resolve()),
+            "sha256": artifact.sha256,
+            "model_sha256": artifact.model_sha256,
+            "candidate_count": len(artifact.planning.candidates),
+            "trade_date": artifact.planning.trade_date,
         }
     )
 
@@ -2367,10 +2437,6 @@ def generate_daily_workflow(  # noqa: PLR0917 - explicit operational inputs.
 @workflow_app.command("prepare")
 def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation boundary.
     trade_date: Annotated[str, typer.Option(help="Trading session date (YYYY-MM-DD).")],
-    planning_spec: Annotated[
-        Path,
-        typer.Option(exists=True, dir_okay=False, help="Live-safe daily planning input."),
-    ],
     strategy_config: Annotated[
         Path,
         typer.Option(exists=True, dir_okay=False, help="Validated strategy YAML."),
@@ -2394,6 +2460,39 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
         typer.Option(dir_okay=False, help="Workflow inbox specification."),
     ],
     worker_id: Annotated[str, typer.Option(help="Persistent worker identity.")],
+    planning_spec: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Existing live-safe planning input; exclusive with scored inputs.",
+        ),
+    ] = None,
+    planning_source: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Causal observations used to automatically score planning.",
+        ),
+    ] = None,
+    model_evidence: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False, help="Production-model evidence JSON."),
+    ] = None,
+    model_file: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False, help="Production booster file."),
+    ] = None,
+    feature_files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--feature-file",
+            exists=True,
+            dir_okay=False,
+            help="Live feature artifact; repeat for multiple partitions.",
+        ),
+    ] = None,
     freshness_symbol: Annotated[
         str,
         typer.Option(help="Liquid Polygon symbol used by pre-open controls."),
@@ -2417,18 +2516,61 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
     selected_start = _parse_date(proof_start, option="--proof-start")
     selected_end = _parse_date(proof_end, option="--proof-end")
     try:
-        planning = DailyOrderPlanningSpec.model_validate_json(planning_spec.read_bytes())
-        if planning.trade_date != selected_date:
-            raise ValueError("planning spec trade date differs from workflow trade date")
-        load_strategy_config(strategy_config)
-        calendar = SessionFileStore.load(session_file)
+        strategy = load_strategy_config(strategy_config)
         artifact_root.mkdir(parents=True, exist_ok=True)
-        environment = _environment(env_file)
         control_root = (
             artifact_root.resolve()
             / f"trade_date={selected_date.isoformat()}"
             / "control-preparation"
         )
+        scored_inputs = (planning_source, model_evidence, model_file, feature_files)
+        if planning_spec is not None:
+            if any(item is not None for item in scored_inputs):
+                raise ValueError(
+                    "--planning-spec is exclusive with automatic scored-planning inputs"
+                )
+            resolved_planning = planning_spec
+            planning = DailyOrderPlanningSpec.model_validate_json(resolved_planning.read_bytes())
+            planning_evidence_output: Path | None = None
+        else:
+            if (
+                planning_source is None
+                or model_evidence is None
+                or model_file is None
+                or not feature_files
+            ):
+                raise ValueError(
+                    "provide --planning-spec or all of --planning-source, "
+                    "--model-evidence, --model-file, and --feature-file"
+                )
+            source = LivePlanningSourceSpec.model_validate_json(planning_source.read_bytes())
+            model = ProductionModelArtifact.load(
+                evidence_path=model_evidence,
+                model_path=model_file,
+            )
+            if model.feature_names != strategy.features:
+                raise ValueError(
+                    "production model features differ from the workflow strategy config"
+                )
+            scored = LivePlanningAssembler().assemble(
+                source=source,
+                model=model,
+                feature_files=feature_files,
+            )
+            resolved_planning = control_root / f"scored-planning-{scored.sha256[:20]}.json"
+            planning_evidence_output = (
+                control_root / f"scored-planning-evidence-{scored.sha256[:20]}.json"
+            )
+            LivePlanningAssembler.write(
+                scored,
+                planning_output=resolved_planning,
+                evidence_output=planning_evidence_output,
+            )
+            planning = scored.planning
+        if planning.trade_date != selected_date:
+            raise ValueError("planning spec trade date differs from workflow trade date")
+        calendar = SessionFileStore.load(session_file)
+        environment = _environment(env_file)
         health_output = control_root / "workflow-health.json"
         phase6_output = control_root / "phase6-controls.json"
         controls = Phase6ControlBuilder().build(
@@ -2447,7 +2589,7 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
             trade_date=selected_date,
             trigger=trigger,
             worker_id=worker_id,
-            planning_spec=planning_spec,
+            planning_spec=resolved_planning,
             strategy_config=strategy_config,
             breaker_spec=None,
             phase6_spec=phase6_output,
@@ -2479,6 +2621,12 @@ def prepare_daily_workflow(  # noqa: PLR0917 - complete daily preparation bounda
             "health_sha256": controls.health_sha256,
             "phase6_output": str(phase6_output),
             "phase6_report_count": len(controls.included_report_files),
+            "planning_output": str(resolved_planning.resolve()),
+            "planning_evidence_output": (
+                str(planning_evidence_output.resolve())
+                if planning_evidence_output is not None
+                else None
+            ),
             "breaker_mode": "self_refreshing",
         }
     )

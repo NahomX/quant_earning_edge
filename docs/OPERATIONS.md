@@ -820,7 +820,10 @@ self-refreshing workflow:
 ```powershell
 uv run qee workflow prepare `
   --trade-date 2026-07-29 `
-  --planning-spec .\live-order-planning.json `
+  --planning-source .\live-market-observations.json `
+  --model-evidence .\data\models\earnings-v1-production\production-<hash>.json `
+  --model-file .\data\models\earnings-v1-production\production-<hash>.txt `
+  --feature-file .\data\gold\feature_group=earnings-v1\month=2026-07\part-<hash>.parquet `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
   --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
   --proof-start 2026-07-28 `
@@ -836,6 +839,13 @@ under the current trade-date artifact directory, includes the deterministic
 future daily report path, and emits the complete inbox specification in one
 idempotent command. The live-safe causal planning input remains an explicit
 upstream artifact; the command does not fabricate signals or performance.
+In automatic mode, the source contains schedule and market observations but
+no probability. The command strictly reloads the content-linked booster,
+requires its exact feature order to match the strategy, selects the requested
+as-of rows from the long-form feature schema, rejects values computed after
+the decision timestamp or mixed input lineage, scores each exact symbol vector,
+and writes both the generated planning JSON and its model/feature lineage.
+`--planning-spec` remains available as an exclusive compatibility mode.
 
 ```powershell
 uv run qee workflow generate `
@@ -1068,10 +1078,22 @@ explicit empty order set produces auditable no-trade evidence.
 ## Freeze live-safe daily orders
 
 The live paper workflow must not reuse `plan-event-backtest`, because that
-research artifact contains realized entry/exit outcomes. Instead provide
-decision-time probabilities, causal sizing observations, historical outcomes
-closed before the trade date, frozen NBBO snapshots, and the intended execution
-windows:
+research artifact contains realized entry/exit outcomes. Produce probabilities
+from the frozen production booster and point-in-time feature artifacts:
+
+```powershell
+uv run qee model score-live-planning `
+  --source-spec .\live-market-observations.json `
+  --model-evidence .\data\models\earnings-v1-production\production-<hash>.json `
+  --model-file .\data\models\earnings-v1-production\production-<hash>.txt `
+  --feature-file .\data\gold\feature_group=earnings-v1\month=2026-07\part-<hash>.parquet `
+  --planning-output .\live-order-planning.json `
+  --evidence-output .\live-order-planning-evidence.json
+```
+
+The source contains causal sizing observations, historical outcomes closed
+before the trade date, frozen NBBO snapshots, and intended execution windows;
+it cannot contain a manually entered probability. Then freeze orders:
 
 ```powershell
 uv run qee model plan-live-orders `

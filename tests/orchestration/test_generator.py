@@ -6,11 +6,15 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
 from quant_earning_edge.evaluation import Phase6AggregationSpec
+from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
 from quant_earning_edge.orchestration import WorkflowRunSpec, WorkflowStage
+from quant_earning_edge.signals import ProductionModelTrainer, load_strategy_config
 
 
 def _strategy_path() -> Path:
@@ -324,3 +328,130 @@ def test_prepare_cli_builds_phase6_controls_and_self_refreshing_workflow(
     phase6 = Phase6AggregationSpec.model_validate_json(Path(payload["phase6_output"]).read_bytes())
     expected_report = artifact_root.resolve() / "trade_date=2026-07-28" / "replay-session.json"
     assert phase6.session_report_files == (expected_report,)
+
+
+def test_prepare_cli_can_generate_model_scored_planning(tmp_path: Path) -> None:
+    _, _, _, artifact_root = _inputs(tmp_path)
+    strategy = load_strategy_config(_strategy_path())
+    training = tmp_path / "training.parquet"
+    first = date(2025, 1, 2)
+    training_rows = []
+    for index in range(70):
+        sign = 1.0 if index % 2 == 0 else -1.0
+        row: dict[str, object] = {
+            "asof_date": first + timedelta(days=index),
+            "horizon_end_date": first + timedelta(days=index + 2),
+            "forward_1d_close": sign * 0.01,
+        }
+        row.update({name: sign + offset / 100 for offset, name in enumerate(strategy.features)})
+        training_rows.append(row)
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(training_rows),
+        training,
+    )
+    model = ProductionModelTrainer(
+        feature_names=strategy.features,
+        threshold=strategy.label.threshold,
+        seed=strategy.seed,
+        early_stopping_rounds=10,
+    ).run(dataset_files=(training,), training_cutoff=date(2025, 3, 3))
+    model_file, model_evidence = ProductionModelTrainer.write(model, tmp_path / "models")
+    decision = datetime(2026, 7, 27, 22, tzinfo=UTC)
+    features = tmp_path / "features.parquet"
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(
+            [
+                {
+                    "symbol": "IGNORED",
+                    "asof_date": date(2026, 7, 27),
+                    "feature_name": "not-a-model-feature",
+                    "value": 0.0,
+                    "feature_code_hash": "a" * 64,
+                    "input_sha256": "b" * 64,
+                    "computed_at": decision,
+                }
+            ],
+            schema=FEATURE_VALUE_SCHEMA,
+        ),
+        features,
+    )
+    source = tmp_path / "source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "trade_date": "2026-07-28",
+                "feature_asof_date": "2026-07-27",
+                "decision_at": decision.isoformat(),
+                "equity": 100_000,
+                "observations": [],
+                "outcomes": [],
+                "entry_submitted_at": "2026-07-28T13:30:00Z",
+                "entry_expires_at": "2026-07-28T13:35:00Z",
+                "exit_submitted_at": "2026-07-28T19:50:00Z",
+                "exit_expires_at": "2026-07-28T20:01:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    session_file = tmp_path / "sessions.json"
+    session_file.write_text(
+        json.dumps(
+            {
+                "provider": "alpaca",
+                "sessions": [
+                    {
+                        "session_date": "2026-07-28",
+                        "open_at": "2026-07-28T13:30:00Z",
+                        "close_at": "2026-07-28T20:00:00Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"DATA_LAKE_ROOT={tmp_path / 'lake'}", encoding="utf-8")
+    output = tmp_path / "inbox" / "2026-07-28.json"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "workflow",
+            "prepare",
+            "--trade-date",
+            "2026-07-28",
+            "--planning-source",
+            str(source),
+            "--model-evidence",
+            str(model_evidence),
+            "--model-file",
+            str(model_file),
+            "--feature-file",
+            str(features),
+            "--strategy-config",
+            str(_strategy_path()),
+            "--session-file",
+            str(session_file),
+            "--proof-start",
+            "2026-07-28",
+            "--proof-end",
+            "2026-07-28",
+            "--initial-cash",
+            "100000",
+            "--artifact-root",
+            str(artifact_root),
+            "--output",
+            str(output),
+            "--worker-id",
+            "paper-worker-1",
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert Path(payload["planning_output"]).exists()
+    assert Path(payload["planning_evidence_output"]).exists()
+    workflow = WorkflowRunSpec.model_validate_json(output.read_bytes())
+    assert Path(payload["planning_output"]).resolve() in workflow.stages[0].output_files

@@ -45,8 +45,10 @@ def test_production_refit_is_deterministic_and_scores_exact_features(tmp_path: P
     second = trainer.run(dataset_files=(dataset,), training_cutoff=cutoff)
     paths = trainer.write(first, output)
     trainer.write(first, output)
+    loaded = first.load(evidence_path=paths[1], model_path=paths[0])
 
     assert first == second
+    assert loaded == first
     assert first.fit_end_date < first.validation_start_date < cutoff
     assert first.validation_end_date < cutoff
     assert 0 <= first.predict_probability({"signal": 1.0}) <= 1
@@ -84,3 +86,20 @@ def test_inference_rejects_missing_or_extra_features(tmp_path: Path) -> None:
             assert "exactly match" in str(error)
         else:
             raise AssertionError("invalid inference feature vector was accepted")
+
+
+def test_loader_rejects_tampered_booster(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    _dataset(dataset)
+    artifact = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
+        dataset_files=(dataset,), training_cutoff=date(2025, 3, 3)
+    )
+    model_path, evidence_path = ProductionModelTrainer.write(artifact, tmp_path / "models")
+    model_path.write_text(model_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    try:
+        artifact.load(evidence_path=evidence_path, model_path=model_path)
+    except ValueError as error:
+        assert "invalid production model evidence" in str(error)
+    else:
+        raise AssertionError("tampered production booster was accepted")

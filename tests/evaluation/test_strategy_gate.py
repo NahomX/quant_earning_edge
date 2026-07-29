@@ -193,11 +193,15 @@ def test_phase4_report_is_deterministic_and_persisted(tmp_path: Path) -> None:
 
     first = evaluator.evaluate(
         folds,
+        strategy_sha256="a" * 64,
+        assembly_manifest_sha256="b" * 64,
         walkforward_run_sha256="e" * 64,
         hyperparameter_study_sha256="f" * 64,
     )
     second = evaluator.evaluate(
         folds,
+        strategy_sha256="a" * 64,
+        assembly_manifest_sha256="b" * 64,
         walkforward_run_sha256="e" * 64,
         hyperparameter_study_sha256="f" * 64,
     )
@@ -245,6 +249,8 @@ def test_phase4_gate_rejects_missing_cohort_trade() -> None:
     with pytest.raises(ValueError, match="does not cover every trade"):
         Phase4GateEvaluator(bootstrap_resamples=10).evaluate(
             folds,
+            strategy_sha256="a" * 64,
+            assembly_manifest_sha256="b" * 64,
             walkforward_run_sha256="e" * 64,
             hyperparameter_study_sha256="f" * 64,
         )
@@ -416,6 +422,8 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
         },
         "walk_forward": {"passes_positive_fold_gate": True},
         "cohorts": _promotion_cohort_rows(),
+        "strategy_sha256": "a" * 64,
+        "assembly_manifest_sha256": "b" * 64,
         "walkforward_run_sha256": "e" * 64,
         "hyperparameter_study_sha256": "f" * 64,
         "passes_phase4_research_gate": True,
@@ -429,6 +437,8 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
 
     assert promotion.report_sha256
     assert promotion.net_sharpe == 1.2
+    assert promotion.strategy_sha256 == "a" * 64
+    assert promotion.assembly_manifest_sha256 == "b" * 64
     assert promotion.walkforward_run_sha256 == "e" * 64
     assert promotion.hyperparameter_study_sha256 == "f" * 64
 
@@ -448,6 +458,8 @@ def test_production_promotion_rejects_missing_cohort_evidence(tmp_path: Path) ->
         },
         "walk_forward": {"passes_positive_fold_gate": True},
         "cohorts": [],
+        "strategy_sha256": "a" * 64,
+        "assembly_manifest_sha256": "b" * 64,
         "walkforward_run_sha256": "e" * 64,
         "hyperparameter_study_sha256": "f" * 64,
         "passes_phase4_research_gate": True,

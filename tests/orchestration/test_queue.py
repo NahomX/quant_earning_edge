@@ -106,6 +106,8 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
                         ("iv_regime", "unavailable"),
                     )
                 ],
+                "strategy_sha256": hashlib.sha256(_strategy_path().read_bytes()).hexdigest(),
+                "assembly_manifest_sha256": "c" * 64,
                 "walkforward_run_sha256": "d" * 64,
                 "hyperparameter_study_sha256": "e" * 64,
                 "passes_phase4_research_gate": True,
@@ -218,6 +220,25 @@ def test_queue_rejects_model_with_different_phase4_optuna_study(tmp_path: Path) 
     evidence.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
     with pytest.raises(ValueError, match="Optuna study differs"):
+        NextWorkflowQueuer(
+            data_lake_root=lake,
+            clock=lambda: datetime(2026, 7, 28, 1, 30, tzinfo=UTC),
+        ).run_once(loop_spec=loop_spec, inbox=inbox)
+
+
+def test_queue_rejects_phase4_strategy_mismatch(tmp_path: Path) -> None:
+    lake, loop_spec, inbox = _deployment(tmp_path)
+    raw = json.loads(loop_spec.read_bytes())
+    gate = Path(raw["phase4_gate_file"])
+    gate_payload = json.loads(gate.read_bytes())
+    gate_payload["strategy_sha256"] = "0" * 64
+    gate.write_bytes(json.dumps(gate_payload, sort_keys=True, separators=(",", ":")).encode())
+    evidence = Path(raw["model_evidence"])
+    model_payload = json.loads(evidence.read_bytes())
+    model_payload["phase4_gate_sha256"] = hashlib.sha256(gate.read_bytes()).hexdigest()
+    evidence.write_bytes(json.dumps(model_payload, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(ValueError, match="Phase 4 strategy differs"):
         NextWorkflowQueuer(
             data_lake_root=lake,
             clock=lambda: datetime(2026, 7, 28, 1, 30, tzinfo=UTC),

@@ -448,6 +448,11 @@ All event plans must bind the same walk-forward run, every stored probability
 must exactly match its OOS row, and the union of plans must cover the complete
 OOS prediction ledger exactly once. This prevents manual probability
 substitution and omission of model-abstention sessions.
+The gate report also stores the exact strategy YAML and Phase 4 assembly
+manifest SHA-256 values. Production refitting rejects a different strategy
+file, and proof-loop admission repeats that comparison before any session can
+be queued. A passing report therefore cannot be reused after changing sizing,
+risk, costs, features, labels, or any other committed strategy field.
 Every executed trade must have exactly one immutable cohort record. The
 canonical report and self-contained HTML include BMO/AMC, sector, and IV-regime
 tables with trade/session counts, net P&L, mean return, Sharpe, hit rate, and

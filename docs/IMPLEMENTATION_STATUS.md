@@ -119,8 +119,8 @@ reproducible through `uv.lock`.
 | Bounded exponential workflow retries | Complete | per-stage attempt budgets, capped backoff, terminal exhaustion, attention evidence |
 | Isolated credentialed no-trade smoke | Complete | manual zero-order full workflow, live safety controls, separate state/artifacts, no proof credit |
 | Cutoff-safe production model refit | Complete | closed-label cutoff, purged final validation, deterministic immutable booster/evidence, exact-feature inference |
-| Phase 4 model-promotion binding | Complete | independently recomputed passing pre-paper gate hash is mandatory in every production model artifact |
-| Phase 6 deployment-promotion binding | Complete | loop requires the actual passing Phase 4 report, exact model digest match, causal cutoff, and proof-end model-age limit |
+| Phase 4 model-promotion binding | Complete | independently recomputed passing pre-paper gate binds the strategy, source assembly, OOS run, and Optuna study; exact report hash is mandatory in production artifacts |
+| Phase 6 deployment-promotion binding | Complete | loop requires the actual passing Phase 4 report, exact strategy/model digest matches, causal cutoff, and proof-end model-age limit |
 | Phase 6 hyperparameter-study binding | Complete | production refit requires the matching Optuna artifact; proof loop rejects unbound models |
 | Automatic live planning scores | Complete | strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities and planning evidence |
 | Provider-backed live source capture | Complete | SIC exposure buckets, frozen prior-close price/ADV, paper-account audit, Polygon NBBO/trade snapshots, replay-chained equity/outcomes |

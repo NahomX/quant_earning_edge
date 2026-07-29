@@ -1267,6 +1267,8 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
         cutoff = date.fromisoformat(training_cutoff)
         promotion = Phase4PromotionEvidence.load(phase4_gate)
         config = load_strategy_config(strategy_config)
+        if strategy_file_sha256(strategy_config) != promotion.strategy_sha256:
+            raise ValueError("Phase 4 gate differs from the selected strategy config")
         plan = WalkForwardPlanner.load(split_plan)
         study = OptunaStudyArtifact.load(hyperparameter_study)
         study.validate_training_contract(
@@ -1854,6 +1856,8 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
         )
         report = evaluator.evaluate(
             tuple(fold_results),
+            strategy_sha256=assembly_manifest.strategy_config.sha256,
+            assembly_manifest_sha256=assembly_manifest.sha256,
             walkforward_run_sha256=model_run.sha256,
             hyperparameter_study_sha256=model_run.hyperparameter_study_sha256,
         )

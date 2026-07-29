@@ -150,6 +150,8 @@ class Phase4HtmlTearsheetWriter:
             "</style></head><body>"
             f"<h1>{title}</h1>"
             f"<p>Input SHA-256: <code>{overall.input_sha256}</code><br>"
+            f"Strategy: <code>{report.strategy_sha256}</code><br>"
+            f"Assembly manifest: <code>{report.assembly_manifest_sha256}</code><br>"
             f"Walk-forward run: <code>{report.walkforward_run_sha256}</code><br>"
             f"Optuna study: <code>{report.hyperparameter_study_sha256}</code></p>"
             "<h2>Headline metrics</h2><table><tbody>"

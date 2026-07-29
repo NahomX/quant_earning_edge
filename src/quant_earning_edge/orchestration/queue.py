@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime  # noqa: TC003 - Pydantic resolves runtime fields.
@@ -175,6 +176,9 @@ class NextWorkflowQueuer:
             raise ValueError("workflow loop production model lacks an Optuna study binding")
         if promotion.hyperparameter_study_sha256 != model.hyperparameter_study_sha256:
             raise ValueError("workflow loop Phase 4 Optuna study differs from production model")
+        strategy_sha256 = hashlib.sha256(deployment.strategy_config.read_bytes()).hexdigest()
+        if promotion.strategy_sha256 != strategy_sha256:
+            raise ValueError("workflow loop Phase 4 strategy differs from strategy config")
         if model.training_cutoff > deployment.proof_start:
             raise ValueError("workflow loop model training cutoff follows proof start")
         model_age_at_end = (deployment.proof_end - model.training_cutoff).days

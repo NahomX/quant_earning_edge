@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
@@ -14,10 +14,11 @@ import pytest
 from typer.testing import CliRunner
 
 import quant_earning_edge.cli as cli_module
+from quant_earning_edge.backtest import NbboReplayEvidence, NbboReplaySpec, replay_order
 from quant_earning_edge.cli import app
 from quant_earning_edge.data import LakehouseLayout, SessionFileStore
 from quant_earning_edge.data.clients import MarketSession, TickerSnapshot
-from quant_earning_edge.evaluation import ReplaySessionAggregator
+from quant_earning_edge.evaluation import ReplayRoundTrip, ReplaySessionAggregator
 from quant_earning_edge.live import PaperAccountSnapshot
 from quant_earning_edge.signals import LiveSourceCaptureAssembler
 from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
@@ -114,7 +115,64 @@ def _snapshot(symbol: str = "AAPL") -> TickerSnapshot:
     )
 
 
-def test_capture_builds_schedule_equity_market_observations_and_outcomes(
+def _filled_replay_evidence(
+    *,
+    order_id: str,
+    side: str,
+    submitted_at: datetime,
+    bid: float,
+    ask: float,
+) -> NbboReplayEvidence:
+    decision = datetime(2026, 7, 26, 21, 30, tzinfo=UTC)
+    spec = NbboReplaySpec.model_validate(
+        {
+            "order": {
+                "order_id": order_id,
+                "ticker": "AAPL",
+                "side": side,
+                "quantity": 100,
+                "decision_time": decision,
+                "submitted_at": submitted_at,
+                "expires_at": submitted_at + timedelta(minutes=5),
+                "average_daily_volume_shares": 1_000_000,
+            },
+            "decision_snapshot": {
+                "ticker": "AAPL",
+                "observed_at": decision,
+                "bid_price": 99.9,
+                "ask_price": 100.1,
+                "bid_size": 100,
+                "ask_size": 100,
+                "last_trade_price": 100,
+                "last_trade_at": decision - timedelta(seconds=1),
+            },
+            "quotes": [
+                {
+                    "ticker": "AAPL",
+                    "timestamp": submitted_at,
+                    "sequence": 1,
+                    "bid_price": bid,
+                    "ask_price": ask,
+                    "bid_size": 100,
+                    "ask_size": 100,
+                }
+            ],
+        }
+    )
+    order, snapshot, quotes, trades, config = spec.domain_inputs()
+    return NbboReplayEvidence.build(
+        spec=spec,
+        result=replay_order(
+            order,
+            decision_snapshot=snapshot,
+            quotes=quotes,
+            trades=trades,
+            config=config,
+        ),
+    )
+
+
+def test_capture_builds_schedule_and_excludes_no_trade_session_from_kelly(
     tmp_path: Path,
 ) -> None:
     candidate_file = _candidates(tmp_path)
@@ -154,10 +212,55 @@ def test_capture_builds_schedule_equity_market_observations_and_outcomes(
     assert source.observations[0].sector == "MANUFACTURING"
     assert source.observations[0].sizing_price == 100
     assert source.observations[0].decision_snapshot.bid_price == 99.9
-    assert source.outcomes[0].closed_date == ASOF_DATE
+    assert source.outcomes == ()
     assert artifact.candidate_file_sha256 == hashlib.sha256(candidate_file.read_bytes()).hexdigest()
     assert json.loads(source_path.read_bytes())["observations"][0]["symbol"] == "AAPL"
     assert evidence_path.read_bytes() == artifact.canonical_bytes
+
+
+def test_capture_uses_realized_round_trip_return_for_kelly(tmp_path: Path) -> None:
+    entry = _filled_replay_evidence(
+        order_id="entry",
+        side="buy",
+        submitted_at=datetime(2026, 7, 27, 13, 30, tzinfo=UTC),
+        bid=99.9,
+        ask=100.1,
+    )
+    exit_evidence = _filled_replay_evidence(
+        order_id="exit",
+        side="sell",
+        submitted_at=datetime(2026, 7, 27, 19, 55, tzinfo=UTC),
+        bid=104.9,
+        ask=105.1,
+    )
+    replay = ReplaySessionAggregator().evaluate(
+        evidence=(entry, exit_evidence),
+        round_trips=(ReplayRoundTrip("trade-1", "entry", "exit", "long"),),
+        session_date=ASOF_DATE,
+        initial_cash=100_000,
+    )
+    replay_path = tmp_path / "prior-replay.json"
+    replay.write(replay_path)
+
+    artifact = LiveSourceCaptureAssembler().assemble(
+        trade_date=TRADE_DATE,
+        captured_at=CAPTURED_AT,
+        candidate_file=_candidates(tmp_path),
+        session_file=_calendar(tmp_path),
+        account=_account(),
+        initial_cash=100_000,
+        snapshots=(_snapshot(),),
+        prior_replay_files=(replay_path,),
+    )
+
+    round_trip = replay.round_trips[0]
+    assert round_trip.entry_fill_price is not None
+    expected_return = round_trip.net_pnl_on_matched_quantity / (
+        round_trip.entry_fill_price * round_trip.matched_quantity
+    )
+    assert len(artifact.source.outcomes) == 1
+    assert artifact.source.outcomes[0].closed_date == ASOF_DATE
+    assert artifact.source.outcomes[0].net_return == pytest.approx(expected_return)
 
 
 def test_capture_rejects_snapshot_symbol_mismatch(tmp_path: Path) -> None:

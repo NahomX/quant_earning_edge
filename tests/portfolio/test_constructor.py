@@ -15,7 +15,7 @@ from quant_earning_edge.portfolio import (
 
 
 def _outcomes(count: int = 60) -> tuple[TradeOutcome, ...]:
-    first = date(2025, 1, 1)
+    first = date(2025, 1, 31)
     return tuple(
         TradeOutcome(
             closed_date=first + timedelta(days=index),
@@ -84,7 +84,7 @@ def test_calibration_risk_breaks_cold_start_then_one_sided_history_stops() -> No
     all_winners = constructor.construct(
         candidates=candidates,
         outcomes=tuple(
-            TradeOutcome(date(2025, 1, 1) + timedelta(days=index), 0.01) for index in range(20)
+            TradeOutcome(date(2025, 2, 1) + timedelta(days=index), 0.01) for index in range(20)
         ),
         equity=100_000,
         decision_date=date(2025, 4, 1),
@@ -97,6 +97,29 @@ def test_calibration_risk_breaks_cold_start_then_one_sided_history_stops() -> No
     assert all_winners.sizing_mode == "kelly"
     assert all_winners.per_position_weight == 0
     assert all_winners.positions == ()
+
+
+def test_outcomes_older_than_rolling_day_window_do_not_size_risk() -> None:
+    decision_date = date(2025, 4, 1)
+    stale = tuple(
+        TradeOutcome(
+            closed_date=decision_date - timedelta(days=61 + index),
+            net_return=0.02 if index % 2 == 0 else -0.01,
+        )
+        for index in range(20)
+    )
+
+    plan = FractionalKellyPortfolioConstructor(
+        PortfolioConfig(history_window=60, minimum_history=20)
+    ).construct(
+        candidates=_candidates(2),
+        outcomes=stale,
+        equity=100_000,
+        decision_date=decision_date,
+    )
+
+    assert plan.history_count == 0
+    assert plan.sizing_mode == "calibration"
 
 
 def test_future_outcomes_cannot_change_position_targets() -> None:

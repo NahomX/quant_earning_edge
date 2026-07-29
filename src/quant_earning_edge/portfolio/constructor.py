@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -138,11 +139,12 @@ class FractionalKellyPortfolioConstructor:
         symbols = tuple(item.symbol for item in candidates)
         if len(symbols) != len(set(symbols)):
             raise ValueError("candidate symbols must be unique")
+        window_start = decision_date - timedelta(days=self._config.history_window)
         history = tuple(
             sorted(
-                (item for item in outcomes if item.closed_date < decision_date),
+                (item for item in outcomes if window_start <= item.closed_date < decision_date),
                 key=lambda item: item.closed_date,
-            )[-self._config.history_window :]
+            )
         )
         history_is_calibrating = len(history) < self._config.minimum_history
         raw_kelly = _kelly(history, minimum_history=self._config.minimum_history)

@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 352 automated tests pass.
+- 354 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 93 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -45,7 +45,8 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Phase 4 source files, generated plans, strategy, costs, model run, and study
   are hash-bound through promotion.
 - A bounded calibration allocation prevents the fractional-Kelly cold-start
-  deadlock; mature negative/undefined edge still shuts risk off.
+  deadlock; only matched per-trade returns enter its 60-day history, and mature
+  negative/undefined edge still shuts risk off.
 - The restart-safe worker continuously discovers, queues, executes, reconciles,
   and finalizes authoritative Phase 6 paper sessions.
 - Paper submission is locked to Alpaca's paper host. Circuit breakers and

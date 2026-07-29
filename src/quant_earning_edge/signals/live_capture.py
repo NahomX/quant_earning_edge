@@ -212,7 +212,7 @@ class LiveSourceCaptureAssembler:
         dates = tuple(item.session_date for item in reports)
         if dates != tuple(sorted(set(dates))):
             raise ValueError("prior replay sessions must be unique and chronological")
-        outcomes = []
+        outcomes: list[TradeOutcomeSpec] = []
         current_equity = initial_cash
         for report in reports:
             if report.session_date >= trade_date:
@@ -222,11 +222,16 @@ class LiveSourceCaptureAssembler:
             if not math.isclose(report.initial_cash, current_equity, abs_tol=1e-8):
                 raise ValueError("prior replay equity is not chronologically chained")
             assert report.net_pnl is not None
-            outcomes.append(
+            outcomes.extend(
                 TradeOutcomeSpec(
                     closed_date=report.session_date,
-                    net_return=report.net_return,
+                    net_return=(
+                        item.net_pnl_on_matched_quantity
+                        / (item.entry_fill_price * item.matched_quantity)
+                    ),
                 )
+                for item in report.round_trips
+                if item.matched_quantity > 0 and item.entry_fill_price is not None
             )
             current_equity += report.net_pnl
         return tuple(outcomes), tuple(item.sha256 for item in reports), current_equity

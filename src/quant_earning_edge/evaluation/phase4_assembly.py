@@ -281,8 +281,10 @@ class Phase4HistoricalAssembler:
                 )
                 EventTradePlanner.write(plan, plan_path)
                 result = run_event_plan(plan, cost_model=cost_model)
-                session_return = result.daily[0].net_pnl / result.initial_cash
-                outcomes.append(TradeOutcome(closed_date=trade_date, net_return=session_return))
+                outcomes.extend(
+                    TradeOutcome(closed_date=trade_date, net_return=trade.net_return)
+                    for trade in result.trades
+                )
                 equity = result.final_net_equity
                 trade_count += len(plan.intents)
                 plan_paths.append(plan_path)

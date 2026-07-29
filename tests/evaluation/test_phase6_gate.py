@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from quant_earning_edge.cli import app
@@ -416,7 +417,8 @@ def test_phase6_cli_rejects_forged_scheduled_uptime_summary(tmp_path: Path) -> N
 
     assert result.exit_code == 2
     plain_output = "".join(
-        " " if "\u2500" <= character <= "\u257f" else character for character in result.output
+        " " if "\u2500" <= character <= "\u257f" else character
+        for character in unstyle(result.output)
     )
     assert "workflow health does not reproduce from the bound workflow store" in " ".join(
         plain_output.split()

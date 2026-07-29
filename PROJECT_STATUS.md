@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 369 automated tests pass.
+- 371 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 94 source files.
 - The model target matches the traded next-open-to-next-close holding window.
@@ -63,9 +63,12 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   itself reproduce from captured probability-free live source data, the exact
   production-model evidence and booster, and exact feature artifacts;
   compatibility-mode or hand-scored planning cannot enter terminal proof. The
-  daily report is then independently rebuilt from those orders, normalized
-  NBBO/trade files, replay specs, and order evidence before Phase 6 aggregation;
-  re-hashed edits to scores, orders, P&L, fills, or slippage are rejected.
+  live source must independently reproduce from its candidate file,
+  authoritative calendar, raw Alpaca paper-account response, raw Polygon
+  decision snapshots, initial proof cash, and prior replay chain. The daily
+  report is then independently rebuilt from those orders, normalized NBBO/trade
+  files, replay specs, and order evidence before Phase 6 aggregation; re-hashed
+  edits to source fields, scores, orders, P&L, fills, or slippage are rejected.
 - Every included daily report also requires a succeeded, captured paper
   reconciliation bound to the same replay evidence and workflow-captured raw
   Alpaca order observations; unresolved or unreproducible operational breaks

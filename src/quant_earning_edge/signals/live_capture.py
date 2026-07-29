@@ -35,6 +35,7 @@ class LiveSourceCaptureArtifact:
     """Content-linked source consumed by production-model live scoring."""
 
     schema_version: int
+    initial_cash: float
     candidate_file_sha256: str
     session_file_sha256: str
     account_payload_sha256: str
@@ -43,11 +44,27 @@ class LiveSourceCaptureArtifact:
     prior_replay_sha256: tuple[str, ...]
     source: LivePlanningSourceSpec
 
+    def __post_init__(self) -> None:
+        if self.schema_version != 2:
+            raise ValueError("unsupported live source capture schema version")
+        if not math.isfinite(self.initial_cash) or self.initial_cash <= 0:
+            raise ValueError("live source initial cash must be finite and positive")
+        for digest in (
+            self.candidate_file_sha256,
+            self.session_file_sha256,
+            self.account_payload_sha256,
+            *self.snapshot_payload_sha256,
+            *self.prior_replay_sha256,
+        ):
+            if len(digest) != 64 or any(item not in "0123456789abcdef" for item in digest):
+                raise ValueError("live source capture digest must be SHA-256")
+
     @property
     def canonical_bytes(self) -> bytes:
         return json.dumps(
             {
                 "schema_version": self.schema_version,
+                "initial_cash": float(self.initial_cash),
                 "candidate_file_sha256": self.candidate_file_sha256,
                 "session_file_sha256": self.session_file_sha256,
                 "account_payload_sha256": self.account_payload_sha256,
@@ -63,6 +80,27 @@ class LiveSourceCaptureArtifact:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    @classmethod
+    def load(cls, path: Path) -> LiveSourceCaptureArtifact:
+        try:
+            raw = json.loads(path.read_bytes())
+            artifact = cls(
+                schema_version=int(raw["schema_version"]),
+                initial_cash=float(raw["initial_cash"]),
+                candidate_file_sha256=str(raw["candidate_file_sha256"]),
+                session_file_sha256=str(raw["session_file_sha256"]),
+                account_payload_sha256=str(raw["account_payload_sha256"]),
+                paper_account_equity=float(raw["paper_account_equity"]),
+                snapshot_payload_sha256=tuple(str(item) for item in raw["snapshot_payload_sha256"]),
+                prior_replay_sha256=tuple(str(item) for item in raw["prior_replay_sha256"]),
+                source=LivePlanningSourceSpec.model_validate(raw["source"]),
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid live source capture evidence: {path}") from error
+        if artifact.canonical_bytes != path.read_bytes():
+            raise ValueError("live source capture evidence is not canonical")
+        return artifact
 
 
 class LiveSourceCaptureAssembler:
@@ -168,7 +206,8 @@ class LiveSourceCaptureAssembler:
             minimum_probability=minimum_probability,
         )
         return LiveSourceCaptureArtifact(
-            schema_version=1,
+            schema_version=2,
+            initial_cash=initial_cash,
             candidate_file_sha256=candidate_hash,
             session_file_sha256=calendar.sha256,
             account_payload_sha256=account.payload_sha256,
@@ -243,12 +282,7 @@ class LiveSourceCaptureAssembler:
         source_output: Path,
         evidence_output: Path,
     ) -> None:
-        source_encoded = json.dumps(
-            artifact.source.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        _write_immutable(source_output, source_encoded)
+        _write_immutable(source_output, artifact.source.canonical_bytes)
         _write_immutable(evidence_output, artifact.canonical_bytes)
 
 

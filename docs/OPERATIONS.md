@@ -1458,10 +1458,18 @@ exposure bucket, prior-close sizing price, and frozen 20-session ADV from the
 universe snapshot. Capture reads authenticated Alpaca paper equity for
 operational evidence and obtains one Polygon two-sided NBBO/last-trade
 snapshot per candidate, retaining provider timestamps, payload hashes, and
-bronze responses. Sizing equity is not taken from Alpaca: it is chained from
-initial proof capital plus clean prior NBBO-replay P&L so Phase 6 accounting
-cannot drift. Prior replay reports must be canonical, reconciled,
-chronological, and equity-continuous.
+bronze responses. The command emits every raw account/snapshot Bronze path, and
+the worker records those dynamic paths with the static candidate, calendar, and
+prior-replay inputs. Schema-v2 source evidence also retains initial proof cash.
+Sizing equity is not taken from Alpaca: it is chained from initial proof capital
+plus clean prior NBBO-replay P&L so Phase 6 accounting cannot drift. Prior
+replay reports must be canonical, reconciled, chronological, and
+equity-continuous.
+
+Terminal verification reloads all of those captured inputs, reconstructs the
+paper-account and provider snapshots from raw JSON, reruns candidate/session
+validation and replay-equity chaining, and requires the probability-free source
+bytes to match before model scoring is allowed.
 
 Then score the captured source from point-in-time feature artifacts:
 

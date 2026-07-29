@@ -29,7 +29,7 @@ from quant_earning_edge.data import (
     SessionFileStore,
     SilverWriter,
 )
-from quant_earning_edge.data.clients import MarketSession, StockQuote
+from quant_earning_edge.data.clients import MarketSession, PolygonClient, StockQuote
 from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
     Phase6CompletionFinalizer,
@@ -39,6 +39,7 @@ from quant_earning_edge.evaluation import (
 from quant_earning_edge.features import FEATURE_VALUE_SCHEMA
 from quant_earning_edge.live import (
     BrokerOrder,
+    PaperAccountSnapshot,
     PaperBatchSubmission,
     PaperOrderReconciler,
     PaperSubmission,
@@ -62,15 +63,16 @@ from quant_earning_edge.orchestration import (
 )
 from quant_earning_edge.signals import (
     DailyOrderPlanningSpec,
-    LiveMarketObservationSpec,
     LiveOrderPlanner,
     LivePlanningAssembler,
     LivePlanningSourceSpec,
+    LiveSourceCaptureAssembler,
     ProductionModelArtifact,
     ProductionModelTrainer,
     load_strategy_config,
     strategy_file_sha256,
 )
+from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
 
 _MODEL_TEMP = TemporaryDirectory(prefix="qee-phase6-model-")
 
@@ -129,6 +131,172 @@ def _write_scored_planning(
         scored.planning,
         (source_path, model_evidence_path, model_path, *feature_files),
         scored_path,
+    )
+
+
+def _write_live_source_capture(
+    daily: Path,
+    *,
+    trade_date: date,
+    captured_at: datetime,
+    snapshot: DecisionSnapshotSpec | None,
+) -> tuple[LivePlanningSourceSpec, tuple[Path, ...], Path]:
+    prior_date = trade_date - timedelta(days=1)
+    calendar = SessionFileStore(LakehouseLayout(daily / "live-calendar")).write(
+        (
+            MarketSession(
+                session_date=prior_date,
+                open_at=datetime(
+                    prior_date.year,
+                    prior_date.month,
+                    prior_date.day,
+                    13,
+                    30,
+                    tzinfo=UTC,
+                ),
+                close_at=datetime(
+                    prior_date.year,
+                    prior_date.month,
+                    prior_date.day,
+                    20,
+                    tzinfo=UTC,
+                ),
+            ),
+            MarketSession(
+                session_date=trade_date,
+                open_at=datetime(
+                    trade_date.year,
+                    trade_date.month,
+                    trade_date.day,
+                    13,
+                    30,
+                    tzinfo=UTC,
+                ),
+                close_at=datetime(
+                    trade_date.year,
+                    trade_date.month,
+                    trade_date.day,
+                    20,
+                    tzinfo=UTC,
+                ),
+            ),
+        )
+    )
+    candidate_path = daily.parent / f"event-candidates-{trade_date.isoformat()}.parquet"
+    candidate_rows = (
+        [
+            {
+                "trade_date": trade_date,
+                "asof_date": prior_date,
+                "decision_at": captured_at,
+                "symbol": "AAA",
+                "sector": "Technology",
+                "sizing_price": 100.0,
+                "frozen_average_daily_volume_shares": 1_000_000.0,
+                "event_date": prior_date,
+                "timing": "amc",
+                "year": trade_date.year,
+                "quarter": 3,
+                "eps_estimate": 1.0,
+                "revenue_estimate": 100.0,
+                "split_event_ids": [],
+                "dividend_event_ids": [],
+                "universe_snapshot_sha256": "a" * 64,
+                "session_file_sha256": calendar.sha256,
+                "earnings_input_sha256": "b" * 64,
+                "corporate_actions_input_sha256": "c" * 64,
+            }
+        ]
+        if snapshot is not None
+        else []
+    )
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(candidate_rows, schema=EVENT_CANDIDATE_SCHEMA),
+        candidate_path,
+    )
+
+    def write_raw(path: Path, payload: object) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        )
+        return path
+
+    account_raw = {
+        "equity": "100000",
+        "buying_power": "200000",
+        "status": "ACTIVE",
+        "trading_blocked": False,
+    }
+    account_path = write_raw(daily / "raw-account.json", account_raw)
+    account = PaperAccountSnapshot.from_payload(
+        account_raw,
+        captured_at=captured_at,
+    )
+    snapshots = ()
+    snapshot_paths: tuple[Path, ...] = ()
+    if snapshot is not None:
+        quote_nanoseconds = int(snapshot.observed_at.timestamp()) * 1_000_000_000
+        trade_nanoseconds = int(snapshot.last_trade_at.timestamp()) * 1_000_000_000
+        snapshot_raw = {
+            "status": "OK",
+            "request_id": "snapshot-request",
+            "ticker": {
+                "ticker": "AAA",
+                "lastQuote": {
+                    "P": snapshot.ask_price,
+                    "S": snapshot.ask_size,
+                    "p": snapshot.bid_price,
+                    "s": snapshot.bid_size,
+                    "t": quote_nanoseconds,
+                },
+                "lastTrade": {
+                    "p": snapshot.last_trade_price,
+                    "t": trade_nanoseconds,
+                },
+            },
+        }
+        snapshot_path = write_raw(daily / "raw-polygon-snapshot.json", snapshot_raw)
+        snapshots = (
+            PolygonClient.ticker_snapshot_from_payload(
+                snapshot_raw,
+                symbol="AAA",
+                captured_at=captured_at,
+            ),
+        )
+        snapshot_paths = (snapshot_path,)
+    capture = LiveSourceCaptureAssembler().assemble(
+        trade_date=trade_date,
+        captured_at=captured_at,
+        candidate_file=candidate_path,
+        session_file=calendar.path,
+        account=account,
+        initial_cash=100_000,
+        snapshots=snapshots,
+        prior_replay_files=(),
+    )
+    source_path = daily / "live-source.json"
+    evidence_path = daily / "live-source-evidence.json"
+    LiveSourceCaptureAssembler.write(
+        capture,
+        source_output=source_path,
+        evidence_output=evidence_path,
+    )
+    return (
+        capture.source,
+        (
+            candidate_path,
+            calendar.path,
+            account_path,
+            *snapshot_paths,
+            evidence_path,
+        ),
+        source_path,
     )
 
 
@@ -260,56 +428,24 @@ def _no_trade_replay_sources(
     strategy = Path("configs/strategies/earnings_v1.yaml").resolve()
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
     frozen_path = daily / "frozen-daily-orders.json"
-    planning_source = LivePlanningSourceSpec(
+    planning_source, live_capture_paths, source_path = _write_live_source_capture(
+        daily,
         trade_date=session_date,
-        feature_asof_date=session_date - timedelta(days=1),
-        decision_at=datetime(
+        captured_at=datetime(
             session_date.year,
             session_date.month,
             session_date.day,
             12,
             tzinfo=UTC,
         ),
-        equity=100_000,
-        observations=(),
-        outcomes=(),
-        entry_submitted_at=datetime(
-            session_date.year,
-            session_date.month,
-            session_date.day,
-            14,
-            30,
-            tzinfo=UTC,
-        ),
-        entry_expires_at=datetime(
-            session_date.year,
-            session_date.month,
-            session_date.day,
-            14,
-            35,
-            tzinfo=UTC,
-        ),
-        exit_submitted_at=datetime(
-            session_date.year,
-            session_date.month,
-            session_date.day,
-            20,
-            tzinfo=UTC,
-        ),
-        exit_expires_at=datetime(
-            session_date.year,
-            session_date.month,
-            session_date.day,
-            20,
-            1,
-            tzinfo=UTC,
-        ),
+        snapshot=None,
     )
+    candidate_path, live_calendar_path, account_path, live_evidence_path = live_capture_paths
     planning, planning_sources, planning_evidence_path = _write_scored_planning(
         daily,
         source=planning_source,
     )
-    source_path, model_evidence_path, model_path = planning_sources
+    _, model_evidence_path, model_path = planning_sources
     planning_path = daily / "daily-order-planning.json"
     frozen = LiveOrderPlanner(
         load_strategy_config(strategy),
@@ -395,6 +531,10 @@ def _no_trade_replay_sources(
         "strategy": strategy,
         "planning": planning_path,
         "planning_source": source_path,
+        "candidate_file": candidate_path,
+        "live_calendar": live_calendar_path,
+        "account_observation": account_path,
+        "live_source_evidence": live_evidence_path,
         "model_evidence": model_evidence_path,
         "model_file": model_path,
         "planning_evidence": planning_evidence_path,
@@ -431,6 +571,10 @@ def _complete_source_workflow(
             return (
                 sources["strategy"],
                 sources["planning_source"],
+                sources["candidate_file"],
+                sources["live_calendar"],
+                sources["account_observation"],
+                sources["live_source_evidence"],
                 sources["model_evidence"],
                 sources["model_file"],
             )
@@ -486,6 +630,8 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_reconciliation_age_sources: bool = True,
     capture_planning_input: bool = True,
     capture_scored_planning_evidence: bool = True,
+    capture_live_source_evidence: bool = True,
+    capture_live_provider_inputs: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -502,28 +648,20 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         last_trade_price=100,
         last_trade_at=decision_at - timedelta(seconds=1),
     )
-    planning_source = LivePlanningSourceSpec(
-        trade_date=session_date,
-        feature_asof_date=session_date - timedelta(days=1),
-        decision_at=decision_at,
-        equity=100_000,
-        observations=(
-            LiveMarketObservationSpec(
-                symbol="AAA",
-                sector="Technology",
-                sizing_price=100,
-                sizing_price_observed_at=decision_at,
-                frozen_average_daily_volume_shares=1_000_000,
-                decision_snapshot=snapshot,
-            ),
-        ),
-        outcomes=(),
-        entry_submitted_at=entry_at,
-        entry_expires_at=entry_at + timedelta(minutes=1),
-        exit_submitted_at=exit_at,
-        exit_expires_at=exit_at + timedelta(minutes=1),
-    )
     daily = tmp_path / "artifacts" / f"trade_date={session_date.isoformat()}"
+    planning_source, live_capture_paths, source_path = _write_live_source_capture(
+        daily,
+        trade_date=session_date,
+        captured_at=decision_at,
+        snapshot=snapshot,
+    )
+    (
+        candidate_path,
+        live_calendar_path,
+        account_path,
+        live_snapshot_path,
+        live_evidence_path,
+    ) = live_capture_paths
     feature_path = daily / "live-features.parquet"
     feature_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(  # type: ignore[no-untyped-call]
@@ -548,7 +686,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         source=planning_source,
         feature_files=(feature_path,),
     )
-    source_path, model_evidence_path, model_path, captured_feature_path = planning_sources
+    _, model_evidence_path, model_path, captured_feature_path = planning_sources
     frozen = LiveOrderPlanner(
         strategy,
         strategy_sha256=strategy_file_sha256(strategy_path),
@@ -727,6 +865,17 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
                 (
                     strategy_path,
                     source_path,
+                    *(
+                        (
+                            candidate_path,
+                            live_calendar_path,
+                            account_path,
+                            live_snapshot_path,
+                        )
+                        if capture_live_provider_inputs
+                        else ()
+                    ),
+                    *((live_evidence_path,) if capture_live_source_evidence else ()),
                     model_evidence_path,
                     model_path,
                     captured_feature_path,
@@ -1151,7 +1300,7 @@ def test_daily_report_verifier_requires_reconciliation_age_sources(
         capture_reconciliation_age_sources=False,
     )
 
-    with pytest.raises(ValueError, match="exactly one captured calendar"):
+    with pytest.raises(ValueError, match="captured calendar"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,
@@ -1190,6 +1339,44 @@ def test_daily_report_verifier_rejects_unscored_compatibility_planning(
     )
 
     with pytest.raises(ValueError, match="exactly one captured scored-planning"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_live_source_evidence(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_live_source_evidence=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly one captured source evidence"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_live_provider_inputs(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_live_provider_inputs=False,
+    )
+
+    with pytest.raises(ValueError, match="exact captured provider and workflow inputs"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

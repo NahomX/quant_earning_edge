@@ -1449,16 +1449,21 @@ def capture_live_source(  # noqa: PLR0917 - explicit provider capture boundary.
                 http_client=polygon_http,
                 bronze_writer=BronzeWriter(layout),
             )
-            account = AlpacaPaperClient(
+            alpaca = AlpacaPaperClient(
                 api_key_id=alpaca_key,
                 secret_key=alpaca_secret,
                 http_client=alpaca_http,
                 bronze_writer=BronzeWriter(layout),
-            ).account_snapshot(captured_at=captured_at)
+            )
+            account = alpaca.account_snapshot(captured_at=captured_at)
             snapshots = tuple(
                 polygon.ticker_snapshot(symbol=symbol, captured_at=captured_at)
                 for symbol in symbols
             )
+            provider_observation_paths = [
+                *(artifact.path.resolve() for artifact in alpaca.observation_artifacts),
+                *(artifact.path.resolve() for artifact in polygon.decision_snapshot_artifacts),
+            ]
         artifact = assembler.assemble(
             trade_date=selected_date,
             captured_at=captured_at,
@@ -1487,6 +1492,7 @@ def capture_live_source(  # noqa: PLR0917 - explicit provider capture boundary.
         {
             "source_output": str(source_output.resolve()),
             "evidence_output": str(evidence_output.resolve()),
+            "provider_observation_paths": [str(path) for path in provider_observation_paths],
             "sha256": artifact.sha256,
             "trade_date": artifact.source.trade_date,
             "candidate_count": len(artifact.source.observations),

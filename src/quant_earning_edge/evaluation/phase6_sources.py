@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         DailyOrderPlanningSpec,
         FrozenDailyOrders,
     )
+    from quant_earning_edge.signals.live_planning import LivePlanningSourceSpec
 
 
 class Phase6DailyReportVerifier:
@@ -220,6 +221,10 @@ class Phase6DailyReportVerifier:
         source = LivePlanningSourceSpec.model_validate_json(source_encoded)
         if source.canonical_bytes != source_encoded:
             raise ValueError("captured live planning source is not canonical")
+        Phase6DailyReportVerifier._verify_live_source(
+            state=state,
+            source=source,
+        )
         model = ProductionModelArtifact.load(
             evidence_path=model_evidence_paths[0],
             model_path=model_paths[0],
@@ -232,6 +237,86 @@ class Phase6DailyReportVerifier:
         )
         if reproduced.canonical_bytes != scored.canonical_bytes:
             raise ValueError("scored planning differs from captured source/model/features")
+
+    @staticmethod
+    def _verify_live_source(
+        *,
+        state: DailyWorkflowState,
+        source: LivePlanningSourceSpec,
+    ) -> None:
+        from quant_earning_edge.data.clients import PolygonClient  # noqa: PLC0415
+        from quant_earning_edge.live import PaperAccountSnapshot  # noqa: PLC0415
+        from quant_earning_edge.signals.live_capture import (  # noqa: PLC0415
+            LiveSourceCaptureArtifact,
+            LiveSourceCaptureAssembler,
+        )
+
+        evidence = []
+        for stage in state.stages:
+            for artifact in stage.output_artifacts:
+                candidate = Path(artifact.path).resolve()
+                if candidate.suffix != ".json":
+                    continue
+                try:
+                    captured = LiveSourceCaptureArtifact.load(candidate)
+                except (OSError, ValueError):
+                    continue
+                if captured.source.canonical_bytes == source.canonical_bytes:
+                    evidence.append(captured)
+        if len(evidence) != 1:
+            raise ValueError(
+                "live planning source must bind to exactly one captured source evidence"
+            )
+        captured = evidence[0]
+        paths_by_sha = Phase6DailyReportVerifier._artifact_paths_by_sha(state)
+        candidate_paths = paths_by_sha.get(captured.candidate_file_sha256, [])
+        session_paths = paths_by_sha.get(captured.session_file_sha256, [])
+        account_paths = paths_by_sha.get(captured.account_payload_sha256, [])
+        snapshot_matches = tuple(
+            paths_by_sha.get(digest, []) for digest in captured.snapshot_payload_sha256
+        )
+        replay_matches = tuple(
+            paths_by_sha.get(digest, []) for digest in captured.prior_replay_sha256
+        )
+        if (
+            not candidate_paths
+            or not session_paths
+            or not account_paths
+            or any(not paths for paths in snapshot_matches)
+            or any(not paths for paths in replay_matches)
+        ):
+            raise ValueError("live source lacks exact captured provider and workflow inputs")
+        account = PaperAccountSnapshot.from_payload(
+            json.loads(account_paths[0].read_bytes()),
+            captured_at=source.decision_at,
+        )
+        if len(snapshot_matches) != len(source.observations):
+            raise ValueError("live source snapshot count differs from captured observations")
+        snapshots = tuple(
+            PolygonClient.ticker_snapshot_from_payload(
+                json.loads(paths[0].read_bytes()),
+                symbol=observation.symbol,
+                captured_at=source.decision_at,
+            )
+            for observation, paths in zip(
+                source.observations,
+                snapshot_matches,
+                strict=True,
+            )
+        )
+        reproduced = LiveSourceCaptureAssembler().assemble(
+            trade_date=source.trade_date,
+            captured_at=source.decision_at,
+            candidate_file=candidate_paths[0],
+            session_file=session_paths[0],
+            account=account,
+            initial_cash=captured.initial_cash,
+            snapshots=snapshots,
+            prior_replay_files=tuple(paths[0] for paths in replay_matches),
+            minimum_probability=source.minimum_probability,
+        )
+        if reproduced.canonical_bytes != captured.canonical_bytes:
+            raise ValueError("live source differs from captured provider or workflow inputs")
 
     @staticmethod
     def _stage(
@@ -441,10 +526,10 @@ class Phase6DailyReportVerifier:
         artifact_paths = Phase6DailyReportVerifier._artifact_paths_by_sha(state)
         calendar_paths = artifact_paths.get(age.calendar_sha256, [])
         report_paths = tuple(artifact_paths.get(digest, []) for digest in age.input_report_sha256)
-        if len(calendar_paths) != 1 or any(len(paths) != 1 for paths in report_paths):
+        if not calendar_paths or any(not paths for paths in report_paths):
             raise ValueError(
-                "reconciliation-age evidence must bind to exactly one captured "
-                "calendar and each source report"
+                "reconciliation-age evidence must bind to a captured calendar "
+                "and each source report"
             )
         reproduced_age = ReconciliationAgeEvaluator().evaluate(
             calendar=SessionFileStore.load(calendar_paths[0]),

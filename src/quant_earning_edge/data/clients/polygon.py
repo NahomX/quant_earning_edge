@@ -19,7 +19,7 @@ from quant_earning_edge.data.clients.errors import ProviderRequestError, Provide
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from quant_earning_edge.data.bronze import BronzeWriter
+    from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 
 _MARKET_TIMEZONE = ZoneInfo("America/New_York")
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -482,6 +482,12 @@ class PolygonClient:
         self._retry_delay_seconds = retry_delay_seconds
         self._max_pages = max_pages
         self._sleeper = sleeper
+        self._decision_snapshot_artifacts: list[BronzeArtifact] = []
+
+    @property
+    def decision_snapshot_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return raw decision snapshots captured by this client instance."""
+        return tuple(self._decision_snapshot_artifacts)
 
     def daily_bars(
         self,
@@ -605,12 +611,29 @@ class PolygonClient:
         )
         raw = self._decode_json(response)
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="polygon",
-                dataset="decision-snapshot",
-                event_date=captured.date(),
+            self._decision_snapshot_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="polygon",
+                    dataset="decision-snapshot",
+                    event_date=captured.date(),
+                )
             )
+        return self.ticker_snapshot_from_payload(
+            raw,
+            symbol=normalized_symbol,
+            captured_at=captured,
+        )
+
+    @staticmethod
+    def ticker_snapshot_from_payload(
+        raw: Any,
+        *,
+        symbol: str,
+        captured_at: datetime,
+    ) -> TickerSnapshot:
+        """Rebuild one decision snapshot from its exact provider payload."""
+        normalized_symbol = symbol.strip().upper()
         try:
             envelope = _SnapshotResponse.model_validate(raw)
         except ValidationError as error:
@@ -623,18 +646,23 @@ class PolygonClient:
             raise ProviderResponseError("Polygon ticker snapshot identity did not match")
         quote = envelope.ticker.quote
         trade = envelope.ticker.trade
-        payload = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+        payload = json.dumps(
+            raw,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
         try:
             return TickerSnapshot(
                 symbol=normalized_symbol,
-                captured_at=captured,
-                observed_at=self._nanoseconds_to_datetime(quote.timestamp_ns),
+                captured_at=captured_at,
+                observed_at=PolygonClient._nanoseconds_to_datetime(quote.timestamp_ns),
                 bid_price=quote.bid_price,
                 ask_price=quote.ask_price,
                 bid_size=quote.bid_size,
                 ask_size=quote.ask_size,
                 last_trade_price=trade.price,
-                last_trade_at=self._nanoseconds_to_datetime(trade.timestamp_ns),
+                last_trade_at=PolygonClient._nanoseconds_to_datetime(trade.timestamp_ns),
                 payload_sha256=hashlib.sha256(payload).hexdigest(),
                 request_id=envelope.request_id,
             )

@@ -206,7 +206,12 @@ class DailyWorkflowSpecGenerator:
             ]
             for replay_file in automatic.prior_replay_files:
                 capture_arguments.extend(("--prior-replay-file", str(replay_file.resolve())))
-            freeze_commands = (QeeCommandSpec(arguments=tuple(capture_arguments)),)
+            freeze_commands = (
+                QeeCommandSpec(
+                    arguments=tuple(capture_arguments),
+                    artifact_json_keys=("provider_observation_paths",),
+                ),
+            )
             freeze_outputs = (
                 automatic.candidate_file.resolve(),
                 automatic.session_file.resolve(),

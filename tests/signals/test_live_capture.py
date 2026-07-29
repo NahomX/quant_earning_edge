@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import httpx
 import pyarrow as pa
@@ -20,12 +20,11 @@ from quant_earning_edge.data import LakehouseLayout, SessionFileStore
 from quant_earning_edge.data.clients import MarketSession, TickerSnapshot
 from quant_earning_edge.evaluation import ReplayRoundTrip, ReplaySessionAggregator
 from quant_earning_edge.live import PaperAccountSnapshot
-from quant_earning_edge.signals import LiveSourceCaptureAssembler
+from quant_earning_edge.signals import (
+    LiveSourceCaptureArtifact,
+    LiveSourceCaptureAssembler,
+)
 from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 TRADE_DATE = date(2026, 7, 28)
 ASOF_DATE = date(2026, 7, 27)
@@ -380,6 +379,10 @@ def test_capture_cli_fetches_only_paper_account_and_polygon_snapshots(
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.stdout)["candidate_count"] == 1
+    payload = json.loads(result.stdout)
+    assert payload["candidate_count"] == 1
+    assert len(payload["provider_observation_paths"]) == 2
+    assert all(Path(path).is_file() for path in payload["provider_observation_paths"])
     assert json.loads(source.read_bytes())["equity"] == 100_000
     assert json.loads(evidence.read_bytes())["paper_account_equity"] == 100_123.45
+    assert LiveSourceCaptureArtifact.load(evidence).schema_version == 2

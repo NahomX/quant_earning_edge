@@ -132,6 +132,37 @@ class PaperAccountSnapshot(BaseModel):
             raise ValueError("paper account is blocked from trading")
         return self
 
+    @classmethod
+    def from_payload(
+        cls,
+        raw: Any,
+        *,
+        captured_at: datetime,
+        provider_request_id: str | None = None,
+    ) -> PaperAccountSnapshot:
+        """Rebuild a paper-account snapshot from its exact provider payload."""
+        try:
+            account = _PaperAccountPayload.model_validate(raw)
+            payload = json.dumps(
+                raw,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            return cls(
+                captured_at=captured_at,
+                equity=float(account.equity),
+                buying_power=float(account.buying_power),
+                status=account.status,
+                trading_blocked=account.trading_blocked,
+                payload_sha256=hashlib.sha256(payload).hexdigest(),
+                provider_request_id=provider_request_id,
+            )
+        except ValidationError as error:
+            raise ProviderResponseError(
+                f"Alpaca paper account failed validation: {error}"
+            ) from error
+
 
 class _PaperAccountPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -468,28 +499,19 @@ class AlpacaPaperClient:
         response = self._http.get("/v2/account", headers=self._headers)
         self._raise_for_status(response)
         raw = self._decode(response)
-        try:
-            account = _PaperAccountPayload.model_validate(raw)
-            payload = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
-            snapshot = PaperAccountSnapshot(
-                captured_at=captured,
-                equity=float(account.equity),
-                buying_power=float(account.buying_power),
-                status=account.status,
-                trading_blocked=account.trading_blocked,
-                payload_sha256=hashlib.sha256(payload).hexdigest(),
-                provider_request_id=response.headers.get("X-Request-ID"),
-            )
-        except ValidationError as error:
-            raise ProviderResponseError(
-                f"Alpaca paper account failed validation: {error}"
-            ) from error
+        snapshot = PaperAccountSnapshot.from_payload(
+            raw,
+            captured_at=captured,
+            provider_request_id=response.headers.get("X-Request-ID"),
+        )
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="alpaca-paper",
-                dataset="account",
-                event_date=captured.date(),
+            self._observation_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="alpaca-paper",
+                    dataset="account",
+                    event_date=captured.date(),
+                )
             )
         return snapshot
 

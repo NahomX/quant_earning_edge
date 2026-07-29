@@ -123,8 +123,8 @@ reproducible through `uv.lock`.
 | Phase 6 deployment-promotion binding | Complete | loop requires the actual passing Phase 4 report, exact strategy/model digest matches, causal cutoff, and proof-end model-age limit |
 | Phase 6 hyperparameter-study binding | Complete | production refit requires the matching Optuna artifact; proof loop rejects unbound models |
 | Automatic live planning scores | Complete | schema-v2 source/model/feature hashes, strict booster reload, PIT feature schema/timestamp/lineage checks, generated probabilities, canonical evidence loader, and independent Phase 6 rescoring |
-| Provider-backed live source capture | Complete | SIC exposure buckets, frozen prior-close price/ADV, paper-account audit, Polygon NBBO/trade snapshots, replay-chained equity/outcomes |
-| Worker-time capture and scoring | Complete | T-1 decision stage captures providers and freezes scores/orders; pre-open stage independently refreshes breaker controls |
+| Provider-backed live source capture | Complete | schema-v2 initial-cash and source hashes; SIC exposure buckets; prior-close price/ADV; raw Alpaca account and Polygon snapshot workflow capture; replay-chained equity/outcomes; independent Phase 6 reconstruction |
+| Worker-time capture and scoring | Complete | T-1 decision stage captures raw provider paths and freezes source/scores/orders; pre-open stage independently refreshes breaker controls |
 | Fail-closed proof-start admission | Complete | fresh passing readiness + prior isolated smoke + scheduled spec required before first inbox publication |
 | Typed cross-stage artifact bindings | Complete | stage/path filters, repeated options, cardinality gates, no shell interpolation |
 

@@ -389,6 +389,7 @@ def test_generator_captures_and_scores_at_decision_before_refreshing_breakers(
     breakers = spec.stages[2]
     assert freeze.not_before == decision_at
     assert freeze.commands[0].arguments[:2] == ("model", "capture-live-source")
+    assert freeze.commands[0].artifact_json_keys == ("provider_observation_paths",)
     assert [command.arguments[:2] for command in generation.commands] == [
         ("model", "score-live-planning"),
         ("model", "plan-live-orders"),

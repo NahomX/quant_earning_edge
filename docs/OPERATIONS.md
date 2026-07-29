@@ -118,6 +118,7 @@ uv run qee labels compute `
   --observed-at 2026-08-04T22:00:00Z `
   --session-file .\data\manifests\market-calendar\sessions-<hash>.json `
   --bars-file .\data\silver\asset_class=us-equity\dataset=daily-bars\date=2026-07-27\part-<hash>.parquet `
+  --split-source-manifest .\data\manifests\split-history-sources\source-<hash>.json `
   --symbol AAPL
 ```
 
@@ -125,9 +126,14 @@ Repeat `--bars-file` through the fifth subsequent market session. The three
 labels are next-session open-to-close, next-session close versus the as-of
 close, and fifth-session close versus the as-of close. Offsets come only from
 the explicit market-session file, never weekdays or calendar-day arithmetic.
-The command emits `label-source-<hash>.json`; it requires unique Polygon
-daily-bar lineage and unique Alpaca calendar lineage and reproduces both before
-recomputing the exact label file.
+For raw historical bars, the split source is mandatory and must match the
+backfill plan. Raw prices are normalized only through the fifth target session:
+a split inside the label horizon is incorporated, while a later split cannot
+rewrite the target. Adjusted current-capture bars omit the split option. The
+command emits schema-v2 `label-source-<hash>.json`; it binds the unique Polygon
+daily-bar lineage, complete split lineage when applicable, and unique Alpaca
+calendar lineage, and reproduces all of them before recomputing the exact
+label file.
 
 Join complete feature and label key sets:
 

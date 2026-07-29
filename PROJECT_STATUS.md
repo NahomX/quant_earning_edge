@@ -33,13 +33,14 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 400 automated tests pass.
+- 412 automated tests pass; Ruff and strict mypy pass across 112 source files.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 109 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
-  candidates, sessions, adjusted bars, and OOS predictions.
+  candidates, sessions, raw nominal execution bars, complete split history,
+  and OOS predictions. Per-session progress is atomic and restart-safe.
 - Every OOS prediction carries the latest feature-information cutoff; Phase 4
   rejects a cutoff before candidate freeze or at/after the authoritative open,
   preventing premarket features from inheriting a false prior-close timestamp.
@@ -56,13 +57,14 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Each Optuna artifact is bound to its datasets, purged split plan, and strategy;
   walk-forward attestation reruns the deterministic nested search and requires
   the exact trial ledger, winner, score, and selected parameters.
-- Every adjusted daily- and premarket minute-bar ingestion now emits a strict
+- Every adjustment-explicit daily- and premarket minute-bar ingestion emits a strict
   retained-Polygon source manifest; the resumable five-year backfill does the
   same for every completed symbol batch.
 - Historical feature files independently rebuild their daily/minute/earnings
   Silver inputs and fully source-bound event candidates before recomputing the
-  registered features. Forward labels independently rebuild raw Polygon bars
-  and the raw Alpaca calendar before recomputing D+1/D+5 targets.
+  registered features. Forward labels independently rebuild raw Polygon bars,
+  normalize them only through the D+5 horizon using the plan-matched split
+  source, and rebuild the raw Alpaca calendar before recomputing their targets.
 - Manual universe/candidate operations now emit or require the same complete
   schema-v5 universe/event/calendar provider lineage as the unattended daily
   builder, so a manual schema-v2 candidate cannot enter historical features.

@@ -21,6 +21,10 @@ from quant_earning_edge.data.calendar_source import (
     CalendarSourceCapture,
     CalendarSourceManifest,
 )
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
 from quant_earning_edge.labels.forward import (
     FORWARD_LABEL_SCHEMA,
     ForwardLabelMaker,
@@ -59,18 +63,24 @@ class ForwardLabelSourceManifest:
             "session_file",
             "daily_bar_source_manifests",
             "daily_bar_provider_observations",
+            "split_source_manifest",
+            "split_files",
+            "split_provider_observations",
             "calendar_source_manifest",
             "calendar_provider_observations",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("forward-label source manifest schema mismatch")
         symbols = raw["symbols"]
         collections = (
             "daily_bar_files",
             "daily_bar_source_manifests",
             "daily_bar_provider_observations",
+            "split_files",
+            "split_provider_observations",
             "calendar_provider_observations",
         )
+        split_entry = raw["split_source_manifest"]
         if (
             not isinstance(symbols, list)
             or not symbols
@@ -79,7 +89,21 @@ class ForwardLabelSourceManifest:
             or not isinstance(raw["label_file"], dict)
             or not isinstance(raw["session_file"], dict)
             or not isinstance(raw["calendar_source_manifest"], dict)
-            or any(not isinstance(raw[name], list) or not raw[name] for name in collections)
+            or any(not isinstance(raw[name], list) for name in collections)
+            or any(
+                not raw[name]
+                for name in (
+                    "daily_bar_files",
+                    "daily_bar_source_manifests",
+                    "daily_bar_provider_observations",
+                    "calendar_provider_observations",
+                )
+            )
+            or (split_entry is None and (raw["split_files"] or raw["split_provider_observations"]))
+            or (
+                split_entry is not None
+                and (not isinstance(split_entry, dict) or not raw["split_provider_observations"])
+            )
         ):
             raise ValueError("forward-label source manifest collections are invalid")
         entries = (
@@ -88,6 +112,9 @@ class ForwardLabelSourceManifest:
             raw["session_file"],
             *raw["daily_bar_source_manifests"],
             *raw["daily_bar_provider_observations"],
+            *((split_entry,) if split_entry is not None else ()),
+            *raw["split_files"],
+            *raw["split_provider_observations"],
             raw["calendar_source_manifest"],
             *raw["calendar_provider_observations"],
         )
@@ -125,6 +152,13 @@ class ForwardLabelSourceManifest:
             self.raw["session_file"],
             *self.raw["daily_bar_source_manifests"],
             *self.raw["daily_bar_provider_observations"],
+            *(
+                (self.raw["split_source_manifest"],)
+                if self.raw["split_source_manifest"] is not None
+                else ()
+            ),
+            *self.raw["split_files"],
+            *self.raw["split_provider_observations"],
             self.raw["calendar_source_manifest"],
             *self.raw["calendar_provider_observations"],
         )
@@ -153,6 +187,7 @@ class ForwardLabelSourceCapture:
         label_file: LabelArtifact,
         daily_bar_files: Sequence[Path],
         session_file: Path,
+        split_source_manifest: Path | None = None,
     ) -> ForwardLabelSourceManifest:
         normalized_symbols = tuple(sorted({item.strip().upper() for item in symbols}))
         if (
@@ -176,6 +211,35 @@ class ForwardLabelSourceCapture:
             daily_bar_files,
             data_lake_root=self._layout.root,
         )
+        adjustment_modes = {bool(item.raw["adjusted"]) for item in bar_sources}
+        if len(adjustment_modes) != 1:
+            raise ValueError("forward labels cannot mix daily-bar adjustment modes")
+        adjusted = adjustment_modes.pop()
+        if adjusted == (split_source_manifest is not None):
+            raise ValueError(
+                "unadjusted forward-label bars require exactly one split-history source"
+            )
+        split_source = (
+            SplitHistorySourceManifest.load(split_source_manifest)
+            if split_source_manifest is not None
+            else None
+        )
+        if split_source is not None:
+            if {item.raw["backfill_plan_id"] for item in bar_sources} != {
+                split_source.raw["plan_id"]
+            }:
+                raise ValueError("forward-label bars and split history differ from backfill plan")
+            horizon_dates = {row["horizon_end_date"] for row in rows}
+            if (
+                len(horizon_dates) != 1
+                or date.fromisoformat(split_source.raw["start_date"]) > asof_date
+                or date.fromisoformat(split_source.raw["end_date"]) < horizon_dates.pop()
+            ):
+                raise ValueError("forward-label split history does not cover the label horizon")
+            SplitHistorySourceCapture.reproduce(
+                split_source,
+                data_lake_root=self._layout.root,
+            )
         bar_providers = tuple(
             sorted(
                 {
@@ -191,7 +255,7 @@ class ForwardLabelSourceCapture:
         )
         calendar_providers = calendar_source.provider_paths(data_lake_root=self._layout.root)
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "asof_date": asof_date.isoformat(),
             "observed_at": observed_at.isoformat(),
             "symbols": list(normalized_symbols),
@@ -200,6 +264,19 @@ class ForwardLabelSourceCapture:
             "session_file": self._entry(session_file),
             "daily_bar_source_manifests": self._entries(source.path for source in bar_sources),
             "daily_bar_provider_observations": self._entries(bar_providers),
+            "split_source_manifest": (
+                self._entry(split_source.path) if split_source is not None else None
+            ),
+            "split_files": self._entries(
+                split_source.split_paths(data_lake_root=self._layout.root)
+                if split_source is not None
+                else ()
+            ),
+            "split_provider_observations": self._entries(
+                split_source.provider_paths(data_lake_root=self._layout.root)
+                if split_source is not None
+                else ()
+            ),
             "calendar_source_manifest": self._entry(calendar_source.path),
             "calendar_provider_observations": self._entries(calendar_providers),
         }
@@ -231,7 +308,7 @@ class ForwardLabelSourceCapture:
         return matches[0]
 
     @staticmethod
-    def reproduce(
+    def reproduce(  # noqa: PLR0915 - complete provider-lineage reconstruction.
         manifest: ForwardLabelSourceManifest,
         *,
         data_lake_root: Path,
@@ -243,6 +320,8 @@ class ForwardLabelSourceCapture:
         daily_count = len(manifest.raw["daily_bar_files"])
         daily_source_count = len(manifest.raw["daily_bar_source_manifests"])
         daily_provider_count = len(manifest.raw["daily_bar_provider_observations"])
+        split_count = len(manifest.raw["split_files"])
+        split_provider_count = len(manifest.raw["split_provider_observations"])
         calendar_provider_count = len(manifest.raw["calendar_provider_observations"])
         cursor = 1
         daily_files = paths[cursor : cursor + daily_count]
@@ -253,6 +332,14 @@ class ForwardLabelSourceCapture:
         cursor += daily_source_count
         daily_provider_paths = paths[cursor : cursor + daily_provider_count]
         cursor += daily_provider_count
+        split_source_path = None
+        if manifest.raw["split_source_manifest"] is not None:
+            split_source_path = paths[cursor]
+            cursor += 1
+        split_paths = paths[cursor : cursor + split_count]
+        cursor += split_count
+        split_provider_paths = paths[cursor : cursor + split_provider_count]
+        cursor += split_provider_count
         calendar_source_path = paths[cursor]
         cursor += 1
         calendar_provider_paths = paths[cursor : cursor + calendar_provider_count]
@@ -269,6 +356,27 @@ class ForwardLabelSourceCapture:
             for path in source.provider_paths(data_lake_root=data_lake_root)
         }:
             raise ValueError("forward-label daily-bar lineage differs from its inputs")
+        split_source = (
+            SplitHistorySourceManifest.load(split_source_path)
+            if split_source_path is not None
+            else None
+        )
+        adjustment_modes = {bool(item.raw["adjusted"]) for item in daily_sources}
+        if len(adjustment_modes) != 1 or adjustment_modes.pop() == (split_source is not None):
+            raise ValueError("forward-label adjustment mode differs from split lineage")
+        if split_source is not None:
+            if (
+                {item.raw["backfill_plan_id"] for item in daily_sources}
+                != {split_source.raw["plan_id"]}
+                or set(split_paths) != set(split_source.split_paths(data_lake_root=data_lake_root))
+                or set(split_provider_paths)
+                != set(split_source.provider_paths(data_lake_root=data_lake_root))
+            ):
+                raise ValueError("forward-label split lineage differs from its source")
+            SplitHistorySourceCapture.reproduce(
+                split_source,
+                data_lake_root=data_lake_root,
+            )
         calendar_source = CalendarSourceManifest.load(calendar_source_path)
         if calendar_source.session_path(data_lake_root=data_lake_root) != session_file or set(
             calendar_source.provider_paths(data_lake_root=data_lake_root)
@@ -303,6 +411,7 @@ class ForwardLabelSourceCapture:
                 start_date=asof_date,
                 end_date=horizon_end,
                 observed_at=observed_at,
+                split_source_manifest=(split_source.path if split_source is not None else None),
             )
             labels = ForwardLabelMaker().compute(
                 keys=tuple((symbol, asof_date) for symbol in symbols),

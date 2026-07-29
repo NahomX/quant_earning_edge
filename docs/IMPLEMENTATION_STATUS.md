@@ -49,7 +49,7 @@ reproducible through `uv.lock`.
 | Deterministic long-form gold feature store | Complete | `features/store.py`, lineage/idempotency tests |
 | Source-bound historical feature reconstruction | Complete | raw daily bars are causally normalized using the plan-matched complete split history; retroactively adjusted late backfills fail closed; price/event/premarket provider chains and exact feature Parquet reproduction are required |
 | Session-indexed D+1/D+5 forward label maker | Complete | `labels/forward.py`, including next-session open-to-close target and explicit-offset tests |
-| Source-bound forward-label reconstruction | Complete | adjustment-explicit Polygon bars and raw Alpaca sessions are independently replayed before exact same-session D+1/D+5 return-label regeneration |
+| Source-bound forward-label reconstruction | Complete | raw bars normalize only through D+5 using plan-matched split history; adjusted Polygon bars and raw Alpaca sessions remain independently replayable before exact label regeneration |
 | Leakage-guarded feature/label dataset assembly | Complete | `labels/dataset.py`, pre-open and exact-key tests |
 | Source-bound training-dataset reconstruction | Complete | historical feature and forward-label provider manifests are mandatory and deeply replayed before byte-exact wide Parquet rebuild and Optuna selection |
 | Purged expanding walk-forward splitter | Complete | strict label-horizon purge and embargo tests |

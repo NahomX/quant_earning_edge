@@ -490,6 +490,14 @@ def compute_labels(  # noqa: PLR0917 - CLI options are the label contract.
         Path,
         typer.Option(exists=True, dir_okay=False, help="Immutable market-session file."),
     ],
+    split_source_manifest: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Complete split history required for raw backfill bars.",
+        ),
+    ] = None,
     env_file: EnvFileOption = None,
 ) -> None:
     """Compute the three documented forward-return labels."""
@@ -512,6 +520,7 @@ def compute_labels(  # noqa: PLR0917 - CLI options are the label contract.
         start_date=asof,
         end_date=horizon_end,
         observed_at=cutoff,
+        split_source_manifest=split_source_manifest,
     )
     labels = ForwardLabelMaker().compute(
         keys=tuple((symbol, asof) for symbol in symbols),
@@ -529,6 +538,7 @@ def compute_labels(  # noqa: PLR0917 - CLI options are the label contract.
         label_file=artifact,
         daily_bar_files=bars_files,
         session_file=session_file,
+        split_source_manifest=split_source_manifest,
     )
     _echo_json(
         {

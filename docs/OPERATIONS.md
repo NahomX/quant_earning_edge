@@ -672,9 +672,11 @@ uv run qee calendar sessions --start 2021-01-01 --end 2026-01-01
 ```
 
 The command writes the raw provider response to bronze and creates an immutable,
-content-addressed JSON session file under `manifests/market-calendar`. Use that
-file as the explicit input to coverage and trading-date decisions. A locally
-constructed weekday list is not acceptable operational evidence.
+content-addressed JSON session file under `manifests/market-calendar`. It also
+emits a strict source manifest that regenerates the exact session-file bytes
+from that retained Alpaca response. Use the session file as the explicit input
+to coverage and trading-date decisions. A locally constructed weekday list is
+not acceptable operational evidence.
 
 ## Build the next-session universe
 

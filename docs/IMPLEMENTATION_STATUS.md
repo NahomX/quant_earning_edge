@@ -29,6 +29,7 @@ reproducible through `uv.lock`.
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
+| Provider-source calendar reconstruction | Complete | exact Alpaca calendar Bronze response; strict source manifest; byte-exact session-file reproduction |
 | Combined PIT earnings/split/dividend candidate audit | Complete | `universe/events.py`, cutoff/timing/overlap tests |
 | Source-bound candidate regeneration | Complete | production schema-v4 manifest binds universe and event-provider lineage plus exact calendar/earnings/split/dividend files; queue requires complete lineage; terminal verifier independently regenerates universe, event Silver, and candidate bytes |
 | Polygon splits/dividends ingestion | Complete | current `/stocks/v1` clients, silver schemas, integration tests |

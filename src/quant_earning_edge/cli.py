@@ -34,6 +34,7 @@ from quant_earning_edge.data import (
     BarCoverageAuditor,
     BarsIngestor,
     BronzeWriter,
+    CalendarSourceCapture,
     CorporateActionsIngestor,
     DuckDBStore,
     EarningsIngestor,
@@ -253,17 +254,25 @@ def calendar_sessions(
         base_url=environment.alpaca_trading_base_url,
         timeout=environment.http_timeout_seconds,
     ) as http_client:
-        sessions = AlpacaCalendarClient(
+        client = AlpacaCalendarClient(
             api_key_id=api_key_id,
             secret_key=secret_key,
             http_client=http_client,
             bronze_writer=BronzeWriter(layout),
-        ).sessions(start_date=start_date, end_date=end_date)
+        )
+        sessions = client.sessions(start_date=start_date, end_date=end_date)
     artifact = SessionFileStore(layout).write(sessions)
+    source = CalendarSourceCapture(layout).write(
+        start_date=start_date,
+        end_date=end_date,
+        session_file=artifact,
+        provider_observations=client.calendar_observation_artifacts,
+    )
     _echo_json(
         {
             "path": str(artifact.path),
             "sha256": artifact.sha256,
+            "source_manifest": str(source.path),
             "session_count": len(artifact.sessions),
             "first_session": artifact.sessions[0].session_date,
             "last_session": artifact.sessions[-1].session_date,

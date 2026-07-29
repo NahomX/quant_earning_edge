@@ -1,15 +1,22 @@
 """Contract tests for the authenticated Alpaca calendar boundary."""
 
+from __future__ import annotations
+
 from datetime import date
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
 
+from quant_earning_edge.data import BronzeWriter, LakehouseLayout
 from quant_earning_edge.data.clients import AlpacaCalendarClient
 from quant_earning_edge.data.clients.errors import ProviderResponseError
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
-def test_calendar_preserves_early_close_and_auth_headers() -> None:
+
+def test_calendar_preserves_early_close_auth_and_raw_capture(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["APCA-API-KEY-ID"] == "key-id"
         assert request.headers["APCA-API-SECRET-KEY"] == "secret"
@@ -23,17 +30,23 @@ def test_calendar_preserves_early_close_and_auth_headers() -> None:
         base_url="https://paper-api.alpaca.markets",
         transport=httpx.MockTransport(handler),
     ) as http_client:
-        sessions = AlpacaCalendarClient(
+        client = AlpacaCalendarClient(
             api_key_id="key-id",
             secret_key="secret",
             http_client=http_client,
-        ).sessions(start_date=date(2026, 11, 27), end_date=date(2026, 11, 27))
+            bronze_writer=BronzeWriter(LakehouseLayout(tmp_path)),
+        )
+        sessions = client.sessions(
+            start_date=date(2026, 11, 27),
+            end_date=date(2026, 11, 27),
+        )
 
     assert len(sessions) == 1
     assert sessions[0].session_date == date(2026, 11, 27)
     assert sessions[0].open_at.hour == 9
     assert sessions[0].close_at.hour == 13
     assert sessions[0].open_at.utcoffset() is not None
+    assert len(client.calendar_observation_artifacts) == 1
 
 
 def test_calendar_rejects_duplicate_or_unsorted_dates() -> None:

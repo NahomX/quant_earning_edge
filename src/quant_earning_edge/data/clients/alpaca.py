@@ -16,7 +16,7 @@ from quant_earning_edge.data.clients.errors import ProviderRequestError, Provide
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from quant_earning_edge.data.bronze import BronzeWriter
+    from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 
 _EASTERN = ZoneInfo("America/New_York")
 _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
@@ -90,6 +90,35 @@ class AlpacaCalendarClient:
         self._max_attempts = max_attempts
         self._retry_delay_seconds = retry_delay_seconds
         self._sleeper = sleeper
+        self._calendar_observation_artifacts: list[BronzeArtifact] = []
+
+    @property
+    def calendar_observation_artifacts(self) -> tuple[BronzeArtifact, ...]:
+        """Return retained raw market-calendar responses."""
+        return tuple(self._calendar_observation_artifacts)
+
+    @classmethod
+    def sessions_from_payload(
+        cls,
+        raw: Any,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> tuple[MarketSession, ...]:
+        """Reconstruct authoritative sessions without a provider request."""
+        try:
+            days = tuple(_CalendarDay.model_validate(item) for item in raw)
+        except (TypeError, ValidationError) as error:
+            raise ProviderResponseError(
+                f"Alpaca calendar response failed validation: {error}"
+            ) from error
+        sessions = tuple(cls._to_session(day) for day in days)
+        dates = tuple(item.session_date for item in sessions)
+        if dates != tuple(sorted(set(dates))):
+            raise ProviderResponseError("Alpaca calendar dates must be unique and ascending")
+        if any(item < start_date or item > end_date for item in dates):
+            raise ProviderResponseError("Alpaca returned a session outside the requested range")
+        return sessions
 
     def sessions(self, *, start_date: date, end_date: date) -> tuple[MarketSession, ...]:
         """Return regular sessions in an inclusive calendar-date range."""
@@ -103,26 +132,19 @@ class AlpacaCalendarClient:
         except ValueError as error:
             raise ProviderResponseError("Alpaca returned invalid JSON") from error
         if self._bronze_writer is not None:
-            self._bronze_writer.write_json(
-                raw,
-                source="alpaca",
-                dataset="market-calendar",
-                event_date=start_date,
+            self._calendar_observation_artifacts.append(
+                self._bronze_writer.write_json(
+                    raw,
+                    source="alpaca",
+                    dataset="market-calendar",
+                    event_date=start_date,
+                )
             )
-        try:
-            days = tuple(_CalendarDay.model_validate(item) for item in raw)
-        except (TypeError, ValidationError) as error:
-            raise ProviderResponseError(
-                f"Alpaca calendar response failed validation: {error}"
-            ) from error
-
-        sessions = tuple(self._to_session(day) for day in days)
-        dates = tuple(item.session_date for item in sessions)
-        if dates != tuple(sorted(set(dates))):
-            raise ProviderResponseError("Alpaca calendar dates must be unique and ascending")
-        if any(item < start_date or item > end_date for item in dates):
-            raise ProviderResponseError("Alpaca returned a session outside the requested range")
-        return sessions
+        return self.sessions_from_payload(
+            raw,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     def _request(self, *, params: dict[str, str]) -> httpx.Response:
         headers = {

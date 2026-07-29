@@ -12,6 +12,7 @@ from quant_earning_edge.data.backfill import (
 )
 from quant_earning_edge.data.bronze import BronzeArtifact, BronzeWriter
 from quant_earning_edge.data.calendar import SessionFile, SessionFileStore
+from quant_earning_edge.data.calendar_source import CalendarSourceCapture, CalendarSourceManifest
 from quant_earning_edge.data.frozen_market_events import (
     FrozenMarketEventArtifact,
     FrozenMarketEventsIngestor,
@@ -71,6 +72,8 @@ __all__ = [
     "BarsIngestor",
     "BronzeArtifact",
     "BronzeWriter",
+    "CalendarSourceCapture",
+    "CalendarSourceManifest",
     "CorporateActionsIngestionResult",
     "CorporateActionsIngestor",
     "DataTier",

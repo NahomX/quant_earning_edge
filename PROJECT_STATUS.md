@@ -1,6 +1,6 @@
 # quant_earning_edge project status
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29
 
 ## Executive state
 
@@ -33,9 +33,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 371 automated tests pass.
+- 383 automated tests pass.
 - Ruff formatting and lint pass.
-- Mypy strict checking passes across 94 source files.
+- Mypy strict checking passes across 97 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical

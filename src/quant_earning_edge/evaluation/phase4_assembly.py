@@ -9,10 +9,11 @@ import os
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pyarrow.parquet as pq
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from quant_earning_edge.backtest import CostModel
 from quant_earning_edge.data import (
@@ -57,16 +58,66 @@ class Phase4FileReference(_StrictModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class Phase4ProgressSession(_StrictModel):
+    """One durable, chronologically completed Phase 4 session."""
+
+    fold_index: int = Field(ge=0)
+    trade_date: date
+    plan_path: Path
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ending_equity: float = Field(gt=0)
+    trade_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_path(self) -> Phase4ProgressSession:
+        if self.plan_path.is_absolute() or ".." in self.plan_path.parts:
+            raise ValueError("Phase 4 progress plan path must stay inside the output directory")
+        if not math.isfinite(self.ending_equity):
+            raise ValueError("Phase 4 progress equity must be finite")
+        return self
+
+
+class Phase4AssemblyProgress(_StrictModel):
+    """Mutable restart checkpoint bound to one exact assembly input graph."""
+
+    schema_version: Literal[1] = 1
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    completed_sessions: tuple[Phase4ProgressSession, ...] = ()
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @classmethod
+    def load(cls, path: Path) -> Phase4AssemblyProgress:
+        try:
+            encoded = path.read_bytes()
+            progress = cls.model_validate_json(encoded)
+        except (OSError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid Phase 4 assembly progress: {path}") from error
+        if progress.canonical_bytes != encoded:
+            raise ValueError("Phase 4 assembly progress is not canonical")
+        dates = tuple(item.trade_date for item in progress.completed_sessions)
+        if dates != tuple(sorted(dates)) or len(dates) != len(set(dates)):
+            raise ValueError("Phase 4 progress sessions are not strictly chronological")
+        return progress
+
+
 class Phase4AssemblyManifest(_StrictModel):
     """Canonical binding from raw research inputs to generated event plans."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     strategy_config: Phase4FileReference
     walkforward_run_evidence: Phase4FileReference
     session_file: Phase4FileReference
     candidate_files: tuple[Phase4FileReference, ...]
     daily_bar_files: tuple[Phase4FileReference, ...]
     split_source_manifest: Phase4FileReference
+    progress_file: Phase4FileReference
     initial_cash: float = Field(gt=0)
     minimum_probability: float = Field(ge=0.5, lt=1)
     execution_price_contract: Literal["raw_session_open_to_close_no_trade_date_split"]
@@ -108,6 +159,7 @@ class Phase4AssemblyManifest(_StrictModel):
             *self.candidate_files,
             *self.daily_bar_files,
             self.split_source_manifest,
+            self.progress_file,
             *self.plan_files,
         )
         resolved = tuple(
@@ -146,6 +198,9 @@ class Phase4AssemblyManifest(_StrictModel):
     def resolved_split_source_manifest(self, manifest_path: Path) -> Path:
         return _resolve(self.split_source_manifest.path, base=manifest_path.parent)
 
+    def resolved_progress_file(self, manifest_path: Path) -> Path:
+        return _resolve(self.progress_file.path, base=manifest_path.parent)
+
 
 @dataclass(frozen=True)
 class Phase4AssemblyResult:
@@ -154,6 +209,7 @@ class Phase4AssemblyResult:
     manifest_path: Path
     manifest_sha256: str
     aggregation_path: Path
+    progress_path: Path
     plan_files: tuple[Path, ...]
     session_count: int
     trade_count: int
@@ -163,7 +219,7 @@ class Phase4AssemblyResult:
 class Phase4HistoricalAssembler:
     """Build every OOS event plan directly from pinned canonical sources."""
 
-    def assemble(  # noqa: PLR0915 - complete evidence boundary.
+    def assemble(  # noqa: PLR0912, PLR0915 - complete evidence boundary.
         self,
         *,
         walkforward_run_evidence: Path,
@@ -176,6 +232,7 @@ class Phase4HistoricalAssembler:
         output_dir: Path,
         manifest_output: Path,
         aggregation_output: Path,
+        progress_output: Path | None = None,
         minimum_probability: float = 0.5,
     ) -> Phase4AssemblyResult:
         """Generate chronologically chained plans and the Phase 4 fold map."""
@@ -244,11 +301,34 @@ class Phase4HistoricalAssembler:
         cost_model = CostModel(strategy.cost_model_config)
         output_root = output_dir.resolve()
         output_root.mkdir(parents=True, exist_ok=True)
+        progress_path = (
+            progress_output.resolve()
+            if progress_output is not None
+            else output_root / "assembly-progress.json"
+        )
+        input_sha256 = _assembly_input_sha256(
+            walkforward_run_evidence=walkforward_run_evidence,
+            strategy_config=strategy_config,
+            session_file=session_file,
+            candidate_files=candidate_paths,
+            daily_bar_files=daily_paths,
+            split_source_manifest=split_source.path,
+            initial_cash=initial_cash,
+            minimum_probability=minimum_probability,
+        )
+        progress = (
+            Phase4AssemblyProgress.load(progress_path)
+            if progress_path.is_file()
+            else Phase4AssemblyProgress(input_sha256=input_sha256)
+        )
+        if progress.input_sha256 != input_sha256:
+            raise ValueError("Phase 4 assembly progress belongs to different source inputs")
         equity = float(initial_cash)
         outcomes: list[TradeOutcome] = []
         plan_paths: list[Path] = []
         fold_specs: list[FoldArtifactSpec] = []
         used_trade_dates: set[date] = set()
+        last_trade_date: date | None = None
         trade_count = 0
 
         for fold in run.folds:
@@ -259,6 +339,8 @@ class Phase4HistoricalAssembler:
                 predictions_by_trade_date.setdefault(trade_date, []).append(prediction)
             fold_plan_paths: list[Path] = []
             for trade_date in sorted(predictions_by_trade_date):
+                if last_trade_date is not None and trade_date <= last_trade_date:
+                    raise ValueError("walk-forward folds are not strictly chronological")
                 if trade_date in used_trade_dates:
                     raise ValueError("walk-forward folds overlap on an event trade date")
                 used_trade_dates.add(trade_date)
@@ -290,20 +372,65 @@ class Phase4HistoricalAssembler:
                         key=lambda row: row.row_index,
                     )
                 )
-                plan = planner.plan(
-                    predictions=selected_predictions,
-                    observations=observations,
-                    outcomes=tuple(outcomes),
-                    equity=equity,
-                    walkforward_run_sha256=run.sha256,
-                )
                 plan_path = (
                     output_root
                     / f"fold-{fold.fold_index:03d}"
                     / f"event-plan-{trade_date.isoformat()}.json"
                 )
-                EventTradePlanner.write(plan, plan_path)
+                progress_index = len(plan_paths)
+                if progress_index < len(progress.completed_sessions):
+                    completed = progress.completed_sessions[progress_index]
+                    expected_relative = _relative(plan_path, base=output_root)
+                    if (
+                        completed.fold_index != fold.fold_index
+                        or completed.trade_date != trade_date
+                        or completed.plan_path != expected_relative
+                        or not plan_path.is_file()
+                        or _file_sha256(plan_path) != completed.plan_sha256
+                    ):
+                        raise ValueError("Phase 4 assembly progress does not match its plan files")
+                    plan = EventTradePlanner.load(plan_path)
+                    if (
+                        plan.trade_date != trade_date
+                        or plan.portfolio.equity != equity
+                        or plan.source_predictions != selected_predictions
+                        or plan.walkforward_run_sha256 != run.sha256
+                    ):
+                        raise ValueError("Phase 4 resumed plan differs from its causal predecessor")
+                else:
+                    plan = planner.plan(
+                        predictions=selected_predictions,
+                        observations=observations,
+                        outcomes=tuple(outcomes),
+                        equity=equity,
+                        walkforward_run_sha256=run.sha256,
+                    )
+                    EventTradePlanner.write(plan, plan_path)
                 result = run_event_plan(plan, cost_model=cost_model)
+                if progress_index < len(progress.completed_sessions):
+                    completed = progress.completed_sessions[progress_index]
+                    if (
+                        completed.ending_equity != result.final_net_equity
+                        or completed.trade_count != len(plan.intents)
+                    ):
+                        raise ValueError("Phase 4 progress result differs from replayed plan")
+                else:
+                    progress = progress.model_copy(
+                        update={
+                            "completed_sessions": (
+                                *progress.completed_sessions,
+                                Phase4ProgressSession(
+                                    fold_index=fold.fold_index,
+                                    trade_date=trade_date,
+                                    plan_path=_relative(plan_path, base=output_root),
+                                    plan_sha256=_file_sha256(plan_path),
+                                    ending_equity=result.final_net_equity,
+                                    trade_count=len(plan.intents),
+                                ),
+                            )
+                        }
+                    )
+                    _write_progress(progress_path, progress)
                 outcomes.extend(
                     TradeOutcome(closed_date=trade_date, net_return=trade.net_return)
                     for trade in result.trades
@@ -312,6 +439,7 @@ class Phase4HistoricalAssembler:
                 trade_count += len(plan.intents)
                 plan_paths.append(plan_path)
                 fold_plan_paths.append(plan_path)
+                last_trade_date = trade_date
             if not fold_plan_paths:
                 raise ValueError(f"walk-forward fold {fold.fold_index} produced no event plans")
             fold_dates = tuple(EventTradePlanner.load(path).trade_date for path in fold_plan_paths)
@@ -325,6 +453,8 @@ class Phase4HistoricalAssembler:
                     ),
                 )
             )
+        if len(progress.completed_sessions) != len(plan_paths):
+            raise ValueError("Phase 4 assembly progress contains unexpected trailing sessions")
 
         manifest = Phase4AssemblyManifest(
             strategy_config=_reference(strategy_config, base=manifest_output.parent),
@@ -343,6 +473,7 @@ class Phase4HistoricalAssembler:
                 split_source.path,
                 base=manifest_output.parent,
             ),
+            progress_file=_reference(progress_path, base=manifest_output.parent),
             initial_cash=initial_cash,
             minimum_probability=minimum_probability,
             execution_price_contract="raw_session_open_to_close_no_trade_date_split",
@@ -368,6 +499,7 @@ class Phase4HistoricalAssembler:
             manifest_path=manifest_output.resolve(),
             manifest_sha256=manifest.sha256,
             aggregation_path=aggregation_output.resolve(),
+            progress_path=progress_path,
             plan_files=tuple(path.resolve() for path in plan_paths),
             session_count=len(plan_paths),
             trade_count=trade_count,
@@ -524,6 +656,55 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _assembly_input_sha256(
+    *,
+    walkforward_run_evidence: Path,
+    strategy_config: Path,
+    session_file: Path,
+    candidate_files: Sequence[Path],
+    daily_bar_files: Sequence[Path],
+    split_source_manifest: Path,
+    initial_cash: float,
+    minimum_probability: float,
+) -> str:
+    raw = {
+        "schema_version": 1,
+        "walkforward_run_sha256": _file_sha256(walkforward_run_evidence),
+        "strategy_config_sha256": _file_sha256(strategy_config),
+        "session_file_sha256": _file_sha256(session_file),
+        "candidate_file_sha256": [_file_sha256(path) for path in candidate_files],
+        "daily_bar_file_sha256": [_file_sha256(path) for path in daily_bar_files],
+        "split_source_manifest_sha256": _file_sha256(split_source_manifest),
+        "initial_cash": initial_cash,
+        "minimum_probability": minimum_probability,
+        "execution_price_contract": "raw_session_open_to_close_no_trade_date_split",
+    }
+    encoded = json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _write_progress(path: Path, progress: Phase4AssemblyProgress) -> None:
+    """Atomically replace only the mutable restart checkpoint."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as destination:
+            temporary = Path(destination.name)
+            destination.write(progress.canonical_bytes)
+            destination.flush()
+            os.fsync(destination.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _write_once(path: Path, encoded: bytes, *, kind: str) -> None:

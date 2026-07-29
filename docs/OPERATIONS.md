@@ -449,6 +449,17 @@ uv run qee evaluation assemble-phase4 `
   --aggregation-output .\data\manifests\backtest\phase4-folds.json
 ```
 
+The command durably replaces
+`<output-dir>\assembly-progress.json` after each completed trade session. If
+the process stops, rerun the identical command: it verifies the checkpoint's
+input-graph hash and each retained plan, replays those plans to reconstruct
+capital and realized-return history, and resumes at the first incomplete
+session. A crash after a plan write but before the checkpoint update is also
+safe because the same immutable plan must reproduce byte-for-byte. Changed
+sources, configuration, capital, threshold, checkpoint results, or plan bytes
+fail closed. The completed progress file becomes a hashed member of the final
+assembly manifest and is independently reproduced by `phase4-gate`.
+
 The assembler requires the candidate key set to equal the complete OOS
 prediction ledger. Each candidate must bind the supplied session file and use
 the immediately prior authoritative session. Entry and exit evidence comes
@@ -472,7 +483,8 @@ Plans are built chronologically across fold boundaries. Equity and realized
 session returns flow into the next decision automatically, including explicit
 zero-return abstention sessions. The canonical assembly manifest hashes the
 strategy, OOS run, calendar, every candidate/bar partition, every generated
-plan, and the split-history source with its retained provider observations.
+plan, the completed restart checkpoint, and the split-history source with its
+retained provider observations.
 `phase4-gate` re-hashes that complete graph and rejects a fold map whose ordered
 plan set differs from the manifest. Before calculating any metric, it also
 reproduces the split source and rebuilds every plan in a temporary workspace

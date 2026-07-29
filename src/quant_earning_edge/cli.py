@@ -1916,6 +1916,7 @@ def assemble_phase4_history(  # noqa: PLR0917 - explicit immutable source bounda
             "manifest_output": str(result.manifest_path),
             "manifest_sha256": result.manifest_sha256,
             "aggregation_output": str(result.aggregation_path),
+            "progress_output": str(result.progress_path),
             "session_count": result.session_count,
             "trade_count": result.trade_count,
             "final_equity": result.final_equity,

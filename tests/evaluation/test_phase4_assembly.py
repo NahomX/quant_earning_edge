@@ -27,6 +27,7 @@ from quant_earning_edge.evaluation import (
 )
 from quant_earning_edge.evaluation.phase4_assembly import (
     Phase4AssemblyManifest,
+    Phase4AssemblyProgress,
     Phase4AssemblyResult,
     Phase4HistoricalAssembler,
 )
@@ -261,6 +262,9 @@ def test_assembler_chains_equity_and_writes_verified_manifest(tmp_path: Path) ->
     aggregation = Phase4AggregationSpec.model_validate_json(result.aggregation_path.read_bytes())
     plans = tuple(EventTradePlanner.load(path) for path in result.plan_files)
     assert manifest.sha256 == result.manifest_sha256
+    assert manifest.schema_version == 3
+    assert manifest.resolved_progress_file(result.manifest_path) == result.progress_path
+    assert len(Phase4AssemblyProgress.load(result.progress_path).completed_sessions) == 2
     assert len(aggregation.folds) == 1
     assert plans[0].portfolio.sizing_mode == "calibration"
     assert plans[0].source_predictions[0].information_cutoff_at == datetime(
@@ -270,6 +274,63 @@ def test_assembler_chains_equity_and_writes_verified_manifest(tmp_path: Path) ->
     assert plans[0].portfolio.history_count == 0
     assert plans[1].portfolio.history_count == 1
     assert plans[1].portfolio.equity != plans[0].portfolio.equity
+
+
+def test_assembler_resumes_from_durable_session_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _sources(tmp_path)
+    original_write = EventTradePlanner.write
+    write_count = 0
+
+    def interrupt_before_second_write(plan, output):
+        nonlocal write_count
+        write_count += 1
+        if write_count == 2:
+            raise RuntimeError("simulated process interruption")
+        original_write(plan, output)
+
+    monkeypatch.setattr(EventTradePlanner, "write", staticmethod(interrupt_before_second_write))
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        _assemble(tmp_path, sources)
+
+    progress_path = tmp_path / "plans" / "assembly-progress.json"
+    partial = Phase4AssemblyProgress.load(progress_path)
+    first_plan_path = tmp_path / "plans" / partial.completed_sessions[0].plan_path
+    first_plan_bytes = first_plan_path.read_bytes()
+    assert len(partial.completed_sessions) == 1
+
+    monkeypatch.setattr(EventTradePlanner, "write", staticmethod(original_write))
+    original_plan = EventTradePlanner.plan
+    planned_dates: list[date] = []
+
+    def track_new_plans(planner, **kwargs):
+        plan = original_plan(planner, **kwargs)
+        planned_dates.append(plan.trade_date)
+        return plan
+
+    monkeypatch.setattr(EventTradePlanner, "plan", track_new_plans)
+    resumed = _assemble(tmp_path, sources)
+
+    assert planned_dates == [date(2025, 1, 6)]
+    assert first_plan_path.read_bytes() == first_plan_bytes
+    assert len(Phase4AssemblyProgress.load(resumed.progress_path).completed_sessions) == 2
+
+
+def test_assembler_rejects_progress_from_changed_inputs(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    _assemble(tmp_path, sources)
+    changed_path = tmp_path / "bars-changed.parquet"
+    changed_rows = [{**row, "close": float(row["close"]) + 0.01} for row in sources["bar_rows"]]
+    pq.write_table(  # type: ignore[no-untyped-call]
+        pa.Table.from_pylist(changed_rows, schema=DAILY_BARS_SCHEMA),
+        changed_path,
+    )
+    sources["bars"] = changed_path
+
+    with pytest.raises(ValueError, match="progress belongs to different source inputs"):
+        _assemble(tmp_path, sources)
 
 
 def test_future_unrelated_bar_cannot_change_generated_plans(tmp_path: Path) -> None:

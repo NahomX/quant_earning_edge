@@ -74,7 +74,7 @@ reproducible through `uv.lock`.
 | Source-bound walk-forward reconstruction | Complete | content-addressed datasets/split/strategy/study/run/fold lineage; independent exact OOS fold retraining; production refit requires the attested run |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 | OOS prediction-to-Phase 4 provenance | Complete | canonical run reload, exact probability checks, complete row coverage, shared Optuna/run hashes |
-| Reproducible historical Phase 4 assembly | Complete | exact OOS/candidate key join, split-day exclusion, raw nominal execution bars, complete split-source lineage, chained equity/outcomes, and gate-time byte-exact rebuild |
+| Restart-safe historical Phase 4 assembly | Complete | per-session atomic progress, input-graph binding, immutable-plan replay resume, split-day exclusion, raw nominal execution bars, complete split-source lineage, and gate-time byte-exact rebuild |
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
 | Explicit event-model abstention sessions | Complete | zero-return ledgers preserve non-trading OOS dates in Phase 4 metrics |

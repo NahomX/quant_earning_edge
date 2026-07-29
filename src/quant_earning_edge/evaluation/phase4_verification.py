@@ -63,6 +63,7 @@ class Phase4GateReproduction:
             split_path,
             *split_source.split_paths(data_lake_root=split_source.data_lake_root),
             *split_source.provider_paths(data_lake_root=split_source.data_lake_root),
+            assembly.resolved_progress_file(self.assembly_manifest_path),
             *self.plan_paths,
         )
 
@@ -218,6 +219,11 @@ def _verify_plan_reproduction(
         )
         if reproduced_bytes != bound_bytes:
             raise ValueError("Phase 4 plans do not reproduce from the assembly manifest sources")
+        if (
+            reproduced.progress_path.read_bytes()
+            != manifest.resolved_progress_file(manifest_path).read_bytes()
+        ):
+            raise ValueError("Phase 4 progress does not reproduce from the assembly sources")
 
 
 def _resolve(path: Path, *, base: Path) -> Path:

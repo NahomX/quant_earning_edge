@@ -348,22 +348,25 @@ def test_phase4_gate_cli_rejects_nonreproducible_manual_sources(tmp_path: Path) 
     candidate_source = tmp_path / "candidates.parquet"
     bar_source = tmp_path / "bars.parquet"
     split_source = tmp_path / "split-source.json"
+    progress_source = tmp_path / "progress.json"
     for path, content in (
         (session_source, b"sessions"),
         (candidate_source, b"candidates"),
         (bar_source, b"bars"),
         (split_source, b"{}"),
+        (progress_source, b"{}"),
     ):
         path.write_bytes(content)
     assembly = Phase4AssemblyManifest.model_validate(
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "strategy_config": _source_reference(strategy_source),
             "walkforward_run_evidence": _source_reference(run_path),
             "session_file": _source_reference(session_source),
             "candidate_files": [_source_reference(candidate_source)],
             "daily_bar_files": [_source_reference(bar_source)],
             "split_source_manifest": _source_reference(split_source),
+            "progress_file": _source_reference(progress_source),
             "initial_cash": 100_000,
             "minimum_probability": 0.5,
             "execution_price_contract": "raw_session_open_to_close_no_trade_date_split",

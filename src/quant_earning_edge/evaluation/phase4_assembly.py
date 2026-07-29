@@ -240,7 +240,7 @@ class Phase4HistoricalAssembler:
                 if trade_date in used_trade_dates:
                     raise ValueError("walk-forward folds overlap on an event trade date")
                 used_trade_dates.add(trade_date)
-                session = _validated_trade_session(
+                session, decision_at = _validated_trade_session(
                     trade_date=trade_date,
                     prediction_rows=predictions_by_trade_date[trade_date],
                     candidates=candidates,
@@ -251,6 +251,7 @@ class Phase4HistoricalAssembler:
                     _observation(
                         prediction=item,
                         candidate=candidates[(item.symbol, item.asof_date)],
+                        decision_at=decision_at,
                         prior_close_at=sessions[session_index[trade_date] - 1].close_at,
                         entry_at=session.open_at,
                         exit_at=session.close_at,
@@ -402,7 +403,7 @@ def _validated_trade_session(
     candidates: dict[tuple[str, date], dict[str, Any]],
     session_index: dict[date, int],
     sessions: Sequence[MarketSession],
-) -> MarketSession:
+) -> tuple[MarketSession, datetime]:
     try:
         index = session_index[trade_date]
     except KeyError as error:
@@ -413,20 +414,27 @@ def _validated_trade_session(
         raise ValueError("session file lacks the prior session for an event trade")
     session = sessions[index]
     prior = sessions[index - 1]
+    information_cutoffs = []
     for prediction in prediction_rows:
         candidate = candidates[(prediction.symbol, prediction.asof_date)]
         if candidate["trade_date"] != trade_date or candidate["asof_date"] != prior.session_date:
             raise ValueError("event candidate does not use the immediately prior session")
-        decision_at = candidate["decision_at"]
-        if not prior.close_at <= decision_at < session.open_at:
+        candidate_frozen_at = candidate["decision_at"]
+        if not prior.close_at <= candidate_frozen_at < session.open_at:
             raise ValueError("event candidate decision timestamp is outside the causal window")
-    return session
+        if not candidate_frozen_at <= prediction.information_cutoff_at < session.open_at:
+            raise ValueError(
+                "OOS prediction information cutoff is outside the causal pre-open window"
+            )
+        information_cutoffs.append(prediction.information_cutoff_at)
+    return session, max(information_cutoffs)
 
 
 def _observation(
     *,
     prediction: OosPrediction,
     candidate: dict[str, Any],
+    decision_at: datetime,
     prior_close_at: datetime,
     entry_at: datetime,
     exit_at: datetime,
@@ -442,7 +450,7 @@ def _observation(
         sector=str(candidate["sector"]),
         asof_date=prediction.asof_date,
         trade_date=candidate["trade_date"],
-        decision_at=candidate["decision_at"],
+        decision_at=decision_at,
         sizing_price_observed_at=prior_close_at,
         sizing_price=float(candidate["sizing_price"]),
         entry_at=entry_at,

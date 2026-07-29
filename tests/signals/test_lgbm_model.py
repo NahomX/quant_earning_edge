@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -34,6 +34,13 @@ def _dataset(path: Path) -> None:
                 "symbol": symbol,
                 "asof_date": session,
                 "horizon_end_date": session + timedelta(days=5),
+                "information_cutoff_at": datetime(
+                    session.year,
+                    session.month,
+                    session.day,
+                    22,
+                    tzinfo=UTC,
+                ),
                 "forward_1d_close": label_sign * 0.01,
                 "forward_1d_open_to_close": label_sign * 0.01,
             }
@@ -82,6 +89,9 @@ def test_walk_forward_models_and_oos_predictions_are_deterministic(tmp_path: Pat
         assert {item.row_index for item in fold_result.predictions} == set(fold_plan.test_indices)
         assert set(fold_plan.train_indices).isdisjoint(fold_plan.test_indices)
         assert all(0 <= item.probability_up <= 1 for item in fold_result.predictions)
+        assert all(
+            item.information_cutoff_at.tzinfo is not None for item in fold_result.predictions
+        )
         assert fold_result.fit_count < len(fold_plan.train_indices)
         assert fold_result.validation_count > 0
         assert len(fold_result.feature_attribution) == len(first.feature_names)

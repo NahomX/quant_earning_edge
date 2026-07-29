@@ -270,8 +270,22 @@ def test_phase4_gate_cli_rejects_nonreproducible_manual_sources(tmp_path: Path) 
     first_date = date(2025, 1, 2)
     second_date = first_date + timedelta(days=1)
     first_fixture = _result(first_date, initial_cash=100_000, pnl=100, index=0)
-    first_prediction = OosPrediction(0, "AAA", first_date, 0.8, 1)
-    second_prediction = OosPrediction(1, "AAA", second_date, 0.7, 1)
+    first_prediction = OosPrediction(
+        0,
+        "AAA",
+        first_date,
+        datetime(2025, 1, 2, 13, tzinfo=UTC),
+        0.8,
+        1,
+    )
+    second_prediction = OosPrediction(
+        1,
+        "AAA",
+        second_date,
+        datetime(2025, 1, 3, 13, tzinfo=UTC),
+        0.7,
+        1,
+    )
     model_run = _walkforward_run((first_prediction, second_prediction))
     run_path = tmp_path / "walkforward-run.json"
     run_path.write_bytes(model_run.evidence_json_bytes())

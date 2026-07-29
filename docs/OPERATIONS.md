@@ -384,6 +384,15 @@ the immediately prior authoritative session. Entry and exit evidence comes
 only from adjusted open/close bars on the mapped trade session. Missing,
 duplicate, unadjusted, or schema-drifted sources fail closed.
 
+The training dataset records `information_cutoff_at` as the latest
+`computed_at` timestamp among every feature in each row. That timestamp is
+carried into the immutable OOS prediction ledger. For each trade session, the
+assembler sets the historical decision boundary to the latest cutoff among
+that session's predictions; it requires candidate freeze <= prediction cutoff
+< authoritative open. This distinction is mandatory for intraday inputs such
+as `premarket_gap_pct`: the prior-close candidate freeze is not falsely treated
+as the later model-decision time.
+
 Plans are built chronologically across fold boundaries. Equity and realized
 session returns flow into the next decision automatically, including explicit
 zero-return abstention sessions. The canonical assembly manifest hashes the
@@ -409,6 +418,9 @@ entry/exit execution evidence. Every observation also declares the authoritative
 `event_timing` (`bmo` or `amc`). `iv_regime` may be `low`, `medium`, `high`, or
 `unavailable`; use `unavailable` unless a causal point-in-time options
 classification actually exists.
+
+Each prediction must include its timezone-aware `information_cutoff_at`, and
+that cutoff must be no later than the matching observation's `decision_at`.
 
 ```powershell
 uv run qee model plan-event-backtest `

@@ -58,11 +58,11 @@ reproducible through `uv.lock`.
 | Strict earnings-v1 strategy configuration | Complete | registry feature match, next-open-to-next-close target alignment, and cross-field risk/cost validation |
 | Deterministic nested Optuna search | Complete | seeded TPE, median pruning, resumable SQLite, mean purged-validation Sharpe, 200-trial cap |
 | Immutable hyperparameter-selection evidence | Complete | full trial ledger, exact data/plan/config binding, canonical winner and parameter hashes |
-| Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, model hashes |
+| Deterministic LightGBM walk-forward trainer | Complete | purged internal validation, OOS-only predictions, per-row information cutoffs, model hashes |
 | Immutable fold-model artifacts and CLI | Complete | content-linked boosters, run evidence, tamper rejection |
 | OOS LightGBM SHAP attribution | Complete | mean absolute contribution per feature and fold |
 | OOS prediction-to-Phase 4 provenance | Complete | canonical run reload, exact probability checks, complete row coverage, shared Optuna/run hashes |
-| Reproducible historical Phase 4 assembly | Complete | exact OOS/candidate key join, authoritative sessions/bars, chained equity/outcomes, source-and-plan manifest, gate-time byte-exact rebuild |
+| Reproducible historical Phase 4 assembly | Complete | exact OOS/candidate key join, premarket-aware decision cutoffs, authoritative sessions/bars, chained equity/outcomes, source-and-plan manifest, gate-time byte-exact rebuild |
 | Timestamped same-session vectorbt ledger | Complete | open/close orders and exact daily cost reconciliation |
 | Causal OOS event-trade planning | Complete | frozen sizing inputs, future-invariance, immutable plan and CLI |
 | Explicit event-model abstention sessions | Complete | zero-return ledgers preserve non-trading OOS dates in Phase 4 metrics |

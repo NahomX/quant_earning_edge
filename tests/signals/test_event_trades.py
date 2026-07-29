@@ -7,6 +7,7 @@ from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from quant_earning_edge.backtest import VectorbtIntradayEngine
@@ -52,6 +53,7 @@ def _inputs() -> tuple[
             row_index=index,
             symbol=symbol,
             asof_date=asof,
+            information_cutoff_at=decision,
             probability_up=probability,
             realized_label=index % 2,
         )
@@ -137,6 +139,26 @@ def test_event_trade_plan_is_deterministic_and_long_only() -> None:
     assert first.portfolio.gross_weight <= 0.50
     assert tuple(item.event_timing for item in first.cohorts) == ("bmo", "amc")
     assert all(item.iv_regime == "unavailable" for item in first.cohorts)
+
+
+def test_event_trade_plan_rejects_prediction_not_known_at_decision() -> None:
+    predictions, observations = _inputs()
+    unavailable = (
+        replace(
+            predictions[0],
+            information_cutoff_at=observations[0].decision_at + timedelta(seconds=1),
+        ),
+        *predictions[1:],
+    )
+
+    with pytest.raises(ValueError, match="unavailable at decision_at"):
+        EventTradePlanner().plan(
+            predictions=unavailable,
+            observations=observations,
+            outcomes=_outcomes(),
+            equity=100_000,
+            walkforward_run_sha256="f" * 64,
+        )
 
 
 def test_future_labels_and_exit_prices_cannot_change_selection_or_size() -> None:

@@ -159,6 +159,9 @@ def test_training_assembly_requires_complete_keys_and_preopen_features(
     assert artifact.row_count == 1
     assert artifact.feature_names == ("return_1d", "return_20d")
     assert table.column("target_date").to_pylist() == [SESSION_DATES[1]]
+    assert table.column("information_cutoff_at").to_pylist() == [
+        datetime(2026, 7, 1, 21, tzinfo=UTC)
+    ]
     assert table.column("return_20d").to_pylist()[0] == pytest.approx(120 / 100 - 1)
     assert artifact.manifest_path.exists()
 

@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -29,8 +29,21 @@ class OosPrediction:
     row_index: int
     symbol: str
     asof_date: date
+    information_cutoff_at: datetime
     probability_up: float
     realized_label: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.information_cutoff_at.tzinfo is None
+            or self.information_cutoff_at.utcoffset() is None
+        ):
+            raise ValueError("OOS prediction information cutoff must be timezone-aware")
+        object.__setattr__(
+            self,
+            "information_cutoff_at",
+            self.information_cutoff_at.astimezone(UTC),
+        )
 
 
 @dataclass(frozen=True)
@@ -122,6 +135,8 @@ class WalkForwardModelRun:
         if any(
             item.row_index < 0
             or not item.symbol.strip()
+            or item.information_cutoff_at.tzinfo is None
+            or item.information_cutoff_at.utcoffset() is None
             or not 0 <= item.probability_up <= 1
             or item.realized_label not in {0, 1}
             for item in predictions
@@ -254,7 +269,13 @@ class LightgbmWalkForwardTrainer:
         table = _load_dataset(dataset_files)
         if table.num_rows != plan.sample_count:
             raise ValueError("dataset content or row count does not match the split plan")
-        identity = ("symbol", "asof_date", "horizon_end_date", self._label_name)
+        identity = (
+            "symbol",
+            "asof_date",
+            "horizon_end_date",
+            "information_cutoff_at",
+            self._label_name,
+        )
         selected = (*identity, *self._feature_names)
         missing = [name for name in selected if name not in table.column_names]
         if missing:
@@ -355,6 +376,7 @@ class LightgbmWalkForwardTrainer:
                     row_index=row_index,
                     symbol=str(rows[row_index]["symbol"]),
                     asof_date=rows[row_index]["asof_date"],
+                    information_cutoff_at=rows[row_index]["information_cutoff_at"],
                     probability_up=float(probability),
                     realized_label=int(labels[row_index]),
                 )
@@ -478,6 +500,7 @@ def _prediction_from_evidence(raw: object) -> OosPrediction:
         "row_index",
         "symbol",
         "asof_date",
+        "information_cutoff_at",
         "probability_up",
         "realized_label",
     }
@@ -487,6 +510,7 @@ def _prediction_from_evidence(raw: object) -> OosPrediction:
         row_index=int(raw["row_index"]),
         symbol=str(raw["symbol"]),
         asof_date=date.fromisoformat(str(raw["asof_date"])),
+        information_cutoff_at=datetime.fromisoformat(str(raw["information_cutoff_at"])),
         probability_up=float(raw["probability_up"]),
         realized_label=int(raw["realized_label"]),
     )

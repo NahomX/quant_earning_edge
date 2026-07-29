@@ -105,11 +105,15 @@ class TrainingDatasetAssembler:
                 raise ValueError(f"mixed feature input lineage for {key}")
             if any(row["computed_at"] >= target_open for row in rows_by_name.values()):
                 raise ValueError(f"feature computation was not frozen before target open: {key}")
+            information_cutoff_at = max(
+                row["computed_at"].astimezone(UTC) for row in rows_by_name.values()
+            )
             record: dict[str, Any] = {
                 "symbol": key[0],
                 "asof_date": asof_date,
                 "target_date": target_date,
                 "horizon_end_date": label["horizon_end_date"],
+                "information_cutoff_at": information_cutoff_at,
                 "feature_input_sha256": next(iter(input_hashes)),
                 "label_input_sha256": label["input_sha256"],
                 "forward_1d_open_to_close": label["forward_1d_open_to_close"],
@@ -196,6 +200,7 @@ def _training_schema(feature_names: tuple[str, ...]) -> pa.Schema:
             pa.field("asof_date", pa.date32(), nullable=False),
             pa.field("target_date", pa.date32(), nullable=False),
             pa.field("horizon_end_date", pa.date32(), nullable=False),
+            pa.field("information_cutoff_at", pa.timestamp("us", tz="UTC"), nullable=False),
             pa.field("feature_input_sha256", pa.string(), nullable=False),
             pa.field("label_input_sha256", pa.string(), nullable=False),
             *[pa.field(name, pa.float64(), nullable=False) for name in feature_names],

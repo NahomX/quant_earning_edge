@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -57,8 +58,22 @@ def _sources(tmp_path: Path) -> dict[str, object]:
     )
     session_artifact = SessionFileStore(LakehouseLayout(tmp_path / "lake")).write(sessions)
     predictions = (
-        OosPrediction(0, "AAA", date(2025, 1, 2), 0.8, 1),
-        OosPrediction(1, "BBB", date(2025, 1, 3), 0.7, 0),
+        OosPrediction(
+            0,
+            "AAA",
+            date(2025, 1, 2),
+            datetime(2025, 1, 3, 14, 10, tzinfo=UTC),
+            0.8,
+            1,
+        ),
+        OosPrediction(
+            1,
+            "BBB",
+            date(2025, 1, 3),
+            datetime(2025, 1, 6, 14, 10, tzinfo=UTC),
+            0.7,
+            0,
+        ),
     )
     hyperparameters = LightgbmHyperparameters()
     run = WalkForwardModelRun(
@@ -222,6 +237,10 @@ def test_assembler_chains_equity_and_writes_verified_manifest(tmp_path: Path) ->
     assert manifest.sha256 == result.manifest_sha256
     assert len(aggregation.folds) == 1
     assert plans[0].portfolio.sizing_mode == "calibration"
+    assert plans[0].source_predictions[0].information_cutoff_at == datetime(
+        2025, 1, 3, 14, 10, tzinfo=UTC
+    )
+    assert plans[0].intents[0].entry_at > plans[0].source_predictions[0].information_cutoff_at
     assert plans[0].portfolio.history_count == 0
     assert plans[1].portfolio.history_count == 1
     assert plans[1].portfolio.equity != plans[0].portfolio.equity
@@ -258,6 +277,31 @@ def test_assembler_rejects_missing_execution_bar(tmp_path: Path) -> None:
     sources["bars"] = missing_path
 
     with pytest.raises(ValueError, match="missing adjusted execution bar"):
+        _assemble(tmp_path, sources)
+
+
+def test_assembler_rejects_prediction_information_available_after_open(
+    tmp_path: Path,
+) -> None:
+    sources = _sources(tmp_path)
+    run = WalkForwardModelRun.load_evidence(sources["run"])
+    first_fold = run.folds[0]
+    late = replace(
+        first_fold.predictions[0],
+        information_cutoff_at=datetime(2025, 1, 3, 14, 30, tzinfo=UTC),
+    )
+    changed = replace(
+        run,
+        folds=(
+            replace(
+                first_fold,
+                predictions=(late, *first_fold.predictions[1:]),
+            ),
+        ),
+    )
+    Path(sources["run"]).write_bytes(changed.evidence_json_bytes())
+
+    with pytest.raises(ValueError, match="information cutoff"):
         _assemble(tmp_path, sources)
 
 

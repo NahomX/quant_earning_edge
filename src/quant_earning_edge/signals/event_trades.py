@@ -97,6 +97,7 @@ class OosPredictionSpec(_StrictSpec):
     row_index: int = Field(ge=0)
     symbol: str
     asof_date: date
+    information_cutoff_at: datetime
     probability_up: float = Field(ge=0, le=1)
     realized_label: int = Field(ge=0, le=1)
 
@@ -267,6 +268,8 @@ class EventTradePlanner:
                 or prediction.asof_date != observation.asof_date
             ):
                 raise ValueError("prediction key does not match execution observation")
+            if prediction.information_cutoff_at > observation.decision_at:
+                raise ValueError("prediction information was unavailable at decision_at")
             if prediction.probability_up < self._minimum_probability:
                 continue
             score = prediction.probability_up - 0.5

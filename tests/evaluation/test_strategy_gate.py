@@ -266,7 +266,7 @@ def replace_result_initial(result: BacktestResult, value: float) -> BacktestResu
     )
 
 
-def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
+def test_phase4_gate_cli_rejects_nonreproducible_manual_sources(tmp_path: Path) -> None:
     first_date = date(2025, 1, 2)
     second_date = first_date + timedelta(days=1)
     first_fixture = _result(first_date, initial_cash=100_000, pnl=100, index=0)
@@ -402,15 +402,9 @@ def test_phase4_gate_cli_replays_event_plans(tmp_path: Path) -> None:
         ],
     )
 
-    assert result.exit_code == 0, result.stderr
-    payload = json.loads(result.stdout)
-    assert payload["trade_count"] == 2
-    assert payload["fold_count"] == 2
-    assert output.exists()
-    assert tearsheet.exists()
-    rendered = tearsheet.read_text(encoding="utf-8")
-    assert "Cohort diagnostics" in rendered
-    assert "unavailable" in rendered
+    assert result.exit_code == 2
+    assert not output.exists()
+    assert not tearsheet.exists()
 
 
 def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:

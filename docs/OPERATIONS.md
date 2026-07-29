@@ -387,7 +387,10 @@ session returns flow into the next decision automatically, including explicit
 zero-return abstention sessions. The canonical assembly manifest hashes the
 strategy, OOS run, calendar, every candidate/bar partition, and every generated
 plan. `phase4-gate` re-hashes that complete graph and rejects a fold map whose
-ordered plan set differs from the manifest.
+ordered plan set differs from the manifest. Before calculating any metric, it
+also rebuilds every plan in a temporary workspace from the bound sources and
+requires byte-for-byte equality. Re-hashing a hand-edited plan into a new
+manifest cannot satisfy the gate.
 
 The strategy YAML is also the executable cost contract. Commission, market
 impact, borrow, and every inclusive price-tier spread floor are translated

@@ -33,13 +33,15 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 351 automated tests pass.
+- 352 automated tests pass.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 93 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
   candidates, sessions, adjusted bars, and OOS predictions.
+- The Phase 4 gate independently rebuilds those plans and requires byte-exact
+  equality, so a re-hashed hand-edited plan cannot enter performance metrics.
 - Phase 4 source files, generated plans, strategy, costs, model run, and study
   are hash-bound through promotion.
 - A bounded calibration allocation prevents the fractional-Kelly cold-start

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 import time
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
@@ -1816,6 +1817,10 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
             raise ValueError("Phase 4 strategy differs from the walk-forward run")
         if model_run.hyperparameter_study_sha256 is None:
             raise ValueError("walk-forward run lacks an Optuna study binding")
+        _validate_phase4_plan_reproduction(
+            manifest=assembly_manifest,
+            manifest_path=manifest_path,
+        )
         fold_results = []
         plan_paths: list[Path] = []
         all_predictions: list[OosPrediction] = []
@@ -4795,6 +4800,34 @@ def backfill_coverage(
     )
     if not report.ready:
         raise typer.Exit(code=1)
+
+
+def _validate_phase4_plan_reproduction(
+    *,
+    manifest: Phase4AssemblyManifest,
+    manifest_path: Path,
+) -> None:
+    """Rebuild all event plans from bound sources before accepting gate metrics."""
+    with tempfile.TemporaryDirectory(prefix="qee-phase4-reproduction-") as temporary:
+        reproduction_root = Path(temporary)
+        reproduced = Phase4HistoricalAssembler().assemble(
+            walkforward_run_evidence=manifest.resolved_walkforward_run(manifest_path),
+            strategy_config=manifest.resolved_strategy_config(manifest_path),
+            session_file=manifest.resolved_session_file(manifest_path),
+            candidate_files=manifest.resolved_candidate_files(manifest_path),
+            daily_bar_files=manifest.resolved_daily_bar_files(manifest_path),
+            initial_cash=manifest.initial_cash,
+            output_dir=reproduction_root / "plans",
+            manifest_output=reproduction_root / "manifest.json",
+            aggregation_output=reproduction_root / "aggregation.json",
+            minimum_probability=manifest.minimum_probability,
+        )
+        reproduced_bytes = tuple(path.read_bytes() for path in reproduced.plan_files)
+        bound_bytes = tuple(
+            path.read_bytes() for path in manifest.resolved_plan_files(manifest_path)
+        )
+        if reproduced_bytes != bound_bytes:
+            raise ValueError("Phase 4 plans do not reproduce from the assembly manifest sources")
 
 
 def _environment(env_file: Path | None) -> RuntimeEnvironment:

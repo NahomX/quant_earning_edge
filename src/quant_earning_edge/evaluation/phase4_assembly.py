@@ -119,6 +119,22 @@ class Phase4AssemblyManifest(_StrictModel):
     def resolved_strategy_config(self, manifest_path: Path) -> Path:
         return _resolve(self.strategy_config.path, base=manifest_path.parent)
 
+    def resolved_walkforward_run(self, manifest_path: Path) -> Path:
+        return _resolve(self.walkforward_run_evidence.path, base=manifest_path.parent)
+
+    def resolved_session_file(self, manifest_path: Path) -> Path:
+        return _resolve(self.session_file.path, base=manifest_path.parent)
+
+    def resolved_candidate_files(self, manifest_path: Path) -> tuple[Path, ...]:
+        return tuple(
+            _resolve(item.path, base=manifest_path.parent) for item in self.candidate_files
+        )
+
+    def resolved_daily_bar_files(self, manifest_path: Path) -> tuple[Path, ...]:
+        return tuple(
+            _resolve(item.path, base=manifest_path.parent) for item in self.daily_bar_files
+        )
+
 
 @dataclass(frozen=True)
 class Phase4AssemblyResult:

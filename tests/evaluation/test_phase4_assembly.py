@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -267,6 +268,39 @@ def test_manifest_rejects_source_mutation_after_assembly(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="source hash differs"):
         Phase4AssemblyManifest.load(result.manifest_path)
+
+
+def test_phase4_gate_rejects_rehashed_but_nonreproducible_plan(tmp_path: Path) -> None:
+    sources = _sources(tmp_path)
+    result = _assemble(tmp_path, sources)
+    plan_path = result.plan_files[0]
+    plan = json.loads(plan_path.read_bytes())
+    plan["portfolio"]["sizing_mode"] = "kelly"
+    plan_path.write_bytes(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode())
+    manifest = json.loads(result.manifest_path.read_bytes())
+    manifest["plan_files"][0]["sha256"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    result.manifest_path.write_bytes(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    )
+
+    gate = CliRunner().invoke(
+        app,
+        [
+            "evaluation",
+            "phase4-gate",
+            "--aggregation-spec",
+            str(result.aggregation_path),
+            "--output",
+            str(tmp_path / "tampered-gate.json"),
+            "--tearsheet-output",
+            str(tmp_path / "tampered-tearsheet.html"),
+            "--bootstrap-resamples",
+            "10",
+        ],
+    )
+
+    assert gate.exit_code == 2
+    assert "plans do not reproduce" in gate.output
 
 
 def test_assemble_phase4_cli_materializes_complete_fold_map(tmp_path: Path) -> None:

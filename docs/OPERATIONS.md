@@ -339,6 +339,7 @@ uv run qee model train-production `
   --dataset-file .\data\gold\feature_group=training-dataset\month=2026-01\part-<hash>.parquet `
   --training-cutoff 2026-07-28 `
   --phase4-gate .\data\evaluation\phase4-gate.json `
+  --phase4-aggregation .\data\evaluation\phase4-aggregation.json `
   --split-plan .\data\manifests\backtest\walk-forward.json `
   --hyperparameter-study .\data\models\earnings-v1\optuna-study.json `
   --strategy-config .\configs\strategies\earnings_v1.yaml `
@@ -355,10 +356,13 @@ The exact Optuna-selected parameters and immutable study SHA-256 are embedded
 as well. Production refitting rejects any study that does not match the
 dataset, split plan, and current strategy configuration. The continuous proof
 queue rejects production artifacts without this study binding.
-The command independently recomputes the documented Phase 4 research and
-pre-paper thresholds from canonical report metrics. A false or inconsistent
-verdict is rejected; the passing report SHA-256 is embedded in the model
-artifact and is mandatory when that artifact is reloaded for live scoring.
+The command independently rebuilds the Phase 4 event plans from their assembly
+sources, replays the complete OOS fold map, and recomputes all metrics, cohorts,
+bootstrap intervals, and gate decisions using the seed/resample contract
+embedded in the report. The supplied report must match those reconstructed
+bytes exactly. A self-consistent hand-authored pass is rejected; the verified
+report SHA-256 is embedded in the model artifact and is mandatory when that
+artifact is reloaded for live scoring.
 
 ## Assemble the complete OOS Phase 4 history
 

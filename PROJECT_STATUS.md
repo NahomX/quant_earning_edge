@@ -35,7 +35,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 - 392 automated tests pass.
 - Ruff formatting and lint pass.
-- Mypy strict checking passes across 99 source files.
+- Mypy strict checking passes across 100 source files.
 - The model target matches the traded next-open-to-next-close holding window.
 - Seeded, resumable Optuna selection is bound to complete OOS model evidence.
 - Historical Phase 4 plans are assembled automatically from canonical
@@ -47,6 +47,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
   equality, so a re-hashed hand-edited plan cannot enter performance metrics.
 - Phase 4 source files, generated plans, strategy, costs, model run, and study
   are hash-bound through promotion.
+- Production refit independently rebuilds those plans, replays the complete OOS
+  fold map, and requires the supplied passing Phase 4 report to match the
+  reconstructed metrics, cohorts, bootstrap intervals, and verdict bytes.
 - A bounded calibration allocation prevents the fractional-Kelly cold-start
   deadlock; only matched per-trade returns enter its 60-day history, and mature
   negative/undefined edge still shuts risk off.

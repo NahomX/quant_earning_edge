@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import tempfile
 import time
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
@@ -54,7 +53,6 @@ from quant_earning_edge.data import (
 )
 from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient, PolygonClient
 from quant_earning_edge.evaluation import (
-    FoldBacktestResults,
     HtmlTearsheetWriter,
     MomentumBaselineBuilder,
     MomentumBaselineBuildSpec,
@@ -63,7 +61,6 @@ from quant_earning_edge.evaluation import (
     MomentumBenchmarkReferenceSpec,
     PerformanceEvaluator,
     PerformanceReport,
-    Phase4AggregationSpec,
     Phase4GateEvaluator,
     Phase4HtmlTearsheetWriter,
     Phase4PromotionEvidence,
@@ -81,9 +78,9 @@ from quant_earning_edge.evaluation import (
     log_backtest_run,
 )
 from quant_earning_edge.evaluation.phase4_assembly import (
-    Phase4AssemblyManifest,
     Phase4HistoricalAssembler,
 )
+from quant_earning_edge.evaluation.phase4_verification import Phase4GateVerifier
 from quant_earning_edge.features import (
     DailyBarsFeatureLoader,
     EarningsFeatureLoader,
@@ -162,12 +159,10 @@ from quant_earning_edge.signals import (
     LivePlanningAssembler,
     LivePlanningSourceSpec,
     LiveSourceCaptureAssembler,
-    OosPrediction,
     OptunaLightgbmSearch,
     OptunaStudyArtifact,
     ProductionModelArtifact,
     ProductionModelTrainer,
-    TradeCohort,
     WalkForwardModelRun,
     load_strategy_config,
     run_event_plan,
@@ -1252,6 +1247,15 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
             help="Passing canonical Phase 4 pre-paper gate report.",
         ),
     ],
+    phase4_aggregation: Annotated[
+        Path,
+        typer.Option(
+            "--phase4-aggregation",
+            exists=True,
+            dir_okay=False,
+            help="Canonical assembly/fold map that must reproduce the Phase 4 gate.",
+        ),
+    ],
     split_plan: Annotated[
         Path,
         typer.Option(
@@ -1281,6 +1285,10 @@ def train_production_model(  # noqa: PLR0917 - explicit immutable training input
     try:
         cutoff = date.fromisoformat(training_cutoff)
         promotion = Phase4PromotionEvidence.load(phase4_gate)
+        Phase4GateVerifier.verify(
+            report_path=phase4_gate,
+            aggregation_spec=phase4_aggregation,
+        )
         config = load_strategy_config(strategy_config)
         if strategy_file_sha256(strategy_config) != promotion.strategy_sha256:
             raise ValueError("Phase 4 gate differs from the selected strategy config")
@@ -1811,80 +1819,16 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
 ) -> None:
     """Replay event plans and evaluate both documented strategy gates."""
     try:
-        spec = Phase4AggregationSpec.model_validate_json(aggregation_spec.read_bytes())
-        manifest_path = (
-            spec.assembly_manifest
-            if spec.assembly_manifest.is_absolute()
-            else aggregation_spec.parent / spec.assembly_manifest
-        )
-        assembly_manifest = Phase4AssemblyManifest.load(manifest_path)
-        strategy = load_strategy_config(assembly_manifest.resolved_strategy_config(manifest_path))
-        cost_model = CostModel(strategy.cost_model_config)
-        run_path = (
-            spec.walkforward_run_evidence
-            if spec.walkforward_run_evidence.is_absolute()
-            else aggregation_spec.parent / spec.walkforward_run_evidence
-        )
-        model_run = WalkForwardModelRun.load_evidence(run_path)
-        if assembly_manifest.walkforward_run_evidence.sha256 != model_run.sha256:
-            raise ValueError("Phase 4 assembly manifest differs from the walk-forward run")
-        if (
-            model_run.feature_names != strategy.features
-            or model_run.label_name != strategy.label.column_name
-            or model_run.threshold != strategy.label.threshold
-            or model_run.seed != strategy.seed
-        ):
-            raise ValueError("Phase 4 strategy differs from the walk-forward run")
-        if model_run.hyperparameter_study_sha256 is None:
-            raise ValueError("walk-forward run lacks an Optuna study binding")
-        _validate_phase4_plan_reproduction(
-            manifest=assembly_manifest,
-            manifest_path=manifest_path,
-        )
-        fold_results = []
-        plan_paths: list[Path] = []
-        all_predictions: list[OosPrediction] = []
-        for fold in spec.folds:
-            results = []
-            cohorts: list[TradeCohort] = []
-            for configured_path in fold.event_plan_files:
-                plan_path = (
-                    configured_path
-                    if configured_path.is_absolute()
-                    else aggregation_spec.parent / configured_path
-                )
-                plan_paths.append(plan_path)
-                plan = EventTradePlanner.load(plan_path)
-                if plan.walkforward_run_sha256 != model_run.sha256:
-                    raise ValueError("event plan differs from the Phase 4 walk-forward run")
-                model_run.validate_predictions(plan.source_predictions)
-                all_predictions.extend(plan.source_predictions)
-                cohorts.extend(plan.cohorts)
-                results.append(run_event_plan(plan, cost_model=cost_model))
-            fold_results.append(
-                FoldBacktestResults(
-                    fold_index=fold.fold_index,
-                    test_start_date=fold.test_start_date,
-                    test_end_date=fold.test_end_date,
-                    results=tuple(results),
-                    cohorts=tuple(cohorts),
-                )
-            )
-        if tuple(path.resolve() for path in plan_paths) != assembly_manifest.resolved_plan_files(
-            manifest_path
-        ):
-            raise ValueError("Phase 4 aggregation plan files differ from the assembly manifest")
-        model_run.validate_predictions(tuple(all_predictions), require_complete=True)
-        evaluator = Phase4GateEvaluator(
+        reproduction = Phase4GateVerifier.reproduce(
+            aggregation_spec,
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
         )
-        report = evaluator.evaluate(
-            tuple(fold_results),
-            strategy_sha256=assembly_manifest.strategy_config.sha256,
-            assembly_manifest_sha256=assembly_manifest.sha256,
-            walkforward_run_sha256=model_run.sha256,
-            hyperparameter_study_sha256=model_run.hyperparameter_study_sha256,
+        report = reproduction.report
+        strategy = reproduction.strategy
+        evaluator = Phase4GateEvaluator(
+            bootstrap_resamples=bootstrap_resamples,
+            seed=seed,
         )
         evaluator.write(report, output)
         Phase4HtmlTearsheetWriter().write(report=report, output=tearsheet_output)
@@ -1911,7 +1855,7 @@ def evaluate_phase4_gate(  # noqa: PLR0917 - explicit run and provenance contrac
             session_count=report.overall.session_count,
             bootstrap_resamples=bootstrap_resamples,
             seed=seed,
-            source_files=(aggregation_spec, manifest_path, run_path, *plan_paths),
+            source_files=reproduction.source_paths,
             artifact_files=(tearsheet_output,),
             extra_parameters={
                 "fold_count": len(report.walk_forward.folds),
@@ -4981,34 +4925,6 @@ def backfill_coverage(
     )
     if not report.ready:
         raise typer.Exit(code=1)
-
-
-def _validate_phase4_plan_reproduction(
-    *,
-    manifest: Phase4AssemblyManifest,
-    manifest_path: Path,
-) -> None:
-    """Rebuild all event plans from bound sources before accepting gate metrics."""
-    with tempfile.TemporaryDirectory(prefix="qee-phase4-reproduction-") as temporary:
-        reproduction_root = Path(temporary)
-        reproduced = Phase4HistoricalAssembler().assemble(
-            walkforward_run_evidence=manifest.resolved_walkforward_run(manifest_path),
-            strategy_config=manifest.resolved_strategy_config(manifest_path),
-            session_file=manifest.resolved_session_file(manifest_path),
-            candidate_files=manifest.resolved_candidate_files(manifest_path),
-            daily_bar_files=manifest.resolved_daily_bar_files(manifest_path),
-            initial_cash=manifest.initial_cash,
-            output_dir=reproduction_root / "plans",
-            manifest_output=reproduction_root / "manifest.json",
-            aggregation_output=reproduction_root / "aggregation.json",
-            minimum_probability=manifest.minimum_probability,
-        )
-        reproduced_bytes = tuple(path.read_bytes() for path in reproduced.plan_files)
-        bound_bytes = tuple(
-            path.read_bytes() for path in manifest.resolved_plan_files(manifest_path)
-        )
-        if reproduced_bytes != bound_bytes:
-            raise ValueError("Phase 4 plans do not reproduce from the assembly manifest sources")
 
 
 def _environment(env_file: Path | None) -> RuntimeEnvironment:

@@ -426,7 +426,11 @@ def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
         "overall": {
             "net_sharpe": 1.2,
             "max_drawdown": 0.10,
-            "bootstrap": {"sharpe": {"lower": 0.6}},
+            "bootstrap": {
+                "seed": 20260427,
+                "resamples": 10_000,
+                "sharpe": {"lower": 0.6},
+            },
         },
         "walk_forward": {"passes_positive_fold_gate": True},
         "cohorts": _promotion_cohort_rows(),
@@ -462,7 +466,11 @@ def test_production_promotion_rejects_missing_cohort_evidence(tmp_path: Path) ->
         "overall": {
             "net_sharpe": 1.2,
             "max_drawdown": 0.10,
-            "bootstrap": {"sharpe": {"lower": 0.6}},
+            "bootstrap": {
+                "seed": 20260427,
+                "resamples": 10_000,
+                "sharpe": {"lower": 0.6},
+            },
         },
         "walk_forward": {"passes_positive_fold_gate": True},
         "cohorts": [],

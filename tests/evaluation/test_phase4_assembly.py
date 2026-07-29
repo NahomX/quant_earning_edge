@@ -24,6 +24,7 @@ from quant_earning_edge.evaluation.phase4_assembly import (
     Phase4AssemblyResult,
     Phase4HistoricalAssembler,
 )
+from quant_earning_edge.evaluation.phase4_verification import Phase4GateVerifier
 from quant_earning_edge.signals import (
     EventTradePlanner,
     FeatureAttribution,
@@ -381,6 +382,7 @@ def test_assemble_phase4_cli_materializes_complete_fold_map(tmp_path: Path) -> N
     assert payload["trade_count"] == 2
     assert Path(payload["manifest_output"]).is_file()
 
+    gate_path = tmp_path / "phase4-gate.json"
     gate = CliRunner().invoke(
         app,
         [
@@ -389,7 +391,7 @@ def test_assemble_phase4_cli_materializes_complete_fold_map(tmp_path: Path) -> N
             "--aggregation-spec",
             str(tmp_path / "cli-aggregation.json"),
             "--output",
-            str(tmp_path / "phase4-gate.json"),
+            str(gate_path),
             "--tearsheet-output",
             str(tmp_path / "phase4-tearsheet.html"),
             "--bootstrap-resamples",
@@ -399,3 +401,18 @@ def test_assemble_phase4_cli_materializes_complete_fold_map(tmp_path: Path) -> N
 
     assert gate.exit_code == 0, gate.stderr
     assert json.loads(gate.stdout)["trade_count"] == 2
+    verified = Phase4GateVerifier.verify(
+        report_path=gate_path,
+        aggregation_spec=tmp_path / "cli-aggregation.json",
+    )
+    assert verified.report.to_json_bytes() == gate_path.read_bytes()
+
+    tampered = json.loads(gate_path.read_bytes())
+    tampered["overall"]["final_net_equity"] += 1
+    tampered_path = tmp_path / "tampered-phase4-gate.json"
+    tampered_path.write_bytes(json.dumps(tampered, sort_keys=True, separators=(",", ":")).encode())
+    with pytest.raises(ValueError, match="differs from reconstructed"):
+        Phase4GateVerifier.verify(
+            report_path=tampered_path,
+            aggregation_spec=tmp_path / "cli-aggregation.json",
+        )

@@ -298,7 +298,7 @@ def test_frozen_reconciliation_cli_fetches_alpaca_order(
     revision_path = Path(json.loads(revision.stdout)["output"])
     assert revision_path.parent == revision_directory.resolve()
     assert revision_path.name.startswith("paper-reconciliation-")
-    assert FrozenDailyOrders.load(frozen_path) is frozen
+    assert FrozenDailyOrders.load(frozen_path) is frozen  # type: ignore[comparison-overlap]
     assert json.loads(result.stdout)["reconciliation_break_count"] == 0
     assert json.loads(output.read_bytes())["orders"][0]["client_order_id"] == "entry-1"
 

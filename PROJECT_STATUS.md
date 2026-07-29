@@ -33,7 +33,8 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 412 automated tests pass; Ruff and strict mypy pass across 112 source files.
+- 413 automated tests pass; Ruff and strict mypy pass across all 204 source
+  and test modules under the same commands used by CI.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 109 source files.
 - The model target matches the traded next-open-to-next-close holding window.

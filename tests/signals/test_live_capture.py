@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pyarrow as pa
@@ -339,19 +340,22 @@ def test_capture_cli_fetches_only_paper_account_and_polygon_snapshots(
                 },
             )
 
-        return real_client(
-            *args,
-            **kwargs,
-            transport=httpx.MockTransport(respond),
+        return cast(
+            "httpx.Client",
+            cast("Any", real_client)(
+                *args,
+                **kwargs,
+                transport=httpx.MockTransport(respond),
+            ),
         )
 
     class FixedDateTime(datetime):
         @classmethod
-        def now(cls, tz: object = None) -> datetime:
+        def now(cls, tz: object = None) -> FixedDateTime:
             del tz
-            return CAPTURED_AT
+            return cls.fromtimestamp(CAPTURED_AT.timestamp(), tz=CAPTURED_AT.tzinfo)
 
-    monkeypatch.setattr(cli_module.httpx, "Client", client_factory)
+    monkeypatch.setattr(cli_module.httpx, "Client", client_factory)  # type: ignore[attr-defined]
     monkeypatch.setattr(cli_module, "datetime", FixedDateTime)
     source = tmp_path / "source.json"
     evidence = tmp_path / "evidence.json"

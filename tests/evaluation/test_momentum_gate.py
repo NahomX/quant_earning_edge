@@ -28,6 +28,7 @@ from quant_earning_edge.evaluation import (
     MomentumBaselineBuildSpec,
     MomentumBaselineManifest,
     MomentumBenchmarkGateEvaluator,
+    MomentumBenchmarkGateReport,
     MomentumBenchmarkReferenceSpec,
     PerformanceEvaluator,
     PerformanceReport,
@@ -187,7 +188,7 @@ def _inputs(
     )
 
 
-def _evaluate(inputs: _Inputs):
+def _evaluate(inputs: _Inputs) -> MomentumBenchmarkGateReport:
     return MomentumBenchmarkGateEvaluator().evaluate(
         reference_spec=MomentumBenchmarkReferenceSpec.load(inputs.reference),
         reference_artifact=inputs.reference_artifact,

@@ -184,6 +184,7 @@ def test_circuit_breaker_cli_writes_halt_and_exits_nonzero(tmp_path: Path) -> No
     spec_file = tmp_path / "observations.json"
     output = tmp_path / "decision.json"
     observation = _observation(loss_fraction=0.03)
+    assert observation.replay_source_date is not None
     spec_file.write_text(
         json.dumps(
             {

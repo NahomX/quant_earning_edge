@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 from typer.testing import CliRunner
 
-import quant_earning_edge.cli as cli_module
 from quant_earning_edge.cli import app
 from quant_earning_edge.data import LakehouseLayout, SessionFileStore
 from quant_earning_edge.data.clients import MarketSession
@@ -17,6 +16,7 @@ from quant_earning_edge.evaluation import ReplaySessionAggregator
 from quant_earning_edge.orchestration import (
     WorkerCycleReport,
     WorkerSpecResult,
+    WorkflowInboxWorker,
     WorkflowRunSpec,
 )
 from quant_earning_edge.signals import (
@@ -107,7 +107,11 @@ def test_smoke_command_builds_isolated_manual_no_trade_workflow(
         cycle_path.write_bytes(cycle.canonical_bytes)
         return cycle, cycle_path
 
-    monkeypatch.setattr(cli_module.WorkflowInboxWorker, "run_once", run_once)
+    monkeypatch.setattr(
+        WorkflowInboxWorker,
+        "run_once",
+        run_once,
+    )
     output = tmp_path / "smoke-result.json"
 
     result = CliRunner().invoke(

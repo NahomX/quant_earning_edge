@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -428,7 +429,7 @@ def test_phase4_gate_cli_rejects_nonreproducible_manual_sources(tmp_path: Path) 
 
 
 def test_production_promotion_recomputes_phase4_gate(tmp_path: Path) -> None:
-    report = {
+    report: dict[str, Any] = {
         "overall": {
             "net_sharpe": 1.2,
             "max_drawdown": 0.10,

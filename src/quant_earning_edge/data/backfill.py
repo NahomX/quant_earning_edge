@@ -35,7 +35,7 @@ class BarsProvider(Protocol):
         symbol: str,
         start_date: date,
         end_date: date,
-        adjusted: bool = True,
+        adjusted: bool = False,
     ) -> tuple[EquityBar, ...]: ...
 
 
@@ -123,7 +123,7 @@ class BarBackfillStore:
         start_date: date,
         end_date: date,
         batch_size: int,
-        adjusted: bool = True,
+        adjusted: bool = False,
         created_at: datetime | None = None,
     ) -> BarBackfillPlan:
         """Create or load the deterministic plan for this exact specification."""
@@ -171,18 +171,65 @@ class BarBackfillStore:
 
     def load_plan(self, plan_id: str) -> BarBackfillPlan:
         """Load one plan by its full content hash."""
-        raw = json.loads((self._plan_root(plan_id) / "plan.json").read_text(encoding="utf-8"))
+        path = self._plan_root(plan_id) / "plan.json"
+        encoded = path.read_bytes()
+        try:
+            raw = json.loads(encoded)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"invalid backfill plan: {path}") from error
+        required = {
+            "plan_id",
+            "symbols",
+            "start_date",
+            "end_date",
+            "batch_size",
+            "adjusted",
+            "created_at",
+        }
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != required
+            or not isinstance(raw["symbols"], list)
+            or not isinstance(raw["batch_size"], int)
+            or isinstance(raw["batch_size"], bool)
+            or raw["batch_size"] < 1
+            or not isinstance(raw["adjusted"], bool)
+        ):
+            raise ValueError("backfill plan schema mismatch")
         plan = BarBackfillPlan(
             plan_id=str(raw["plan_id"]),
             symbols=tuple(str(item) for item in raw["symbols"]),
             start_date=date.fromisoformat(str(raw["start_date"])),
             end_date=date.fromisoformat(str(raw["end_date"])),
             batch_size=int(raw["batch_size"]),
-            adjusted=bool(raw["adjusted"]),
+            adjusted=raw["adjusted"],
             created_at=datetime.fromisoformat(str(raw["created_at"])),
         )
-        if plan.plan_id != plan_id:
-            raise RuntimeError("backfill plan identity did not match its path")
+        identity = {
+            "symbols": plan.symbols,
+            "start_date": plan.start_date,
+            "end_date": plan.end_date,
+            "batch_size": plan.batch_size,
+            "adjusted": plan.adjusted,
+        }
+        canonical = json.dumps(
+            asdict(plan),
+            default=_json_default,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        if (
+            plan.plan_id != plan_id
+            or plan.plan_id != _digest(identity)
+            or plan.end_date < plan.start_date
+            or plan.symbols
+            != tuple(sorted({symbol.strip().upper() for symbol in plan.symbols if symbol.strip()}))
+            or not plan.symbols
+            or plan.created_at.tzinfo is None
+            or plan.created_at.utcoffset() is None
+            or canonical != encoded
+        ):
+            raise RuntimeError("backfill plan content does not match its immutable identity")
         return plan
 
     def write_event(self, event: BackfillBatchEvent) -> Path:

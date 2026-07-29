@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -81,7 +82,7 @@ class CapturingBarsProvider:
     def __init__(self, layout: LakehouseLayout, sessions: tuple[date, ...]) -> None:
         self._bronze = BronzeWriter(layout)
         self._sessions = sessions
-        self._observations = []
+        self._observations: list[object] = []
 
     @property
     def feature_observation_artifacts(self) -> tuple[object, ...]:
@@ -152,22 +153,40 @@ def test_plan_identity_is_normalized_and_stable_across_resume(tmp_path: Path) ->
         batch_size=2,
         created_at=created_at + timedelta(days=1),
     )
-    unadjusted = store.prepare_plan(
+    adjusted = store.prepare_plan(
         symbols=("AAPL", "MSFT"),
         start_date=date(2021, 1, 1),
         end_date=date(2026, 1, 1),
         batch_size=2,
-        adjusted=False,
+        adjusted=True,
         created_at=created_at,
     )
 
     assert first == second
-    assert unadjusted.plan_id != first.plan_id
-    assert not unadjusted.adjusted
+    assert adjusted.plan_id != first.plan_id
+    assert adjusted.adjusted
     assert first.symbols == ("AAPL", "MSFT")
     assert len(first.plan_id) == 64
-    assert first.adjusted
+    assert not first.adjusted
     assert first.created_at == created_at
+
+
+def test_plan_load_rejects_rewritten_content_under_original_identity(tmp_path: Path) -> None:
+    store = BarBackfillStore(LakehouseLayout(tmp_path))
+    plan = store.prepare_plan(
+        symbols=("AAPL",),
+        start_date=date(2021, 1, 1),
+        end_date=date(2026, 1, 1),
+        batch_size=1,
+        created_at=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    path = next(tmp_path.rglob("plan.json"))
+    raw = json.loads(path.read_bytes())
+    raw["end_date"] = "2027-01-01"
+    path.write_bytes(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(RuntimeError, match="immutable identity"):
+        store.load_plan(plan.plan_id)
 
 
 def test_backfill_resumes_batches_and_keeps_silver_content_stable(tmp_path: Path) -> None:
@@ -242,7 +261,7 @@ def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> 
 
     assert len(manifests) == 1
     assert manifests[0].raw["availability_policy"] == "session_close_plus_15m"
-    with pytest.raises(ValueError, match="retroactively adjusted"):
+    with pytest.raises(ValueError, match="split-history source"):
         DailyBarsFeatureLoader().load(
             silver_files,
             symbols=("AAPL", "MSFT"),
@@ -254,6 +273,7 @@ def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> 
         for path in silver_files
         for value in pq.read_table(path).column("ingested_at").to_pylist()  # type: ignore[no-untyped-call]
     )
+    assert manifests[0].raw["adjusted"] is False
     reproduced = DailyBarsSourceCapture.reproduce(
         manifests[0],
         data_lake_root=tmp_path,

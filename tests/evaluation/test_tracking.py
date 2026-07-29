@@ -81,7 +81,7 @@ def test_backtest_run_logs_hashes_parameters_and_artifacts(
     downloaded = client.download_artifacts(
         reference.run_id,
         "performance-report.json",
-        tmp_path / "download",
+        str(tmp_path / "download"),
     )
     assert json.loads(Path(downloaded).read_bytes())["net_sharpe"] == 1.25
 

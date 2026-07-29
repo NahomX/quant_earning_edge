@@ -7,6 +7,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any, TypedDict
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -38,13 +39,24 @@ from quant_earning_edge.signals import (
     FoldModelResult,
     LightgbmHyperparameters,
     OosPrediction,
+    PlannedEventTrades,
     WalkForwardModelRun,
     load_strategy_config,
 )
 from quant_earning_edge.universe import EVENT_CANDIDATE_SCHEMA
 
 
-def _sources(tmp_path: Path) -> dict[str, object]:
+class _Sources(TypedDict):
+    strategy: Path
+    sessions: Path
+    run: Path
+    candidates: Path
+    bars: Path
+    split_source: Path
+    bar_rows: list[dict[str, object]]
+
+
+def _sources(tmp_path: Path) -> _Sources:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
     sessions = (
@@ -232,7 +244,7 @@ def _bar(symbol: str, session_date: date, open_price: float, close: float) -> di
 
 def _assemble(
     tmp_path: Path,
-    sources: dict[str, object],
+    sources: _Sources,
     *,
     suffix: str = "",
 ) -> Phase4AssemblyResult:
@@ -270,7 +282,11 @@ def test_assembler_chains_equity_and_writes_verified_manifest(tmp_path: Path) ->
     assert plans[0].source_predictions[0].information_cutoff_at == datetime(
         2025, 1, 3, 14, 10, tzinfo=UTC
     )
-    assert plans[0].intents[0].entry_at > plans[0].source_predictions[0].information_cutoff_at
+    information_cutoff = plans[0].source_predictions[0].information_cutoff_at
+    entry_at = plans[0].intents[0].entry_at
+    assert information_cutoff is not None
+    assert entry_at is not None
+    assert entry_at > information_cutoff
     assert plans[0].portfolio.history_count == 0
     assert plans[1].portfolio.history_count == 1
     assert plans[1].portfolio.equity != plans[0].portfolio.equity
@@ -284,7 +300,7 @@ def test_assembler_resumes_from_durable_session_progress(
     original_write = EventTradePlanner.write
     write_count = 0
 
-    def interrupt_before_second_write(plan, output):
+    def interrupt_before_second_write(plan: PlannedEventTrades, output: Path) -> None:
         nonlocal write_count
         write_count += 1
         if write_count == 2:
@@ -305,7 +321,10 @@ def test_assembler_resumes_from_durable_session_progress(
     original_plan = EventTradePlanner.plan
     planned_dates: list[date] = []
 
-    def track_new_plans(planner, **kwargs):
+    def track_new_plans(
+        planner: EventTradePlanner,
+        **kwargs: Any,
+    ) -> PlannedEventTrades:
         plan = original_plan(planner, **kwargs)
         planned_dates.append(plan.trade_date)
         return plan
@@ -322,7 +341,9 @@ def test_assembler_rejects_progress_from_changed_inputs(tmp_path: Path) -> None:
     sources = _sources(tmp_path)
     _assemble(tmp_path, sources)
     changed_path = tmp_path / "bars-changed.parquet"
-    changed_rows = [{**row, "close": float(row["close"]) + 0.01} for row in sources["bar_rows"]]
+    changed_rows = [
+        {**row, "close": float(str(row["close"])) + 0.01} for row in sources["bar_rows"]
+    ]
     pq.write_table(  # type: ignore[no-untyped-call]
         pa.Table.from_pylist(changed_rows, schema=DAILY_BARS_SCHEMA),
         changed_path,

@@ -18,7 +18,7 @@ INGESTED_AT = datetime(2026, 7, 28, 1, 30, tzinfo=UTC)
 
 
 def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    earnings = {
+    earnings: dict[str, object] = {
         "earningsCalendar": [
             {
                 "date": "2026-07-27",
@@ -31,7 +31,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]
             }
         ]
     }
-    splits = {
+    splits: dict[str, object] = {
         "status": "OK",
         "results": [
             {
@@ -44,7 +44,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]
             }
         ],
     }
-    dividends = {
+    dividends: dict[str, object] = {
         "status": "OK",
         "results": [
             {

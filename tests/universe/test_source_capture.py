@@ -79,7 +79,7 @@ class _PayloadMarketData:
 
 
 def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    references = {
+    references: dict[str, object] = {
         "status": "OK",
         "results": [
             {
@@ -93,7 +93,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]
             }
         ],
     }
-    details = {
+    details: dict[str, object] = {
         "status": "OK",
         "results": {
             "ticker": "AAA",
@@ -108,7 +108,7 @@ def _payloads() -> tuple[dict[str, object], dict[str, object], dict[str, object]
             "list_date": "2000-01-01",
         },
     }
-    bars = {
+    bars: dict[str, object] = {
         "ticker": "AAA",
         "adjusted": False,
         "status": "OK",

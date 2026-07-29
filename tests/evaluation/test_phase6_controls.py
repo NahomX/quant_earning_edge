@@ -26,6 +26,7 @@ from quant_earning_edge.data import (
     CalendarSourceCapture,
     EarningsSourceCapture,
     LakehouseLayout,
+    ReplayEventSourceSpec,
     ReplayEvidenceIndex,
     ReplayManifestRunner,
     ReplayMaterializationSpec,
@@ -42,6 +43,7 @@ from quant_earning_edge.data.clients import (
     MinuteBar,
     PolygonClient,
     StockQuote,
+    TickerSnapshot,
 )
 from quant_earning_edge.evaluation import (
     Phase6AggregationSpec,
@@ -547,7 +549,7 @@ def _write_live_source_capture(  # noqa: PLR0915 - complete source fixture.
         account_raw,
         captured_at=captured_at,
     )
-    snapshots = ()
+    snapshots: tuple[TickerSnapshot, ...] = ()
     snapshot_paths: tuple[Path, ...] = ()
     if snapshot is not None:
         quote_nanoseconds = int(snapshot.observed_at.timestamp()) * 1_000_000_000
@@ -926,7 +928,7 @@ def _complete_source_workflow(
     store: DailyWorkflowStore,
     tmp_path: Path,
     session_date: date,
-    sources: dict[str, Path],
+    sources: dict[str, Any],
     reconciliation_succeeds: bool = True,
 ) -> DailyWorkflowState:
     def handler(  # noqa: PLR0911 - explicit workflow-stage fixture.
@@ -1288,10 +1290,10 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
             orders=frozen.intended_orders,
             decision_snapshots=frozen.decision_snapshots,
             event_sources=(
-                {
-                    "symbol": "AAA",
-                    "quote_files": (quote_artifact.path,),
-                },
+                ReplayEventSourceSpec(
+                    symbol="AAA",
+                    quote_files=(quote_artifact.path,),
+                ),
             ),
             config=ReplayConfigSpec(
                 market_impact_bps_coefficient=strategy.costs.market_impact_coef_bps

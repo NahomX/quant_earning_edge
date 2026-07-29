@@ -129,7 +129,7 @@ def test_batch_ingestor_combines_each_symbols_frozen_windows(tmp_path: Path) -> 
 
 def test_no_trade_capture_cli_needs_no_provider_credentials(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     frozen_path = tmp_path / "frozen.json"
     frozen_path.write_text("{}", encoding="utf-8")
@@ -172,7 +172,7 @@ def test_batch_capture_refuses_to_read_before_every_order_expires(
     calls: list[str] = []
 
     class Ingestor:
-        def ingest(self, **kwargs) -> None:
+        def ingest(self, **kwargs: object) -> None:
             calls.append(str(kwargs["symbol"]))
 
     with pytest.raises(ValueError, match="post-expiry settlement delay"):

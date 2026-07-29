@@ -206,6 +206,7 @@ def test_daily_bars_writer_uses_schema_partitions_and_is_idempotent(tmp_path: Pa
     table = pq.read_table(first[0].path)  # type: ignore[no-untyped-call]
     assert table.column("symbol").to_pylist() == ["AAPL", "MSFT"]
     assert table.column("adjusted").to_pylist() == [True, True]
+    assert table.column("available_at").to_pylist() == [ingested_at, ingested_at]
     assert len(list((tmp_path / "silver").rglob("*.parquet"))) == 1
 
 

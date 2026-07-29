@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
+from quant_earning_edge.data.silver import DAILY_BAR_SESSION_CLOSE_15M
 from quant_earning_edge.data.store import DuckDBStore
 
 MIN_FIVE_YEAR_SESSIONS = 1_200
@@ -324,6 +325,7 @@ class BarBackfillJob:
             artifacts = self._silver_writer.write_daily_bars(
                 tuple(bars),
                 ingested_at=plan.created_at,
+                availability_policy=DAILY_BAR_SESSION_CLOSE_15M,
             )
             if self._source_capture is not None:
                 self._source_capture.write(
@@ -333,6 +335,7 @@ class BarBackfillJob:
                     ingested_at=plan.created_at,
                     silver_files=artifacts,
                     provider_observations=self._provider_observations()[observation_start:],
+                    availability_policy=DAILY_BAR_SESSION_CLOSE_15M,
                 )
             event = self._success_event(
                 plan=plan,

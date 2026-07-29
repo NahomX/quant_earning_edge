@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import pyarrow.parquet as pq
 import pytest
 
 from quant_earning_edge.data import (
@@ -17,6 +18,7 @@ from quant_earning_edge.data import (
     SilverWriter,
 )
 from quant_earning_edge.data.clients import EquityBar, PolygonClient
+from quant_earning_edge.features import DailyBarsFeatureLoader
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -202,7 +204,7 @@ def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> 
         start_date=sessions[0],
         end_date=sessions[-1],
         batch_size=2,
-        created_at=datetime(2026, 7, 22, tzinfo=UTC),
+        created_at=datetime(2026, 7, 29, tzinfo=UTC),
     )
     BarBackfillJob(
         provider=CapturingBarsProvider(layout, sessions),
@@ -219,6 +221,20 @@ def test_backfill_emits_reproducible_polygon_source_manifest(tmp_path: Path) -> 
     )
 
     assert len(manifests) == 1
+    assert manifests[0].raw["availability_policy"] == "session_close_plus_15m"
+    contexts = DailyBarsFeatureLoader().load(
+        silver_files,
+        symbols=("AAPL", "MSFT"),
+        asof_date=sessions[-1],
+        observed_at=datetime(2026, 7, 22, 13, tzinfo=UTC),
+    )
+    assert tuple(context.symbol for context in contexts) == ("AAPL", "MSFT")
+    assert all(len(context.bars) == 2 for context in contexts)
+    assert all(
+        value == datetime(2026, 7, 29, tzinfo=UTC)
+        for path in silver_files
+        for value in pq.read_table(path).column("ingested_at").to_pylist()  # type: ignore[no-untyped-call]
+    )
     reproduced = DailyBarsSourceCapture.reproduce(
         manifests[0],
         data_lake_root=tmp_path,

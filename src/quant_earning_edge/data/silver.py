@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -42,6 +42,7 @@ DAILY_BARS_SCHEMA = pa.schema(
         pa.field("transactions", pa.int64()),
         pa.field("adjusted", pa.bool_(), nullable=False),
         pa.field("source", pa.string(), nullable=False),
+        pa.field("available_at", pa.timestamp("us", tz="UTC"), nullable=False),
         pa.field("ingested_at", pa.timestamp("us", tz="UTC"), nullable=False),
     ]
 )
@@ -149,6 +150,12 @@ STOCK_TRADES_SCHEMA = pa.schema(
 )
 
 _MARKET_TIMEZONE = ZoneInfo("America/New_York")
+DAILY_BAR_ACTUAL_INGESTION = "actual_ingestion"
+DAILY_BAR_SESSION_CLOSE_15M = "session_close_plus_15m"
+_DAILY_BAR_AVAILABILITY_POLICIES = {
+    DAILY_BAR_ACTUAL_INGESTION,
+    DAILY_BAR_SESSION_CLOSE_15M,
+}
 
 
 @dataclass(frozen=True)
@@ -201,12 +208,15 @@ class SilverWriter:
         bars: tuple[EquityBar, ...],
         *,
         ingested_at: datetime | None = None,
+        availability_policy: str = DAILY_BAR_ACTUAL_INGESTION,
     ) -> tuple[SilverArtifact, ...]:
         """Write split-adjusted bars to one immutable file per session."""
         observed_at = ingested_at or datetime.now(UTC)
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("ingested_at must be timezone-aware")
         observed_at = observed_at.astimezone(UTC)
+        if availability_policy not in _DAILY_BAR_AVAILABILITY_POLICIES:
+            raise ValueError("unsupported daily-bar availability policy")
 
         grouped: dict[date, list[EquityBar]] = defaultdict(list)
         for bar in bars:
@@ -219,6 +229,7 @@ class SilverWriter:
                 session_date=session_date,
                 bars=partition_bars,
                 ingested_at=observed_at,
+                availability_policy=availability_policy,
             )
             for session_date, partition_bars in sorted(grouped.items())
         ]
@@ -415,6 +426,7 @@ class SilverWriter:
         session_date: date,
         bars: list[EquityBar],
         ingested_at: datetime,
+        availability_policy: str,
     ) -> SilverArtifact:
         records = [
             {
@@ -430,6 +442,11 @@ class SilverWriter:
                 "transactions": bar.transactions,
                 "adjusted": bar.adjusted,
                 "source": "polygon",
+                "available_at": _daily_bar_available_at(
+                    session_date=bar.session_date,
+                    ingested_at=ingested_at,
+                    policy=availability_policy,
+                ),
                 "ingested_at": ingested_at,
             }
             for bar in sorted(bars, key=lambda item: (item.symbol, item.timestamp))
@@ -611,6 +628,23 @@ class SilverWriter:
             row_count=table.num_rows,
             schema=table.schema,
         )
+
+
+def _daily_bar_available_at(
+    *,
+    session_date: date,
+    ingested_at: datetime,
+    policy: str,
+) -> datetime:
+    if policy == DAILY_BAR_ACTUAL_INGESTION:
+        return ingested_at
+    if policy == DAILY_BAR_SESSION_CLOSE_15M:
+        return datetime.combine(
+            session_date,
+            time(hour=16, minute=15),
+            tzinfo=_MARKET_TIMEZONE,
+        ).astimezone(UTC)
+    raise ValueError("unsupported daily-bar availability policy")
 
 
 def _records_digest(records: list[dict[str, Any]]) -> str:

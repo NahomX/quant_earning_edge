@@ -201,6 +201,7 @@ def _bar(symbol: str, session_date: date, open_price: float, close: float) -> di
         "transactions": 10_000,
         "adjusted": True,
         "source": "polygon",
+        "available_at": datetime(2025, 2, 1, tzinfo=UTC),
         "ingested_at": datetime(2025, 2, 1, tzinfo=UTC),
     }
 

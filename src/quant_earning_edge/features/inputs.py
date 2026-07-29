@@ -29,6 +29,7 @@ class DailyBarsFeatureLoader:
         "close",
         "volume",
         "vwap",
+        "available_at",
         "ingested_at",
     }
 
@@ -60,7 +61,7 @@ class DailyBarsFeatureLoader:
                 if (
                     symbol not in normalized_symbols
                     or session_date > asof_date
-                    or row["ingested_at"] > cutoff
+                    or row["available_at"] > cutoff
                 ):
                     continue
                 key = (symbol, session_date)

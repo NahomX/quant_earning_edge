@@ -25,10 +25,10 @@ reproducible through `uv.lock`.
 | Finnhub bronze-to-silver earnings ingestion | Complete | `data/ingest.py`, ingestion test |
 | Provider-source earnings reconstruction | Complete | every production/CLI Finnhub ingestion emits a strict raw-to-Silver manifest; historical live-feature inputs require unique manifest coverage and byte-exact reproduction |
 | Earnings silver schema and Parquet writer | Complete | `data/silver.py`, schema/idempotency tests |
-| US-equity bars silver schema and writer | Complete | `data/silver.py`, bars ingestion tests |
-| Provider-source daily-bar reconstruction | Complete | single-symbol ingestion and resumable backfill emit strict raw-Polygon-to-Silver manifests; every captured file is byte-exactly replayable |
+| US-equity bars silver schema and writer | Complete | `data/silver.py`; truthful physical `ingested_at` is separate from explicit causal `available_at`; bars ingestion/backfill tests |
+| Provider-source daily-bar reconstruction | Complete | single-symbol ingestion and resumable backfill emit strict raw-Polygon-to-Silver manifests, including the availability policy; every captured file is byte-exactly replayable |
 | Provider-source minute-bar reconstruction | Complete | minute ingestion emits the exact interval/event-date/ingestion-time manifest and byte-exactly rebuilds Silver from retained Polygon pages |
-| Resumable historical backfill tooling | Complete | `data/backfill.py`, resume tests |
+| Resumable historical backfill tooling | Complete | `data/backfill.py`; historical bars use a declared 16:15 America/New_York session-availability contract without backdating physical ingestion; resume and historical-cutoff tests |
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
 | Explicit-session coverage auditing | Complete | coverage auditor/tests |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
@@ -168,6 +168,16 @@ assembly independently rejects any feature computed at or after target open.
 
 This proves the code-level no-lookahead contract. It does not prove five-year
 data completeness or strategy performance.
+
+Historical daily-bar backfills preserve when Polygon was actually queried in
+`ingested_at`. They separately assign `available_at` using the source
+manifest's `session_close_plus_15m` policy, currently 16:15
+America/New_York on the bar's session date. Feature and label cutoffs use
+`available_at`; revision ordering uses `ingested_at`. This makes a present-day
+backfill usable for historical reconstruction without falsely claiming it was
+physically observed in the past. It is an explicit reconstruction assumption,
+not proof of a provider's historical publication latency or vintage-adjustment
+semantics.
 
 ## Next implementation slice
 

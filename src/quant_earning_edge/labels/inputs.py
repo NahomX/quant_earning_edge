@@ -23,6 +23,7 @@ class LabelBarsLoader:
         "symbol",
         "open",
         "close",
+        "available_at",
         "ingested_at",
     }
 
@@ -57,7 +58,7 @@ class LabelBarsLoader:
                 if (
                     symbol not in normalized_symbols
                     or not start_date <= session_date <= end_date
-                    or row["ingested_at"] > cutoff
+                    or row["available_at"] > cutoff
                 ):
                     continue
                 key = (symbol, session_date)

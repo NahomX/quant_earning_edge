@@ -46,6 +46,8 @@ from quant_earning_edge.data.replay_specs import (
     replay_sources_from_files,
 )
 from quant_earning_edge.data.silver import (
+    DAILY_BAR_ACTUAL_INGESTION,
+    DAILY_BAR_SESSION_CLOSE_15M,
     DAILY_BARS_SCHEMA,
     DIVIDENDS_SCHEMA,
     EARNINGS_SCHEMA,
@@ -60,6 +62,8 @@ from quant_earning_edge.data.store import DuckDBStore, SilverDataset
 
 __all__ = [
     "DAILY_BARS_SCHEMA",
+    "DAILY_BAR_ACTUAL_INGESTION",
+    "DAILY_BAR_SESSION_CLOSE_15M",
     "DIVIDENDS_SCHEMA",
     "EARNINGS_SCHEMA",
     "MINUTE_BARS_SCHEMA",

@@ -10,7 +10,16 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from quant_earning_edge.data.clients import PolygonClient
-from quant_earning_edge.data.silver import SilverWriter
+from quant_earning_edge.data.silver import (
+    DAILY_BAR_ACTUAL_INGESTION,
+    DAILY_BAR_SESSION_CLOSE_15M,
+    SilverWriter,
+)
+
+_AVAILABILITY_POLICIES = {
+    DAILY_BAR_ACTUAL_INGESTION,
+    DAILY_BAR_SESSION_CLOSE_15M,
+}
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -40,10 +49,11 @@ class DailyBarsSourceManifest:
             "start_date",
             "end_date",
             "ingested_at",
+            "availability_policy",
             "silver_files",
             "provider_observations",
         }
-        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 1:
+        if not isinstance(raw, dict) or set(raw) != required or raw["schema_version"] != 2:
             raise ValueError("daily-bars source manifest schema mismatch")
         symbols = raw["symbols"]
         silver = raw["silver_files"]
@@ -82,6 +92,7 @@ class DailyBarsSourceManifest:
             or ingested_at.tzinfo is None
             or ingested_at.utcoffset() is None
             or ingested_at.isoformat() != raw["ingested_at"]
+            or raw["availability_policy"] not in _AVAILABILITY_POLICIES
         ):
             raise ValueError("daily-bars source manifest metadata is invalid")
         if json.dumps(raw, sort_keys=True, separators=(",", ":")).encode() != encoded:
@@ -118,6 +129,7 @@ class DailyBarsSourceCapture:
         ingested_at: datetime,
         silver_files: Sequence[SilverArtifact],
         provider_observations: Sequence[BronzeArtifact],
+        availability_policy: str = DAILY_BAR_ACTUAL_INGESTION,
     ) -> DailyBarsSourceManifest:
         normalized_symbols = tuple(sorted({item.strip().upper() for item in symbols}))
         if (
@@ -128,6 +140,7 @@ class DailyBarsSourceCapture:
             or ingested_at.utcoffset() is None
             or not silver_files
             or not provider_observations
+            or availability_policy not in _AVAILABILITY_POLICIES
         ):
             raise ValueError("daily-bars source capture metadata is invalid")
         if any(
@@ -137,11 +150,12 @@ class DailyBarsSourceCapture:
         ):
             raise ValueError("daily-bars source contains a non-Polygon observation")
         raw = {
-            "schema_version": 1,
+            "schema_version": 2,
             "symbols": list(normalized_symbols),
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "ingested_at": ingested_at.isoformat(),
+            "availability_policy": availability_policy,
             "silver_files": self._entries(item.path for item in silver_files),
             "provider_observations": self._entries(item.path for item in provider_observations),
         }
@@ -216,6 +230,7 @@ class DailyBarsSourceCapture:
         reproduced = SilverWriter(output_layout).write_daily_bars(
             tuple(sorted(bars, key=lambda item: (item.timestamp, item.symbol))),
             ingested_at=ingested_at,
+            availability_policy=manifest.raw["availability_policy"],
         )
         expected = manifest.silver_paths(data_lake_root=data_lake_root)
         if _byte_digests(item.path for item in reproduced) != _byte_digests(expected):

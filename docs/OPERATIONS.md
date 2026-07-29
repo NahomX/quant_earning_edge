@@ -860,6 +860,15 @@ passed. Every successful batch also emits a raw-Polygon-to-Silver source
 manifest, so later historical feature and label materialization rejects
 unattested backfill partitions.
 
+Backfilled daily bars retain that fixed, truthful physical observation time in
+`ingested_at`. Their separate `available_at` is derived by the manifest-bound
+`session_close_plus_15m` policy (16:15 America/New_York on each session).
+Historical feature and label cutoffs use `available_at`, while duplicate
+revision resolution uses `ingested_at`. This distinction permits a current
+download to reconstruct past daily-market inputs without backdating the
+download itself. The fixed 15-minute delay is a conservative causal contract,
+not evidence of the provider's exact historical publication time.
+
 Coverage requires an authoritative JSON `sessions` list or line-delimited
 market-calendar file:
 

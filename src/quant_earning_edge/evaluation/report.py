@@ -87,6 +87,79 @@ class PerformanceReport:
     def sha256(self) -> str:
         return hashlib.sha256(self.to_json_bytes()).hexdigest()
 
+    @classmethod
+    def load(cls, path: Path) -> PerformanceReport:
+        """Strictly reload canonical standardized performance evidence."""
+        try:
+            encoded = path.read_bytes()
+            raw = json.loads(encoded)
+            expected = {
+                "engine",
+                "input_sha256",
+                "session_count",
+                "trade_count",
+                "initial_cash",
+                "final_gross_equity",
+                "final_net_equity",
+                "gross_sharpe",
+                "net_sharpe",
+                "annualized_return",
+                "max_drawdown",
+                "hit_rate",
+                "payoff",
+                "average_gross_exposure",
+                "turnover",
+                "cost_attribution",
+                "bootstrap",
+            }
+            if not isinstance(raw, dict) or set(raw) != expected:
+                raise ValueError("performance report schema mismatch")
+            costs_raw = raw["cost_attribution"]
+            if not isinstance(costs_raw, list):
+                raise TypeError
+            costs = tuple(
+                CostAttribution(
+                    component=str(item["component"]),
+                    dollars=float(item["dollars"]),
+                    marginal_sharpe_loss=float(item["marginal_sharpe_loss"]),
+                )
+                for item in costs_raw
+                if isinstance(item, dict)
+                and set(item) == {"component", "dollars", "marginal_sharpe_loss"}
+            )
+            if len(costs) != len(costs_raw):
+                raise ValueError("invalid performance cost attribution")
+            bootstrap_raw = raw["bootstrap"]
+            bootstrap = (
+                _bootstrap_from_dict(bootstrap_raw) if isinstance(bootstrap_raw, dict) else None
+            )
+            if bootstrap_raw is not None and bootstrap is None:
+                raise ValueError("invalid performance bootstrap")
+            report = cls(
+                engine=str(raw["engine"]),
+                input_sha256=str(raw["input_sha256"]),
+                session_count=int(raw["session_count"]),
+                trade_count=int(raw["trade_count"]),
+                initial_cash=float(raw["initial_cash"]),
+                final_gross_equity=float(raw["final_gross_equity"]),
+                final_net_equity=float(raw["final_net_equity"]),
+                gross_sharpe=float(raw["gross_sharpe"]),
+                net_sharpe=float(raw["net_sharpe"]),
+                annualized_return=float(raw["annualized_return"]),
+                max_drawdown=float(raw["max_drawdown"]),
+                hit_rate=float(raw["hit_rate"]),
+                payoff=(float(raw["payoff"]) if raw["payoff"] is not None else None),
+                average_gross_exposure=float(raw["average_gross_exposure"]),
+                turnover=float(raw["turnover"]),
+                cost_attribution=costs,
+                bootstrap=bootstrap,
+            )
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid performance report: {path}") from error
+        if report.to_json_bytes() != encoded:
+            raise ValueError("performance report is not canonical")
+        return report
+
 
 class PerformanceEvaluator:
     """Compute standardized metrics from an already reconciled ledger."""
@@ -260,3 +333,29 @@ def _bootstrap(
 def _interval(values: np.ndarray, *, point: float) -> ConfidenceInterval:
     lower, upper = np.percentile(values, (2.5, 97.5))
     return ConfidenceInterval(lower=float(lower), point=point, upper=float(upper))
+
+
+def _bootstrap_from_dict(raw: dict[str, object]) -> BootstrapSummary | None:
+    if set(raw) != {"seed", "resamples", "sharpe", "annualized_return"}:
+        return None
+    sharpe = raw["sharpe"]
+    annualized = raw["annualized_return"]
+    if not isinstance(sharpe, dict) or not isinstance(annualized, dict):
+        return None
+    expected = {"lower", "point", "upper"}
+    if set(sharpe) != expected or set(annualized) != expected:
+        return None
+    return BootstrapSummary(
+        seed=int(str(raw["seed"])),
+        resamples=int(str(raw["resamples"])),
+        sharpe=ConfidenceInterval(
+            lower=float(sharpe["lower"]),
+            point=float(sharpe["point"]),
+            upper=float(sharpe["upper"]),
+        ),
+        annualized_return=ConfidenceInterval(
+            lower=float(annualized["lower"]),
+            point=float(annualized["point"]),
+            upper=float(annualized["upper"]),
+        ),
+    )

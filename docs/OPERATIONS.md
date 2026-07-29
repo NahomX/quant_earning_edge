@@ -176,6 +176,44 @@ The optional HTML output is self-contained and deterministic: it reads the
 same reconciled result as the JSON report, embeds no remote assets or current
 timestamps, and rejects a pre-existing different file.
 
+## Verify the published momentum benchmark gate
+
+The Phase 3 exit gate is not a free-form comparison. Prepare:
+
+- a locally pinned copy of the publication/source artifact;
+- a canonical reference JSON containing its SHA-256, HTTPS source URL,
+  published net Sharpe, tolerance no greater than `0.1`, and at least 252
+  required sessions;
+- a canonical baseline manifest declaring
+  `cross_sectional_momentum_60_session`, lookback `60`,
+  `historical_spy_components`, and the universe, trade-plan, and vectorbt
+  backtest-input hashes;
+- an immutable daily `BacktestSpec` JSON as the trade plan; and
+- the standardized performance report produced from that exact specification
+  by `backtest run-ledger`.
+
+Then run:
+
+```powershell
+uv run qee evaluation momentum-benchmark-gate `
+  --reference-spec .\data\benchmarks\momentum-reference.json `
+  --reference-artifact .\data\benchmarks\published-source.pdf `
+  --baseline-manifest .\data\benchmarks\momentum-baseline.json `
+  --universe-artifact .\data\benchmarks\historical-spy-components.parquet `
+  --trade-plan .\data\benchmarks\momentum-trade-plan.json `
+  --performance-report .\data\benchmarks\momentum-performance.json `
+  --output .\data\benchmarks\momentum-gate.json
+```
+
+The command rejects a changed publication, universe, or trade plan; a
+noncanonical manifest; an intraday or mismatched backtest input; fewer than the
+reference's required sessions; and a no-trade report. It reruns the supplied
+trade plan with the standardized daily vectorbt engine and requires the entire
+performance report, including bootstrap evidence, to reproduce. It then
+persists the comparison verdict and exits `1` when the absolute net-Sharpe
+difference exceeds the committed tolerance. Fixture results cannot satisfy the
+credentialed Phase 3 gate.
+
 Multi-session specs omit `entry_at`/`exit_at` and require daily marks. Earnings
 open-to-close specs provide offset-aware entry and exit timestamps on the same
 declared session, set `holding_sessions` to zero, and supply no daily marks.

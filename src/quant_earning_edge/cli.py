@@ -52,7 +52,11 @@ from quant_earning_edge.data.clients import AlpacaCalendarClient, FinnhubClient,
 from quant_earning_edge.evaluation import (
     FoldBacktestResults,
     HtmlTearsheetWriter,
+    MomentumBaselineManifest,
+    MomentumBenchmarkGateEvaluator,
+    MomentumBenchmarkReferenceSpec,
     PerformanceEvaluator,
+    PerformanceReport,
     Phase4AggregationSpec,
     Phase4GateEvaluator,
     Phase4PromotionEvidence,
@@ -627,6 +631,89 @@ def run_backtest_ledger(
             ),
         }
     )
+
+
+@evaluation_app.command("momentum-benchmark-gate")
+def evaluate_momentum_benchmark_gate(  # noqa: PLR0917 - explicit evidence boundary.
+    reference_spec: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical published momentum benchmark specification.",
+        ),
+    ],
+    reference_artifact: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Pinned downloaded publication artifact.",
+        ),
+    ],
+    baseline_manifest: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Canonical momentum strategy/universe/backtest linkage.",
+        ),
+    ],
+    universe_artifact: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Pinned historical SPY-component universe artifact.",
+        ),
+    ],
+    trade_plan: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Immutable momentum BacktestSpec consumed by the backtest.",
+        ),
+    ],
+    performance_report: Annotated[
+        Path,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Standardized vectorbt momentum performance JSON.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(dir_okay=False, help="Immutable Phase 3 benchmark verdict."),
+    ],
+) -> None:
+    """Verify the published +/-0.1 Sharpe reproduction gate."""
+    try:
+        gate = MomentumBenchmarkGateEvaluator().evaluate(
+            reference_spec=MomentumBenchmarkReferenceSpec.load(reference_spec),
+            reference_artifact=reference_artifact,
+            universe_artifact=universe_artifact,
+            trade_plan=trade_plan,
+            baseline_manifest=MomentumBaselineManifest.load(baseline_manifest),
+            performance_report=PerformanceReport.load(performance_report),
+        )
+        gate.write(output)
+    except (OSError, ValidationError, ValueError, RuntimeError) as error:
+        raise typer.BadParameter(str(error), param_hint="momentum benchmark inputs") from error
+    _echo_json(
+        {
+            "output": str(output.resolve()),
+            "sha256": gate.sha256,
+            "actual_net_sharpe": gate.actual_net_sharpe,
+            "published_net_sharpe": gate.published_net_sharpe,
+            "absolute_difference": gate.absolute_difference,
+            "tolerance": gate.tolerance,
+            "passes": gate.passes,
+        }
+    )
+    if not gate.passes:
+        raise typer.Exit(code=1)
 
 
 @backtest_app.command("materialize-replay-specs")

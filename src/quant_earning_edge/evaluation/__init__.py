@@ -5,6 +5,12 @@ from quant_earning_edge.evaluation.folds import (
     WalkForwardEvaluation,
     WalkForwardEvaluator,
 )
+from quant_earning_edge.evaluation.momentum_gate import (
+    MomentumBaselineManifest,
+    MomentumBenchmarkGateEvaluator,
+    MomentumBenchmarkGateReport,
+    MomentumBenchmarkReferenceSpec,
+)
 from quant_earning_edge.evaluation.phase6_controls import (
     Phase6ControlArtifacts,
     Phase6ControlBuilder,
@@ -56,6 +62,10 @@ __all__ = [
     "FoldBacktestResults",
     "FoldEvaluation",
     "HtmlTearsheetWriter",
+    "MomentumBaselineManifest",
+    "MomentumBenchmarkGateEvaluator",
+    "MomentumBenchmarkGateReport",
+    "MomentumBenchmarkReferenceSpec",
     "PerformanceEvaluator",
     "PerformanceReport",
     "Phase4AggregationSpec",

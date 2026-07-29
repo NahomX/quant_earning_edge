@@ -1027,8 +1027,8 @@ uv run qee workflow worker `
 
 For the proof, copy
 `configs/workflow/phase6_loop.example.json`, replace the content-addressed
-calendar/model paths and proof dates, then attach it to the same persistent
-worker:
+calendar, Phase 4 gate, and model paths and proof dates, then attach it to the
+same persistent worker:
 
 ```powershell
 uv run qee workflow worker `
@@ -1048,6 +1048,12 @@ outside the inbox for `admit-proof-start`; after admission, later sessions are
 queued automatically. Missing inputs produce a visible `waiting_for_inputs`
 heartbeat and no synthetic substitute. A valid zero-candidate earnings day is
 queued without a fake feature artifact.
+
+The loop refuses to queue any session unless `phase4_gate_file` independently
+reloads as a passing pre-paper report, its SHA-256 exactly matches the digest
+embedded in the production-model evidence, and the model training cutoff is no
+later than proof start. The gate path is mandatory; a model's self-declared
+digest alone is not deployment authority.
 
 When `universe_config` and `halt_snapshot_directory` are present in the loop
 spec, the same cycle also runs `workflow prepare-session-inputs`. The halt

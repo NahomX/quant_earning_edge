@@ -65,7 +65,7 @@ class WorkflowLoopSpec(BaseModel):
     strategy_config: Path
     model_evidence: Path
     model_file: Path
-    phase4_gate_file: Path | None = None
+    phase4_gate_file: Path
     proof_start: date
     proof_end: date
     initial_cash: float = Field(gt=0)
@@ -163,14 +163,15 @@ class NextWorkflowQueuer:
             evidence_path=deployment.model_evidence,
             model_path=deployment.model_file,
         )
-        if deployment.phase4_gate_file is not None:
-            from quant_earning_edge.evaluation.strategy_gate import (  # noqa: PLC0415
-                Phase4PromotionEvidence,
-            )
+        from quant_earning_edge.evaluation.strategy_gate import (  # noqa: PLC0415
+            Phase4PromotionEvidence,
+        )
 
-            promotion = Phase4PromotionEvidence.load(deployment.phase4_gate_file)
-            if promotion.report_sha256 != model.phase4_gate_sha256:
-                raise ValueError("workflow loop Phase 4 gate differs from production model")
+        promotion = Phase4PromotionEvidence.load(deployment.phase4_gate_file)
+        if promotion.report_sha256 != model.phase4_gate_sha256:
+            raise ValueError("workflow loop Phase 4 gate differs from production model")
+        if model.training_cutoff > deployment.proof_start:
+            raise ValueError("workflow loop model training cutoff follows proof start")
         if model.feature_names != strategy.features:
             raise ValueError("workflow loop model features differ from strategy config")
         now = self._aware_now()

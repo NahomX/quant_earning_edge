@@ -13,6 +13,11 @@ at `/opt/quant_earning_edge`, secrets at
 `/var/lib/quant_earning_edge/workflow-inbox`. The service account needs write
 access only to `/var/lib/quant_earning_edge`.
 
+The loop spec must name the canonical passing Phase 4 gate report as well as
+the linked production-model evidence and booster. The worker revalidates the
+report and requires its SHA-256 to match the model before queuing any proof
+session.
+
 On Windows, run:
 
 ```powershell

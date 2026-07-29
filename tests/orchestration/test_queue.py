@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -9,12 +10,14 @@ from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from quant_earning_edge.data import LakehouseLayout, SessionFileStore
 from quant_earning_edge.data.clients import MarketSession
 from quant_earning_edge.orchestration import (
     NextWorkflowQueuer,
     QeeCommandResult,
+    WorkflowLoopSpec,
     WorkflowQueueStatus,
     WorkflowRunSpec,
     WorkflowStage,
@@ -75,6 +78,24 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
         row.update({name: sign for name in strategy.features})
         rows.append(row)
     pq.write_table(pa.Table.from_pylist(rows), training)  # type: ignore[no-untyped-call]
+    phase4_gate = tmp_path / "phase4-gate.json"
+    phase4_gate.write_bytes(
+        json.dumps(
+            {
+                "overall": {
+                    "net_sharpe": 1.2,
+                    "max_drawdown": 0.1,
+                    "bootstrap": {"sharpe": {"lower": 0.6}},
+                },
+                "walk_forward": {"passes_positive_fold_gate": True},
+                "passes_phase4_research_gate": True,
+                "passes_pre_paper_backtest_gate": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    phase4_sha256 = hashlib.sha256(phase4_gate.read_bytes()).hexdigest()
     model = ProductionModelTrainer(
         feature_names=strategy.features,
         threshold=strategy.label.threshold,
@@ -83,7 +104,7 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
     ).run(
         dataset_files=(training,),
         training_cutoff=date(2025, 3, 3),
-        phase4_gate_sha256="f" * 64,
+        phase4_gate_sha256=phase4_sha256,
     )
     model_file, evidence = ProductionModelTrainer.write(model, tmp_path / "models")
     loop_spec = tmp_path / "loop.json"
@@ -95,6 +116,7 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "strategy_config": str(_strategy_path()),
                 "model_evidence": str(evidence),
                 "model_file": str(model_file),
+                "phase4_gate_file": str(phase4_gate),
                 "proof_start": "2026-07-28",
                 "proof_end": "2026-07-28",
                 "initial_cash": 100000,
@@ -108,6 +130,46 @@ def _deployment(tmp_path: Path) -> tuple[Path, Path, Path]:
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     return lake, loop_spec, inbox
+
+
+def test_loop_spec_requires_phase4_gate_artifact(tmp_path: Path) -> None:
+    _, loop_spec, _ = _deployment(tmp_path)
+    raw = json.loads(loop_spec.read_bytes())
+    del raw["phase4_gate_file"]
+    loop_spec.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="phase4_gate_file"):
+        WorkflowLoopSpec.load(loop_spec)
+
+
+def test_queue_rejects_phase4_gate_that_differs_from_model(tmp_path: Path) -> None:
+    lake, loop_spec, inbox = _deployment(tmp_path)
+    raw = json.loads(loop_spec.read_bytes())
+    gate = Path(raw["phase4_gate_file"])
+    payload = json.loads(gate.read_bytes())
+    payload["overall"]["net_sharpe"] = 1.3
+    gate.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(ValueError, match="Phase 4 gate differs"):
+        NextWorkflowQueuer(
+            data_lake_root=lake,
+            clock=lambda: datetime(2026, 7, 28, 1, 30, tzinfo=UTC),
+        ).run_once(loop_spec=loop_spec, inbox=inbox)
+
+
+def test_queue_rejects_model_trained_after_proof_start(tmp_path: Path) -> None:
+    lake, loop_spec, inbox = _deployment(tmp_path)
+    raw = json.loads(loop_spec.read_bytes())
+    evidence = Path(raw["model_evidence"])
+    payload = json.loads(evidence.read_bytes())
+    payload["training_cutoff"] = "2026-07-29"
+    evidence.write_bytes(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
+
+    with pytest.raises(ValueError, match="training cutoff follows proof start"):
+        NextWorkflowQueuer(
+            data_lake_root=lake,
+            clock=lambda: datetime(2026, 7, 28, 1, 30, tzinfo=UTC),
+        ).run_once(loop_spec=loop_spec, inbox=inbox)
 
 
 def _executor(call_log: list[tuple[str, ...]]) -> Callable[..., QeeCommandResult]:

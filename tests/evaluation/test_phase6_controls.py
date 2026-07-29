@@ -43,6 +43,8 @@ from quant_earning_edge.monitoring import (
     CircuitBreakerEvaluator,
     CircuitBreakerObservation,
     CircuitBreakerObservationSpec,
+    ProviderFreshnessEvidence,
+    ReconciliationAgeEvidence,
     encode_circuit_breaker_controls,
 )
 from quant_earning_edge.orchestration import (
@@ -60,6 +62,41 @@ from quant_earning_edge.signals import (
     load_strategy_config,
     strategy_file_sha256,
 )
+
+
+def _write_breaker_auxiliary_evidence(
+    daily: Path,
+    *,
+    observation: CircuitBreakerObservation,
+) -> tuple[Path, Path]:
+    assert observation.polygon_data_observed_at is not None
+    assert observation.alpaca_data_observed_at is not None
+    freshness = ProviderFreshnessEvidence(
+        schema_version=1,
+        evaluated_at=observation.evaluated_at,
+        polygon_symbol="SPY",
+        polygon_data_observed_at=observation.polygon_data_observed_at,
+        polygon_payload_sha256="a" * 64,
+        polygon_request_id=None,
+        alpaca_data_observed_at=observation.alpaca_data_observed_at,
+        alpaca_payload_sha256="b" * 64,
+        alpaca_request_id=None,
+    )
+    freshness_path = daily / f"provider-freshness-{freshness.sha256}.json"
+    freshness.write(freshness_path)
+    age = ReconciliationAgeEvidence(
+        schema_version=1,
+        control_date=observation.session_date,
+        evaluated_at=observation.evaluated_at,
+        calendar_sha256="c" * 64,
+        input_report_sha256=(),
+        latest_report_sha256=(),
+        unresolved_session_dates=(),
+        reconciliation_break_age_sessions=(observation.reconciliation_break_age_sessions),
+    )
+    age_path = daily / f"reconciliation-age-{age.sha256}.json"
+    age.write(age_path)
+    return freshness_path, age_path
 
 
 def _no_trade_replay_sources(
@@ -139,6 +176,10 @@ def _no_trade_replay_sources(
     breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
     breaker_spec_path = daily / "breaker-controls.json"
     breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
+    freshness_path, age_path = _write_breaker_auxiliary_evidence(
+        daily,
+        observation=breaker_observation,
+    )
     breaker_path = daily / "breaker-decision.json"
     breaker.write(breaker_path)
     submission_path = daily / "paper-batch-submission.json"
@@ -190,6 +231,8 @@ def _no_trade_replay_sources(
         "frozen": frozen_path,
         "breaker": breaker_path,
         "breaker_spec": breaker_spec_path,
+        "freshness": freshness_path,
+        "age": age_path,
         "submission": submission_path,
         "manifest": manifest_path,
         "index": index_path,
@@ -215,7 +258,12 @@ def _complete_source_workflow(
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (sources["frozen"],)
         if stage is WorkflowStage.EVALUATE_BREAKERS:
-            return (sources["breaker_spec"], sources["breaker"])
+            return (
+                sources["freshness"],
+                sources["age"],
+                sources["breaker_spec"],
+                sources["breaker"],
+            )
         if stage is WorkflowStage.SUBMIT_PAPER_ORDERS:
             return (sources["submission"],)
         if stage is WorkflowStage.REPLAY_ORDERS:
@@ -246,6 +294,7 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     capture_broker_observations: bool = True,
     capture_submission_observations: bool = True,
     capture_breaker_spec: bool = True,
+    capture_breaker_auxiliary: bool = True,
 ) -> Path:
     strategy_path = Path("configs/strategies/earnings_v1.yaml").resolve()
     strategy = load_strategy_config(strategy_path)
@@ -308,6 +357,10 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
     breaker = CircuitBreakerEvaluator().evaluate((breaker_observation,))
     breaker_spec_path = daily / "breaker-controls.json"
     breaker_spec_path.write_bytes(encode_circuit_breaker_controls(breaker_spec))
+    freshness_path, age_path = _write_breaker_auxiliary_evidence(
+        daily,
+        observation=breaker_observation,
+    )
     breaker_path = daily / "breaker-decision.json"
     breaker.write(breaker_path)
     quote_artifact = SilverWriter(LakehouseLayout(tmp_path / "market-lake")).write_stock_quotes(
@@ -451,7 +504,11 @@ def _trade_source_workflow(  # noqa: PLR0915 - complete source-bound trade fixtu
         if stage is WorkflowStage.GENERATE_ORDER_PLAN:
             return (frozen_path,)
         if stage is WorkflowStage.EVALUATE_BREAKERS:
-            return (breaker_spec_path, breaker_path) if capture_breaker_spec else (breaker_path,)
+            return (
+                *((freshness_path, age_path) if capture_breaker_auxiliary else ()),
+                *((breaker_spec_path,) if capture_breaker_spec else ()),
+                breaker_path,
+            )
         if stage is WorkflowStage.SUBMIT_PAPER_ORDERS:
             return (
                 (paper_submission_path, *submit_observation_paths)
@@ -787,6 +844,25 @@ def test_daily_report_verifier_requires_reproducible_breaker_decision(
     )
 
     with pytest.raises(ValueError, match="does not reproduce from one captured control"):
+        Phase6DailyReportVerifier().verify(
+            report_path,
+            workflow_store=store,
+        )
+
+
+def test_daily_report_verifier_requires_breaker_safety_evidence(
+    tmp_path: Path,
+) -> None:
+    session_date = date(2026, 7, 28)
+    store = DailyWorkflowStore(tmp_path / "lake")
+    report_path = _trade_source_workflow(
+        store=store,
+        tmp_path=tmp_path,
+        session_date=session_date,
+        capture_breaker_auxiliary=False,
+    )
+
+    with pytest.raises(ValueError, match="exactly one provider-freshness-"):
         Phase6DailyReportVerifier().verify(
             report_path,
             workflow_store=store,

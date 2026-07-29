@@ -81,7 +81,7 @@ reproducible through `uv.lock`.
 | Replay execution-cost attribution | Complete | arrival gross -> spread -> impact -> residual -> commission -> net |
 | Alpaca paper-only order adapter | Complete | canonical paper-host lock, idempotent client IDs, strict response validation |
 | Immutable paper submission/reconciliation evidence | Complete | frozen requests and breaker-bound submission plus reconciliation independently checked against workflow-captured raw Alpaca observations; paper divergence remains non-gating |
-| Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts; submission-time decision independently reproduced from captured controls |
+| Operational circuit breakers | Complete | loss, three-day fill, provider freshness, T+1 reconciliation auto-halts; decision reproduced from controls whose current safety observation is bound to captured freshness and reconciliation-age evidence |
 | Fail-closed paper submission boundary | Complete | fresh non-halted breaker decision required before any broker request |
 | Restart-safe daily workflow state machine | Complete | ordered stages, leases, retries, hash-chained revisions, artifact verification |
 | In-process workflow advancement loop | Complete | advances until complete/leased/failed and durably records every transition |

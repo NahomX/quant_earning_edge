@@ -285,9 +285,16 @@ class Phase6DailyReportVerifier:
         from quant_earning_edge.monitoring.control_inputs import (  # noqa: PLC0415
             encode_circuit_breaker_controls,
         )
+        from quant_earning_edge.monitoring.freshness import (  # noqa: PLC0415
+            ProviderFreshnessEvidence,
+        )
+        from quant_earning_edge.monitoring.reconciliation_age import (  # noqa: PLC0415
+            ReconciliationAgeEvidence,
+        )
 
         breaker = CircuitBreakerDecision.load(breaker_path)
         reproduced_paths = []
+        reproduced_specs = []
         for stage in state.stages:
             for artifact in stage.output_artifacts:
                 candidate = Path(artifact.path).resolve()
@@ -305,11 +312,49 @@ class Phase6DailyReportVerifier:
                     continue
                 if reproduced.canonical_bytes == breaker.canonical_bytes:
                     reproduced_paths.append(candidate)
+                    reproduced_specs.append(spec)
         if len(reproduced_paths) != 1:
             raise ValueError(
                 "breaker decision does not reproduce from one captured control specification"
             )
+        freshness_path = Phase6DailyReportVerifier._unique_prefixed_artifact(
+            state,
+            "provider-freshness-",
+        )
+        age_path = Phase6DailyReportVerifier._unique_prefixed_artifact(
+            state,
+            "reconciliation-age-",
+        )
+        freshness = ProviderFreshnessEvidence.load(freshness_path)
+        age = ReconciliationAgeEvidence.load(age_path)
+        current = reproduced_specs[0].observations[-1]
+        if (
+            current.session_date != age.control_date
+            or current.evaluated_at != freshness.evaluated_at
+            or current.evaluated_at != age.evaluated_at
+            or current.polygon_data_observed_at != freshness.polygon_data_observed_at
+            or current.alpaca_data_observed_at != freshness.alpaca_data_observed_at
+            or current.reconciliation_break_age_sessions != age.reconciliation_break_age_sessions
+        ):
+            raise ValueError(
+                "breaker controls differ from captured freshness or reconciliation age"
+            )
         return breaker
+
+    @staticmethod
+    def _unique_prefixed_artifact(
+        state: DailyWorkflowState,
+        prefix: str,
+    ) -> Path:
+        paths = tuple(
+            Path(artifact.path).resolve()
+            for stage in state.stages
+            for artifact in stage.output_artifacts
+            if Path(artifact.path).name.startswith(prefix) and Path(artifact.path).suffix == ".json"
+        )
+        if len(paths) != 1:
+            raise ValueError(f"workflow must capture exactly one {prefix} artifact")
+        return paths[0]
 
     @staticmethod
     def _verify_paper_reconciliation(

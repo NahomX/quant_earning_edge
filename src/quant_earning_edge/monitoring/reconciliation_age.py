@@ -5,11 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from datetime import date, datetime
     from pathlib import Path
 
     from quant_earning_edge.data.calendar import SessionFile
@@ -70,6 +70,35 @@ class ReconciliationAgeEvidence:
         except FileExistsError:
             if output.read_bytes() != encoded:
                 raise RuntimeError(f"reconciliation-age collision at {output}") from None
+
+    @classmethod
+    def load(cls, path: Path) -> ReconciliationAgeEvidence:
+        """Reload strict canonical reconciliation-age evidence."""
+        try:
+            raw = json.loads(path.read_bytes())
+            if not isinstance(raw, dict):
+                raise ValueError("reconciliation-age payload must be an object")
+            evidence = cls(
+                schema_version=int(raw["schema_version"]),
+                control_date=date.fromisoformat(str(raw["control_date"])),
+                evaluated_at=datetime.fromisoformat(str(raw["evaluated_at"])),
+                calendar_sha256=str(raw["calendar_sha256"]),
+                input_report_sha256=tuple(str(item) for item in raw["input_report_sha256"]),
+                latest_report_sha256=tuple(str(item) for item in raw["latest_report_sha256"]),
+                unresolved_session_dates=tuple(
+                    date.fromisoformat(str(item)) for item in raw["unresolved_session_dates"]
+                ),
+                reconciliation_break_age_sessions=(
+                    int(raw["reconciliation_break_age_sessions"])
+                    if raw["reconciliation_break_age_sessions"] is not None
+                    else None
+                ),
+            )
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid reconciliation-age evidence: {path}") from error
+        if json.loads(evidence.canonical_bytes) != raw:
+            raise ValueError("reconciliation-age evidence is not canonical")
+        return evidence
 
 
 class ReconciliationAgeEvaluator:

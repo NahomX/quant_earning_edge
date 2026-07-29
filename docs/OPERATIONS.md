@@ -955,7 +955,9 @@ equal the frozen plan, the batch breaker hash to equal the captured non-halted
 decision, and every stored broker order to reproduce from its raw response. The
 allow decision is not trusted as a summary: its strict canonical control
 specification must also be captured, and rerunning the breaker evaluator must
-reproduce the decision bytes exactly.
+reproduce the decision bytes exactly. The current control observation must in
+turn equal the captured provider-native freshness timestamps and
+reconciliation-age result, including their shared evaluation time.
 
 After the close, construct a reconciliation spec with the replay evidence paths
 and Alpaca order resources, then run:

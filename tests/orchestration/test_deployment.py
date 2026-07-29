@@ -11,6 +11,7 @@ def test_systemd_worker_is_persistent_non_root_and_filesystem_constrained() -> N
 
     assert "User=qee" in service
     assert "workflow worker" in service
+    assert "--loop-spec /etc/quant_earning_edge/phase6-loop.json" in service
     assert "Restart=always" in service
     assert "NoNewPrivileges=true" in service
     assert "ProtectSystem=strict" in service
@@ -23,6 +24,8 @@ def test_windows_worker_uses_project_venv_and_no_embedded_secrets() -> None:
 
     assert ".venv\\Scripts\\qee.exe" in script
     assert "workflow worker" in script
+    assert "[string]$LoopSpec" in script
+    assert "--loop-spec $ResolvedLoopSpec" in script
     assert "--env-file" in script
     assert "APCA_API_SECRET_KEY" not in script
     assert "POLYGON_API_KEY=" not in script

@@ -9,6 +9,7 @@
   "lease_seconds": 900,
   "model_evidence": "../../data/models/earnings-v1-production/production-<hash>.json",
   "model_file": "../../data/models/earnings-v1-production/production-<hash>.txt",
+  "phase4_gate_file": "../../data/evaluation/phase4-gate-<hash>.json",
   "proof_end": "2026-12-02",
   "proof_start": "2026-07-30",
   "schema_version": 1,

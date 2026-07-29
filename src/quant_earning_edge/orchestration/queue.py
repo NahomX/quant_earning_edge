@@ -65,6 +65,7 @@ class WorkflowLoopSpec(BaseModel):
     strategy_config: Path
     model_evidence: Path
     model_file: Path
+    phase4_gate_file: Path | None = None
     proof_start: date
     proof_end: date
     initial_cash: float = Field(gt=0)
@@ -104,6 +105,7 @@ class WorkflowLoopSpec(BaseModel):
             "strategy_config",
             "model_evidence",
             "model_file",
+            "phase4_gate_file",
             "artifact_root",
             "staging_directory",
             "universe_config",
@@ -130,7 +132,7 @@ class NextWorkflowQueuer:
         self._clock = clock
         self._executor = executor
 
-    def run_once(  # noqa: PLR0911,PLR0912 - distinct fail-closed queue boundaries.
+    def run_once(  # noqa: PLR0911,PLR0912,PLR0915 - fail-closed queue boundaries.
         self,
         *,
         loop_spec: Path,
@@ -161,6 +163,14 @@ class NextWorkflowQueuer:
             evidence_path=deployment.model_evidence,
             model_path=deployment.model_file,
         )
+        if deployment.phase4_gate_file is not None:
+            from quant_earning_edge.evaluation.strategy_gate import (  # noqa: PLC0415
+                Phase4PromotionEvidence,
+            )
+
+            promotion = Phase4PromotionEvidence.load(deployment.phase4_gate_file)
+            if promotion.report_sha256 != model.phase4_gate_sha256:
+                raise ValueError("workflow loop Phase 4 gate differs from production model")
         if model.feature_names != strategy.features:
             raise ValueError("workflow loop model features differ from strategy config")
         now = self._aware_now()

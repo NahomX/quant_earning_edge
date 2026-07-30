@@ -82,3 +82,33 @@ def test_calendar_source_manifest_rejects_changed_provider_payload(
             data_lake_root=tmp_path / "lake",
             output_layout=LakehouseLayout(tmp_path / "reproduced"),
         )
+
+
+def test_calendar_discovery_rejects_competing_source_manifests(tmp_path: Path) -> None:
+    first_manifest, session_path = _source_fixture(tmp_path)
+    layout = LakehouseLayout(tmp_path / "lake")
+    raw = [
+        {"date": "2026-07-27", "open": "09:30", "close": "16:00"},
+        {"date": "2026-07-28", "open": "09:30", "close": "16:00"},
+    ]
+    competing_observation = BronzeWriter(layout).write_json(
+        raw,
+        source="alpaca",
+        dataset="market-calendar",
+        event_date=START_DATE,
+        received_at=CAPTURED_AT.replace(hour=13),
+    )
+    session_file = SessionFileStore.load(session_path)
+    competing_manifest = CalendarSourceCapture(layout).write(
+        start_date=START_DATE,
+        end_date=END_DATE,
+        session_file=session_file,
+        provider_observations=(competing_observation,),
+    )
+
+    assert competing_manifest.path != first_manifest.path
+    with pytest.raises(ValueError, match="unique retained Alpaca source lineage"):
+        CalendarSourceCapture.find_for_session(
+            session_path,
+            data_lake_root=tmp_path / "lake",
+        )

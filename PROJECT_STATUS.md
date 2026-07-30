@@ -33,7 +33,7 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 
 ## Verified now
 
-- 418 automated tests pass; Ruff and strict mypy pass across all 204 source
+- 419 automated tests pass; Ruff and strict mypy pass across all 204 source
   and test modules under the same commands used by CI.
 - Ruff formatting and lint pass.
 - Mypy strict checking passes across 109 source files.
@@ -76,6 +76,9 @@ Phase 0 scaffold until the draft pull request is reviewed and merged.
 - Manual universe/candidate operations now emit or require the same complete
   schema-v5 universe/event/calendar provider lineage as the unattended daily
   builder, so a manual schema-v2 candidate cannot enter historical features.
+- Automatic forward-label and unattended-input calendar discovery requires
+  exactly one retained Alpaca source manifest; competing provenance fails
+  closed instead of being resolved by filesystem order.
 - Every wide training dataset requires those unique feature and label source
   manifests, deeply replays them, and then byte-compares the reconstructed
   wide Parquet before tuning can begin.

@@ -151,7 +151,7 @@ class CalendarSourceCapture:
         *,
         data_lake_root: Path,
     ) -> CalendarSourceManifest:
-        """Select retained valid provenance for an exact session file."""
+        """Select exactly one retained provenance chain for a session file."""
         root = data_lake_root.resolve()
         source_root = root / "manifests" / "market-calendar" / "sources"
         matches = []
@@ -160,8 +160,8 @@ class CalendarSourceCapture:
             if manifest.session_path(data_lake_root=root) == session_file.resolve():
                 manifest.provider_paths(data_lake_root=root)
                 matches.append(manifest)
-        if not matches:
-            raise ValueError("session file lacks retained Alpaca source lineage")
+        if len(matches) != 1:
+            raise ValueError("session file lacks unique retained Alpaca source lineage")
         return matches[0]
 
     @staticmethod

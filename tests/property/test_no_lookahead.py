@@ -1,33 +1,123 @@
-"""Point-in-time correctness test.
-
-Every registered feature must produce the same value when given history clipped
-at T as it does when given a longer history clipped at T. If adding future data
-to the input changes the output, the feature is reading the future.
-
-This test is parametrized over ``FEATURE_REGISTRY``; until features are
-registered (Phase 2), it runs vacuously. Adding a feature without making it
-pass this test is a CI-blocking failure.
-"""
+"""Property proof that every registered feature respects its as-of boundary."""
 
 from __future__ import annotations
 
-import pytest
+import math
+from datetime import UTC, date, datetime, timedelta
 
-from quant_earning_edge.features import FEATURE_REGISTRY, FeatureSpec
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from quant_earning_edge.features import (
+    FEATURE_REGISTRY,
+    EarningsObservation,
+    FeatureContext,
+    FeatureSpec,
+    PremarketObservation,
+    PriceBar,
+)
+
+SPECS = FEATURE_REGISTRY.values()
 
 
 @pytest.mark.property
-@pytest.mark.parametrize(
-    "spec",
-    list(FEATURE_REGISTRY.values()) or [None],
-    ids=lambda s: s.name if s is not None else "no-features-registered",
+@pytest.mark.parametrize("spec", SPECS, ids=lambda spec: spec.name)
+@settings(max_examples=30, deadline=None)
+@given(
+    start_price=st.floats(min_value=5.0, max_value=500.0, allow_nan=False),
+    returns=st.lists(
+        st.floats(
+            min_value=-0.08,
+            max_value=0.08,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+        min_size=270,
+        max_size=270,
+    ),
 )
-def test_feature_is_point_in_time(spec: FeatureSpec | None) -> None:
-    """Feature value at T must not depend on data after T.
+def test_feature_is_point_in_time(
+    spec: FeatureSpec,
+    start_price: float,
+    returns: list[float],
+) -> None:
+    """Appending observations after T cannot alter the exact value at T."""
+    bars: list[PriceBar] = []
+    price = start_price
+    first_date = date(2025, 1, 1)
+    for index, daily_return in enumerate(returns):
+        price *= 1.0 + daily_return
+        bars.append(
+            PriceBar(
+                session_date=first_date + timedelta(days=index),
+                close=price,
+                volume=1_000_000.0 + index,
+                vwap=price * (1.0 + 0.001 * math.sin(index)),
+            )
+        )
+    cutoff_index = 255
+    asof_date = bars[cutoff_index].session_date
+    target_date = asof_date + timedelta(days=1)
+    observed_at = datetime.combine(
+        target_date,
+        datetime.min.time(),
+        tzinfo=UTC,
+    ) + timedelta(hours=13, minutes=25)
+    known_premarket = (
+        PremarketObservation(
+            trade_date=target_date,
+            timestamp=observed_at - timedelta(minutes=5),
+            close=bars[cutoff_index].close * 1.01,
+        ),
+    )
+    known_earnings = (
+        EarningsObservation(
+            event_date=target_date - timedelta(days=90),
+            effective_trade_date=target_date - timedelta(days=90),
+            timing="amc",
+            eps_actual=1.2,
+            eps_estimate=1.0,
+        ),
+        EarningsObservation(
+            event_date=target_date,
+            effective_trade_date=target_date,
+            timing="bmo",
+        ),
+    )
+    truncated = FeatureContext(
+        symbol="AAPL",
+        asof_date=asof_date,
+        bars=tuple(bars[: cutoff_index + 1]),
+        target_date=target_date,
+        observed_at=observed_at,
+        earnings=known_earnings,
+        premarket=known_premarket,
+    )
+    with_future = FeatureContext(
+        symbol="AAPL",
+        asof_date=asof_date,
+        bars=tuple(bars),
+        target_date=target_date,
+        observed_at=observed_at,
+        earnings=(
+            *known_earnings,
+            EarningsObservation(
+                event_date=target_date + timedelta(days=30),
+                effective_trade_date=target_date + timedelta(days=30),
+                timing="bmo",
+                eps_actual=9.0,
+                eps_estimate=1.0,
+            ),
+        ),
+        premarket=(
+            *known_premarket,
+            PremarketObservation(
+                trade_date=target_date,
+                timestamp=observed_at + timedelta(minutes=1),
+                close=bars[cutoff_index].close * 5,
+            ),
+        ),
+    )
 
-    Phase 2 fills this in: synthesize a history H, compute ``f(ticker, T, H[:T])``
-    vs ``f(ticker, T, H[:T+lookahead])``, assert exact equality.
-    """
-    if spec is None:
-        pytest.skip("No features registered yet — scaffold runs vacuously.")
-    pytest.skip(f"Feature implementations land in Phase 2; scaffold for {spec.name}.")
+    assert spec.evaluate(truncated) == spec.evaluate(with_future)

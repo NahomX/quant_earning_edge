@@ -1,0 +1,789 @@
+"""Aggregate immutable order replays into one reconciled Phase 6 session."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from dataclasses import asdict, dataclass
+from datetime import date  # noqa: TC003 - Pydantic resolves runtime annotations.
+from pathlib import Path  # noqa: TC003 - Pydantic resolves runtime annotations.
+from typing import TYPE_CHECKING, Literal
+from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from quant_earning_edge.backtest import IntendedOrder, NbboReplayEvidence
+
+_MARKET_TIMEZONE = ZoneInfo("America/New_York")
+PositionSide = Literal["long", "short"]
+
+
+@dataclass(frozen=True)
+class ReplayRoundTrip:
+    """Pair one entry and exit order into a same-session position lifecycle."""
+
+    trade_id: str
+    entry_order_id: str
+    exit_order_id: str
+    side: PositionSide
+
+    def __post_init__(self) -> None:
+        identifiers = tuple(
+            value.strip() for value in (self.trade_id, self.entry_order_id, self.exit_order_id)
+        )
+        if any(not value for value in identifiers):
+            raise ValueError("round-trip identifiers must not be empty")
+        if identifiers[1] == identifiers[2]:
+            raise ValueError("entry and exit order ids must differ")
+        object.__setattr__(self, "trade_id", identifiers[0])
+        object.__setattr__(self, "entry_order_id", identifiers[1])
+        object.__setattr__(self, "exit_order_id", identifiers[2])
+
+
+@dataclass(frozen=True)
+class ReplayRoundTripResult:
+    """Execution and P&L reconciliation for one position."""
+
+    trade_id: str
+    symbol: str
+    side: PositionSide
+    intended_quantity: int
+    entry_filled_quantity: int
+    exit_filled_quantity: int
+    matched_quantity: int
+    unmatched_quantity: int
+    entry_fill_price: float | None
+    exit_fill_price: float | None
+    arrival_gross_pnl: float
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float
+    execution_residual_cost: float
+    gross_pnl: float
+    commission: float
+    net_pnl_on_matched_quantity: float
+    reconciled: bool
+
+
+@dataclass(frozen=True)
+class ReplaySessionReport:
+    """Canonical daily execution proof input."""
+
+    schema_version: int
+    session_date: date
+    initial_cash: float
+    evidence_sha256: tuple[str, ...]
+    intended_order_count: int
+    fully_filled_order_count: int
+    fully_filled_order_rate: float | None
+    intended_share_count: int
+    filled_share_count: int
+    share_fill_rate: float | None
+    realized_adverse_slippage_bps: tuple[float, ...]
+    predicted_adverse_slippage_bps: tuple[float, ...]
+    realized_adverse_slippage_bps_p10: float | None
+    realized_adverse_slippage_bps_p50: float | None
+    realized_adverse_slippage_bps_p90: float | None
+    predicted_adverse_slippage_bps_p90: float | None
+    p90_realized_to_predicted_ratio: float | None
+    opening_auction_filled_share_count: int
+    reconciliation_break_count: int
+    arrival_gross_pnl: float | None
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float
+    execution_residual_cost: float
+    gross_pnl: float | None
+    commission: float
+    net_pnl: float | None
+    net_return: float | None
+    round_trips: tuple[ReplayRoundTripResult, ...]
+
+    def __post_init__(self) -> None:
+        _validate_session_counts(self)
+        _validate_session_reconciliation(self)
+        _validate_session_metrics(self)
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            asdict(self),
+            default=lambda item: item.isoformat(),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+    def write(self, output: Path) -> None:
+        encoded = self.canonical_bytes
+        output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with output.open("xb") as destination:
+                destination.write(encoded)
+        except FileExistsError:
+            if output.read_bytes() != encoded:
+                raise RuntimeError(f"replay-session report collision at {output}") from None
+
+    @classmethod
+    def load(cls, path: Path) -> ReplaySessionReport:
+        """Reload strict canonical daily evidence and re-run reconciliation."""
+        try:
+            raw = json.loads(path.read_bytes())
+            report = ReplaySessionReportSpec.model_validate(raw).to_domain()
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid replay-session report: {path}") from error
+        if json.loads(report.canonical_bytes) != raw:
+            raise ValueError("replay-session report is not canonical or uses unsupported fields")
+        return report
+
+
+class _StrictSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ReplayRoundTripSpec(_StrictSpec):
+    trade_id: str
+    entry_order_id: str
+    exit_order_id: str
+    side: Literal["long", "short"]
+
+    def to_domain(self) -> ReplayRoundTrip:
+        return ReplayRoundTrip(**self.model_dump())
+
+
+class ReplaySessionAggregationSpec(_StrictSpec):
+    """Paths and lifecycle mapping needed to aggregate one session."""
+
+    session_date: date
+    initial_cash: float = Field(gt=0)
+    commission_bps_per_side: float = Field(default=1.0, ge=0)
+    evidence_files: tuple[Path, ...] = ()
+    round_trips: tuple[ReplayRoundTripSpec, ...] = ()
+
+
+class ReplayRoundTripResultSpec(_StrictSpec):
+    trade_id: str
+    symbol: str
+    side: Literal["long", "short"]
+    intended_quantity: int = Field(gt=0)
+    entry_filled_quantity: int = Field(ge=0)
+    exit_filled_quantity: int = Field(ge=0)
+    matched_quantity: int = Field(ge=0)
+    unmatched_quantity: int = Field(ge=0)
+    entry_fill_price: float | None = Field(default=None, gt=0)
+    exit_fill_price: float | None = Field(default=None, gt=0)
+    arrival_gross_pnl: float
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float = Field(ge=0)
+    execution_residual_cost: float
+    gross_pnl: float
+    commission: float = Field(ge=0)
+    net_pnl_on_matched_quantity: float
+    reconciled: bool
+
+    def to_domain(self) -> ReplayRoundTripResult:
+        return ReplayRoundTripResult(**self.model_dump())
+
+
+class ReplaySessionReportSpec(_StrictSpec):
+    schema_version: Literal[2]
+    session_date: date
+    initial_cash: float = Field(gt=0)
+    evidence_sha256: tuple[str, ...]
+    intended_order_count: int = Field(ge=0)
+    fully_filled_order_count: int = Field(ge=0)
+    fully_filled_order_rate: float | None = Field(default=None, ge=0, le=1)
+    intended_share_count: int = Field(ge=0)
+    filled_share_count: int = Field(ge=0)
+    share_fill_rate: float | None = Field(default=None, ge=0, le=1)
+    realized_adverse_slippage_bps: tuple[float, ...]
+    predicted_adverse_slippage_bps: tuple[float, ...]
+    realized_adverse_slippage_bps_p10: float | None = Field(default=None, ge=0)
+    realized_adverse_slippage_bps_p50: float | None = Field(default=None, ge=0)
+    realized_adverse_slippage_bps_p90: float | None = Field(default=None, ge=0)
+    predicted_adverse_slippage_bps_p90: float | None = Field(default=None, ge=0)
+    p90_realized_to_predicted_ratio: float | None = Field(default=None, ge=0)
+    opening_auction_filled_share_count: int = Field(ge=0)
+    reconciliation_break_count: int = Field(ge=0)
+    arrival_gross_pnl: float | None = None
+    realized_execution_slippage_cost: float
+    modeled_spread_cost: float
+    modeled_market_impact_cost: float = Field(ge=0)
+    execution_residual_cost: float
+    gross_pnl: float | None = None
+    commission: float = Field(ge=0)
+    net_pnl: float | None = None
+    net_return: float | None = None
+    round_trips: tuple[ReplayRoundTripResultSpec, ...]
+
+    def to_domain(self) -> ReplaySessionReport:
+        values = self.model_dump(exclude={"round_trips"})
+        return ReplaySessionReport(
+            round_trips=tuple(item.to_domain() for item in self.round_trips),
+            **values,
+        )
+
+
+class ReplaySessionAggregator:
+    """Build daily metrics only when every evidence/order mapping is explicit."""
+
+    def evaluate_frozen_long_orders(
+        self,
+        *,
+        evidence: Sequence[NbboReplayEvidence],
+        intended_orders: Sequence[IntendedOrder],
+        session_date: date,
+        initial_cash: float,
+        commission_bps_per_side: float,
+    ) -> ReplaySessionReport:
+        """Verify frozen orders and derive their deterministic long lifecycles."""
+        intended_ids = tuple(item.order_id for item in intended_orders)
+        if intended_ids != tuple(sorted(set(intended_ids))):
+            raise ValueError("frozen intended order ids must be unique and sorted")
+        evidence_by_id = {item.result.order.order_id: item for item in evidence}
+        if len(evidence_by_id) != len(evidence) or set(evidence_by_id) != set(intended_ids):
+            raise ValueError("replay evidence does not exactly match frozen intended order ids")
+        intended_by_id = {item.order_id: item for item in intended_orders}
+        if any(
+            evidence_by_id[order_id].result.order != intended_by_id[order_id]
+            for order_id in intended_ids
+        ):
+            raise ValueError("replay evidence order fields differ from frozen intended orders")
+        return self.evaluate(
+            evidence=evidence,
+            round_trips=_frozen_long_round_trips(intended_orders),
+            session_date=session_date,
+            initial_cash=initial_cash,
+            commission_bps_per_side=commission_bps_per_side,
+        )
+
+    def evaluate(
+        self,
+        *,
+        evidence: Sequence[NbboReplayEvidence],
+        round_trips: Sequence[ReplayRoundTrip],
+        session_date: date,
+        initial_cash: float,
+        commission_bps_per_side: float = 1.0,
+    ) -> ReplaySessionReport:
+        if not math.isfinite(initial_cash) or initial_cash <= 0:
+            raise ValueError("initial_cash must be finite and positive")
+        if not math.isfinite(commission_bps_per_side) or commission_bps_per_side < 0:
+            raise ValueError("commission must be finite and non-negative")
+        by_order = {item.result.order.order_id: item for item in evidence}
+        if len(by_order) != len(evidence):
+            raise ValueError("replay evidence contains duplicate order ids")
+        trade_ids = {item.trade_id for item in round_trips}
+        if len(trade_ids) != len(round_trips):
+            raise ValueError("round trips contain duplicate trade ids")
+        referenced = tuple(
+            order_id
+            for item in round_trips
+            for order_id in (item.entry_order_id, item.exit_order_id)
+        )
+        if len(set(referenced)) != len(referenced):
+            raise ValueError("an order cannot be used by multiple round trips")
+        if set(referenced) != set(by_order):
+            raise ValueError("round-trip order ids do not exactly match replay evidence")
+        self._validate_session_dates(evidence, session_date=session_date)
+        results = tuple(
+            self._round_trip(
+                item,
+                by_order=by_order,
+                commission_bps_per_side=commission_bps_per_side,
+            )
+            for item in round_trips
+        )
+        return self._report(
+            evidence=evidence,
+            results=results,
+            session_date=session_date,
+            initial_cash=initial_cash,
+        )
+
+    @staticmethod
+    def _round_trip(
+        trade: ReplayRoundTrip,
+        *,
+        by_order: dict[str, NbboReplayEvidence],
+        commission_bps_per_side: float,
+    ) -> ReplayRoundTripResult:
+        entry = by_order[trade.entry_order_id].result
+        exit_fill = by_order[trade.exit_order_id].result
+        expected_entry_side = "buy" if trade.side == "long" else "sell"
+        expected_exit_side = "sell" if trade.side == "long" else "buy"
+        if entry.order.side != expected_entry_side or exit_fill.order.side != expected_exit_side:
+            raise ValueError(f"round trip {trade.trade_id} has invalid order sides")
+        if entry.order.ticker != exit_fill.order.ticker:
+            raise ValueError(f"round trip {trade.trade_id} crosses symbols")
+        if entry.order.quantity != exit_fill.order.quantity:
+            raise ValueError(f"round trip {trade.trade_id} intended quantities differ")
+        if entry.order.submitted_at >= exit_fill.order.submitted_at:
+            raise ValueError(f"round trip {trade.trade_id} entry is not before exit")
+        matched = min(entry.filled_qty, exit_fill.filled_qty)
+        unmatched = abs(entry.filled_qty - exit_fill.filled_qty)
+        entry_notional = (entry.fill_price or 0.0) * entry.filled_qty
+        exit_notional = (exit_fill.fill_price or 0.0) * exit_fill.filled_qty
+        commission = (entry_notional + exit_notional) * commission_bps_per_side / 10_000
+        gross_pnl = 0.0
+        arrival_gross_pnl = 0.0
+        realized_execution_cost = 0.0
+        modeled_spread_cost = 0.0
+        modeled_impact_cost = 0.0
+        execution_residual_cost = 0.0
+        if matched:
+            if (
+                entry.fill_price is None
+                or exit_fill.fill_price is None
+                or entry.arrival_midpoint is None
+                or exit_fill.arrival_midpoint is None
+            ):
+                raise ValueError("matched replay quantities require fill and arrival prices")
+            direction = 1.0 if trade.side == "long" else -1.0
+            gross_pnl = direction * (exit_fill.fill_price - entry.fill_price) * matched
+            arrival_gross_pnl = (
+                direction * (exit_fill.arrival_midpoint - entry.arrival_midpoint) * matched
+            )
+            realized_execution_cost = _matched_cost(
+                entry.realized_execution_slippage_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.realized_execution_slippage_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+            modeled_spread_cost = _matched_cost(
+                entry.modeled_spread_cost_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.modeled_spread_cost_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+            modeled_impact_cost = _matched_cost(
+                entry.modeled_market_impact_cost_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.modeled_market_impact_cost_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+            execution_residual_cost = _matched_cost(
+                entry.execution_residual_cost_dollars,
+                filled_quantity=entry.filled_qty,
+                matched_quantity=matched,
+            ) + _matched_cost(
+                exit_fill.execution_residual_cost_dollars,
+                filled_quantity=exit_fill.filled_qty,
+                matched_quantity=matched,
+            )
+        return ReplayRoundTripResult(
+            trade_id=trade.trade_id,
+            symbol=entry.order.ticker,
+            side=trade.side,
+            intended_quantity=entry.order.quantity,
+            entry_filled_quantity=entry.filled_qty,
+            exit_filled_quantity=exit_fill.filled_qty,
+            matched_quantity=matched,
+            unmatched_quantity=unmatched,
+            entry_fill_price=entry.fill_price,
+            exit_fill_price=exit_fill.fill_price,
+            arrival_gross_pnl=arrival_gross_pnl,
+            realized_execution_slippage_cost=realized_execution_cost,
+            modeled_spread_cost=modeled_spread_cost,
+            modeled_market_impact_cost=modeled_impact_cost,
+            execution_residual_cost=execution_residual_cost,
+            gross_pnl=gross_pnl,
+            commission=commission,
+            net_pnl_on_matched_quantity=gross_pnl - commission,
+            reconciled=unmatched == 0,
+        )
+
+    @staticmethod
+    def _report(
+        *,
+        evidence: Sequence[NbboReplayEvidence],
+        results: tuple[ReplayRoundTripResult, ...],
+        session_date: date,
+        initial_cash: float,
+    ) -> ReplaySessionReport:
+        intended_shares = sum(item.result.order.quantity for item in evidence)
+        filled_shares = sum(item.result.filled_qty for item in evidence)
+        fully_filled = sum(
+            item.result.filled_qty == item.result.order.quantity for item in evidence
+        )
+        filled_evidence = tuple(
+            item for item in evidence if item.result.slippage_bps_realized is not None
+        )
+        realized = tuple(
+            sorted(max(item.result.slippage_bps_realized or 0.0, 0.0) for item in filled_evidence)
+        )
+        predicted = tuple(
+            sorted(max(item.result.slippage_bps_predicted, 0.0) for item in filled_evidence)
+        )
+        realized_p90 = _percentile(realized, 0.90)
+        predicted_p90 = _percentile(predicted, 0.90)
+        ratio = (
+            realized_p90 / predicted_p90
+            if realized_p90 is not None and predicted_p90 is not None and predicted_p90 > 0
+            else None
+        )
+        break_count = sum(not item.reconciled for item in results)
+        commission = float(sum(item.commission for item in results))
+        realized_execution_cost = float(
+            sum(item.realized_execution_slippage_cost for item in results)
+        )
+        modeled_spread_cost = float(sum(item.modeled_spread_cost for item in results))
+        modeled_impact_cost = float(sum(item.modeled_market_impact_cost for item in results))
+        execution_residual_cost = float(sum(item.execution_residual_cost for item in results))
+        arrival_gross_pnl = (
+            float(sum(item.arrival_gross_pnl for item in results)) if break_count == 0 else None
+        )
+        gross_pnl = float(sum(item.gross_pnl for item in results)) if break_count == 0 else None
+        net_pnl = gross_pnl - commission if gross_pnl is not None else None
+        return ReplaySessionReport(
+            schema_version=2,
+            session_date=session_date,
+            initial_cash=initial_cash,
+            evidence_sha256=tuple(sorted(item.sha256 for item in evidence)),
+            intended_order_count=len(evidence),
+            fully_filled_order_count=fully_filled,
+            fully_filled_order_rate=fully_filled / len(evidence) if evidence else None,
+            intended_share_count=intended_shares,
+            filled_share_count=filled_shares,
+            share_fill_rate=filled_shares / intended_shares if intended_shares else None,
+            realized_adverse_slippage_bps=realized,
+            predicted_adverse_slippage_bps=predicted,
+            realized_adverse_slippage_bps_p10=_percentile(realized, 0.10),
+            realized_adverse_slippage_bps_p50=_percentile(realized, 0.50),
+            realized_adverse_slippage_bps_p90=realized_p90,
+            predicted_adverse_slippage_bps_p90=predicted_p90,
+            p90_realized_to_predicted_ratio=ratio,
+            opening_auction_filled_share_count=sum(
+                item.result.opening_auction_filled_qty for item in evidence
+            ),
+            reconciliation_break_count=break_count,
+            arrival_gross_pnl=arrival_gross_pnl,
+            realized_execution_slippage_cost=realized_execution_cost,
+            modeled_spread_cost=modeled_spread_cost,
+            modeled_market_impact_cost=modeled_impact_cost,
+            execution_residual_cost=execution_residual_cost,
+            gross_pnl=gross_pnl,
+            commission=commission,
+            net_pnl=net_pnl,
+            net_return=net_pnl / initial_cash if net_pnl is not None else None,
+            round_trips=results,
+        )
+
+    @staticmethod
+    def _validate_session_dates(
+        evidence: Sequence[NbboReplayEvidence],
+        *,
+        session_date: date,
+    ) -> None:
+        for item in evidence:
+            order = item.result.order
+            submitted_date = order.submitted_at.astimezone(_MARKET_TIMEZONE).date()
+            expires_date = order.expires_at.astimezone(_MARKET_TIMEZONE).date()
+            if submitted_date != session_date or expires_date != session_date:
+                raise ValueError("replay order window does not match session_date")
+
+
+def _frozen_long_round_trips(
+    intended_orders: Sequence[IntendedOrder],
+) -> tuple[ReplayRoundTrip, ...]:
+    grouped: dict[str, dict[str, IntendedOrder]] = {}
+    for order in intended_orders:
+        if order.order_id.endswith("-entry"):
+            trade_id = order.order_id.removesuffix("-entry")
+            leg = "entry"
+        elif order.order_id.endswith("-exit"):
+            trade_id = order.order_id.removesuffix("-exit")
+            leg = "exit"
+        else:
+            raise ValueError("frozen order id must end with '-entry' or '-exit'")
+        if not trade_id:
+            raise ValueError("frozen order id must contain a trade identity")
+        legs = grouped.setdefault(trade_id, {})
+        if leg in legs:
+            raise ValueError(f"frozen trade {trade_id} contains duplicate {leg} orders")
+        legs[leg] = order
+    round_trips: list[ReplayRoundTrip] = []
+    for trade_id, legs in sorted(grouped.items()):
+        if set(legs) != {"entry", "exit"}:
+            raise ValueError(f"frozen trade {trade_id} does not contain exactly two legs")
+        round_trips.append(
+            ReplayRoundTrip(
+                trade_id=trade_id,
+                entry_order_id=legs["entry"].order_id,
+                exit_order_id=legs["exit"].order_id,
+                side="long",
+            )
+        )
+    return tuple(round_trips)
+
+
+def _percentile(values: Sequence[float], probability: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = (len(ordered) - 1) * probability
+    lower_index = math.floor(rank)
+    upper_index = math.ceil(rank)
+    if lower_index == upper_index:
+        return ordered[lower_index]
+    weight = rank - lower_index
+    return ordered[lower_index] * (1 - weight) + ordered[upper_index] * weight
+
+
+def _validate_session_counts(report: ReplaySessionReport) -> None:
+    if report.schema_version != 2:
+        raise ValueError("unsupported replay-session schema version")
+    if not math.isfinite(report.initial_cash) or report.initial_cash <= 0:
+        raise ValueError("session initial cash must be finite and positive")
+    if report.intended_order_count != len(report.round_trips) * 2:
+        raise ValueError("session order count does not reconcile to round trips")
+    if len(report.evidence_sha256) != report.intended_order_count:
+        raise ValueError("session evidence hashes do not reconcile to order count")
+    if report.evidence_sha256 != tuple(sorted(set(report.evidence_sha256))):
+        raise ValueError("session evidence hashes must be unique and sorted")
+    if any(
+        len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        for value in report.evidence_sha256
+    ):
+        raise ValueError("session contains an invalid evidence hash")
+    intended = sum(item.intended_quantity * 2 for item in report.round_trips)
+    filled = sum(
+        item.entry_filled_quantity + item.exit_filled_quantity for item in report.round_trips
+    )
+    if intended != report.intended_share_count or filled != report.filled_share_count:
+        raise ValueError("session share counts do not reconcile to round trips")
+    if report.opening_auction_filled_share_count > report.filled_share_count:
+        raise ValueError("opening-auction quantity exceeds all filled shares")
+    if report.fully_filled_order_count > report.intended_order_count:
+        raise ValueError("fully filled count exceeds intended order count")
+    fully_filled = sum(
+        quantity == item.intended_quantity
+        for item in report.round_trips
+        for quantity in (item.entry_filled_quantity, item.exit_filled_quantity)
+    )
+    if fully_filled != report.fully_filled_order_count:
+        raise ValueError("fully filled count does not reconcile to round trips")
+    expected_order_rate = (
+        report.fully_filled_order_count / report.intended_order_count
+        if report.intended_order_count
+        else None
+    )
+    expected_share_rate = (
+        report.filled_share_count / report.intended_share_count
+        if report.intended_share_count
+        else None
+    )
+    if not _optional_close(report.fully_filled_order_rate, expected_order_rate):
+        raise ValueError("fully filled order rate does not reconcile")
+    if not _optional_close(report.share_fill_rate, expected_share_rate):
+        raise ValueError("share fill rate does not reconcile")
+
+
+def _validate_session_reconciliation(report: ReplaySessionReport) -> None:
+    for item in report.round_trips:
+        _validate_round_trip_result(item)
+    break_count = sum(not item.reconciled for item in report.round_trips)
+    commission = sum(item.commission for item in report.round_trips)
+    realized_execution_cost = sum(
+        item.realized_execution_slippage_cost for item in report.round_trips
+    )
+    modeled_spread_cost = sum(item.modeled_spread_cost for item in report.round_trips)
+    modeled_impact_cost = sum(item.modeled_market_impact_cost for item in report.round_trips)
+    execution_residual_cost = sum(item.execution_residual_cost for item in report.round_trips)
+    if break_count != report.reconciliation_break_count:
+        raise ValueError("session reconciliation-break count is inconsistent")
+    if not math.isclose(report.commission, commission, rel_tol=1e-12, abs_tol=1e-12):
+        raise ValueError("session commission does not reconcile")
+    component_pairs = (
+        (report.realized_execution_slippage_cost, realized_execution_cost),
+        (report.modeled_spread_cost, modeled_spread_cost),
+        (report.modeled_market_impact_cost, modeled_impact_cost),
+        (report.execution_residual_cost, execution_residual_cost),
+    )
+    if any(
+        not math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-12)
+        for actual, expected in component_pairs
+    ):
+        raise ValueError("session execution cost components do not reconcile")
+    if break_count:
+        if (
+            report.arrival_gross_pnl is not None
+            or report.gross_pnl is not None
+            or report.net_pnl is not None
+            or report.net_return is not None
+        ):
+            raise ValueError("session with a reconciliation break must not report P&L")
+        return
+    arrival_gross = sum(item.arrival_gross_pnl for item in report.round_trips)
+    gross = sum(item.gross_pnl for item in report.round_trips)
+    net = gross - commission
+    if not _optional_close(report.arrival_gross_pnl, arrival_gross):
+        raise ValueError("session arrival gross P&L does not reconcile")
+    if not math.isclose(
+        arrival_gross - realized_execution_cost,
+        gross,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("session arrival-to-fill P&L does not reconcile")
+    if not _optional_close(report.gross_pnl, gross):
+        raise ValueError("session gross P&L does not reconcile")
+    if not _optional_close(report.net_pnl, net):
+        raise ValueError("session net P&L does not reconcile")
+    if not _optional_close(report.net_return, net / report.initial_cash):
+        raise ValueError("session net return does not reconcile")
+
+
+def _validate_round_trip_result(item: ReplayRoundTripResult) -> None:
+    matched = min(item.entry_filled_quantity, item.exit_filled_quantity)
+    unmatched = abs(item.entry_filled_quantity - item.exit_filled_quantity)
+    if matched != item.matched_quantity or unmatched != item.unmatched_quantity:
+        raise ValueError("round-trip fill quantities do not reconcile")
+    if item.reconciled != (unmatched == 0):
+        raise ValueError("round-trip reconciliation flag is inconsistent")
+    if (item.entry_fill_price is None) != (item.entry_filled_quantity == 0):
+        raise ValueError("round-trip entry fill price is inconsistent")
+    if (item.exit_fill_price is None) != (item.exit_filled_quantity == 0):
+        raise ValueError("round-trip exit fill price is inconsistent")
+    expected_gross = 0.0
+    if matched:
+        if item.entry_fill_price is None or item.exit_fill_price is None:
+            raise ValueError("matched round trip requires both fill prices")
+        direction = 1.0 if item.side == "long" else -1.0
+        expected_gross = direction * (item.exit_fill_price - item.entry_fill_price) * matched
+    if not math.isclose(
+        item.gross_pnl,
+        expected_gross,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip gross P&L does not reconcile")
+    if not math.isclose(
+        item.modeled_spread_cost + item.modeled_market_impact_cost + item.execution_residual_cost,
+        item.realized_execution_slippage_cost,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip execution components do not reconcile")
+    if not math.isclose(
+        item.arrival_gross_pnl - item.realized_execution_slippage_cost,
+        item.gross_pnl,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip arrival-to-fill P&L does not reconcile")
+    if not math.isclose(
+        item.net_pnl_on_matched_quantity,
+        item.gross_pnl - item.commission,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("round-trip net P&L does not reconcile")
+
+
+def _validate_session_metrics(report: ReplaySessionReport) -> None:
+    if any(
+        not math.isfinite(item) or item < 0
+        for item in (
+            *report.realized_adverse_slippage_bps,
+            *report.predicted_adverse_slippage_bps,
+        )
+    ):
+        raise ValueError("session slippage observations must be finite and non-negative")
+    if report.realized_adverse_slippage_bps != tuple(
+        sorted(report.realized_adverse_slippage_bps)
+    ) or report.predicted_adverse_slippage_bps != tuple(
+        sorted(report.predicted_adverse_slippage_bps)
+    ):
+        raise ValueError("session slippage observations must be sorted")
+    if len(report.realized_adverse_slippage_bps) != len(report.predicted_adverse_slippage_bps):
+        raise ValueError("realized and predicted slippage observations must align")
+    filled_order_count = sum(
+        quantity > 0
+        for item in report.round_trips
+        for quantity in (item.entry_filled_quantity, item.exit_filled_quantity)
+    )
+    if len(report.realized_adverse_slippage_bps) != filled_order_count:
+        raise ValueError("slippage observations do not reconcile to filled orders")
+    slippage = (
+        report.realized_adverse_slippage_bps_p10,
+        report.realized_adverse_slippage_bps_p50,
+        report.realized_adverse_slippage_bps_p90,
+    )
+    expected_slippage = tuple(
+        _percentile(report.realized_adverse_slippage_bps, probability)
+        for probability in (0.10, 0.50, 0.90)
+    )
+    if any(
+        not _optional_close(actual, expected)
+        for actual, expected in zip(slippage, expected_slippage, strict=True)
+    ):
+        raise ValueError("session realized slippage percentiles do not reconcile")
+    expected_predicted = _percentile(report.predicted_adverse_slippage_bps, 0.90)
+    if not _optional_close(report.predicted_adverse_slippage_bps_p90, expected_predicted):
+        raise ValueError("session predicted slippage percentile does not reconcile")
+    expected_ratio = (
+        expected_slippage[2] / expected_predicted
+        if expected_slippage[2] is not None
+        and expected_predicted is not None
+        and expected_predicted > 0
+        else None
+    )
+    if not _optional_close(report.p90_realized_to_predicted_ratio, expected_ratio):
+        raise ValueError("session slippage ratio does not reconcile")
+    numeric = (
+        report.commission,
+        report.realized_execution_slippage_cost,
+        report.modeled_spread_cost,
+        report.modeled_market_impact_cost,
+        report.execution_residual_cost,
+        *(item for item in slippage if item is not None),
+        *(
+            item
+            for item in (
+                report.predicted_adverse_slippage_bps_p90,
+                report.p90_realized_to_predicted_ratio,
+                report.arrival_gross_pnl,
+                report.gross_pnl,
+                report.net_pnl,
+                report.net_return,
+            )
+            if item is not None
+        ),
+    )
+    if any(not math.isfinite(item) for item in numeric):
+        raise ValueError("session metrics must be finite")
+
+
+def _optional_close(actual: float | None, expected: float | None) -> bool:
+    if actual is None or expected is None:
+        return actual is expected
+    return math.isclose(actual, expected, rel_tol=1e-12, abs_tol=1e-12)
+
+
+def _matched_cost(
+    total_cost: float,
+    *,
+    filled_quantity: int,
+    matched_quantity: int,
+) -> float:
+    if filled_quantity <= 0:
+        raise ValueError("matched execution cost requires a positive filled quantity")
+    return total_cost / filled_quantity * matched_quantity

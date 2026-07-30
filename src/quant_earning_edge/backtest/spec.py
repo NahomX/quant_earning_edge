@@ -1,0 +1,85 @@
+"""Validated JSON boundary for reproducible daily backtest runs."""
+
+from __future__ import annotations
+
+from datetime import date, datetime  # noqa: TC003 - Pydantic resolves types at runtime.
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from quant_earning_edge.backtest.engine import (
+    DailyMark,
+    TradeIntent,
+    backtest_input_sha256,
+)
+
+
+class DailyMarkSpec(BaseModel):
+    """Serialized daily valuation mark."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str
+    session_date: date
+    close: float = Field(gt=0)
+
+    def to_domain(self) -> DailyMark:
+        return DailyMark(**self.model_dump())
+
+
+class TradeIntentSpec(BaseModel):
+    """Serialized daily trade instruction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trade_id: str
+    symbol: str
+    side: Literal["long", "short"]
+    entry_date: date
+    exit_date: date
+    shares: int = Field(gt=0)
+    entry_price: float = Field(gt=0)
+    exit_price: float = Field(gt=0)
+    entry_average_daily_volume_shares: float = Field(gt=0)
+    exit_average_daily_volume_shares: float = Field(gt=0)
+    holding_sessions: int = Field(ge=0)
+    triggered_stop_price: float | None = Field(default=None, gt=0)
+    atr5: float | None = Field(default=None, gt=0)
+    entry_at: datetime | None = None
+    exit_at: datetime | None = None
+
+    def to_domain(self) -> TradeIntent:
+        return TradeIntent(**self.model_dump())
+
+
+class BacktestSpec(BaseModel):
+    """Complete deterministic input for one daily ledger run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    initial_cash: float = Field(gt=0)
+    sessions: tuple[date, ...]
+    marks: tuple[DailyMarkSpec, ...]
+    trades: tuple[TradeIntentSpec, ...]
+
+    def domain_inputs(
+        self,
+    ) -> tuple[float, tuple[date, ...], tuple[DailyMark, ...], tuple[TradeIntent, ...]]:
+        """Convert validated serialized models into immutable domain inputs."""
+        return (
+            self.initial_cash,
+            self.sessions,
+            tuple(item.to_domain() for item in self.marks),
+            tuple(item.to_domain() for item in self.trades),
+        )
+
+    @property
+    def input_sha256(self) -> str:
+        """Return the same semantic identity emitted by both vectorbt engines."""
+        initial_cash, sessions, marks, trades = self.domain_inputs()
+        return backtest_input_sha256(
+            trades=trades,
+            marks=marks,
+            sessions=sessions,
+            initial_cash=initial_cash,
+        )

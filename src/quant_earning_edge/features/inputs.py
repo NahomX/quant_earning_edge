@@ -1,0 +1,357 @@
+"""Point-in-time loaders that turn silver observations into feature contexts."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, timedelta
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+import pyarrow.parquet as pq
+
+from quant_earning_edge.data.split_source import (
+    SplitHistorySourceCapture,
+    SplitHistorySourceManifest,
+)
+from quant_earning_edge.data.split_vintage import causally_adjust_daily_bar_rows
+from quant_earning_edge.features.registry import (
+    EarningsObservation,
+    FeatureContext,
+    PremarketObservation,
+    PriceBar,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+
+class DailyBarsFeatureLoader:
+    """Resolve the latest known silver bar revision at an explicit cutoff."""
+
+    _REQUIRED: ClassVar[set[str]] = {
+        "session_date",
+        "symbol",
+        "close",
+        "volume",
+        "vwap",
+        "adjusted",
+        "available_at",
+        "ingested_at",
+    }
+
+    def load(  # noqa: PLR0912 - explicit point-in-time validation boundary.
+        self,
+        paths: Sequence[Path],
+        *,
+        symbols: Sequence[str],
+        asof_date: date,
+        observed_at: datetime,
+        split_source_manifest: Path | None = None,
+        data_lake_root: Path | None = None,
+    ) -> tuple[FeatureContext, ...]:
+        """Build contexts at an availability cutoff and causal split vintage."""
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        if not paths:
+            raise ValueError("at least one daily-bars file is required")
+        normalized_symbols = tuple(sorted({item.strip().upper() for item in symbols}))
+        if not normalized_symbols or any(not item for item in normalized_symbols):
+            raise ValueError("symbols must not be empty")
+        cutoff = observed_at.astimezone(UTC)
+        latest: dict[tuple[str, date], dict[str, Any]] = {}
+        for path in sorted(paths):
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
+            if not self._REQUIRED.issubset(table.column_names):
+                raise ValueError(f"daily-bars file is missing required columns: {path}")
+            for row in table.select(sorted(self._REQUIRED)).to_pylist():
+                symbol = str(row["symbol"]).strip().upper()
+                session_date = row["session_date"]
+                if (
+                    symbol not in normalized_symbols
+                    or session_date > asof_date
+                    or row["available_at"] > cutoff
+                ):
+                    continue
+                if row["adjusted"] and row["ingested_at"] > cutoff:
+                    raise ValueError(
+                        "retroactively adjusted daily bars are not valid point-in-time inputs"
+                    )
+                key = (symbol, session_date)
+                previous = latest.get(key)
+                if previous is None or previous["ingested_at"] < row["ingested_at"]:
+                    latest[key] = row
+                elif previous["ingested_at"] == row["ingested_at"] and previous != row:
+                    raise ValueError(f"conflicting daily-bar revisions for {key}")
+        selected_rows = tuple(latest.values())
+        if any(not row["adjusted"] for row in selected_rows):
+            if split_source_manifest is None or data_lake_root is None:
+                raise ValueError(
+                    "unadjusted historical bars require a retained split-history source"
+                )
+            split_source = SplitHistorySourceManifest.load(split_source_manifest)
+            if (
+                date.fromisoformat(split_source.raw["start_date"])
+                > min(row["session_date"] for row in selected_rows)
+                or date.fromisoformat(split_source.raw["end_date"]) < asof_date
+                or {row["ingested_at"] for row in selected_rows if not row["adjusted"]}
+                != {datetime.fromisoformat(split_source.raw["ingested_at"])}
+            ):
+                raise ValueError("split-history source does not cover the daily-bar vintage")
+            SplitHistorySourceCapture.reproduce(
+                split_source,
+                data_lake_root=data_lake_root,
+            )
+            selected_rows = causally_adjust_daily_bar_rows(
+                selected_rows,
+                splits=split_source.splits(data_lake_root=data_lake_root),
+                basis_date=asof_date,
+            )
+        elif split_source_manifest is not None:
+            raise ValueError("split-history source is only valid with unadjusted daily bars")
+
+        normalized_latest = {
+            (str(row["symbol"]).strip().upper(), row["session_date"]): row for row in selected_rows
+        }
+        contexts: list[FeatureContext] = []
+        for symbol in normalized_symbols:
+            rows = sorted(
+                (
+                    row
+                    for (row_symbol, _date), row in normalized_latest.items()
+                    if row_symbol == symbol
+                ),
+                key=lambda row: row["session_date"],
+            )
+            if not rows:
+                raise ValueError(f"no PIT daily bars found for {symbol}")
+            contexts.append(
+                FeatureContext(
+                    symbol=symbol,
+                    asof_date=asof_date,
+                    bars=tuple(
+                        PriceBar(
+                            session_date=row["session_date"],
+                            close=float(row["close"]),
+                            volume=float(row["volume"]),
+                            vwap=float(row["vwap"]) if row["vwap"] is not None else None,
+                        )
+                        for row in rows
+                    ),
+                    observed_at=cutoff,
+                )
+            )
+        return tuple(contexts)
+
+
+class EarningsFeatureLoader:
+    """Attach current candidate timing and prior reported EPS without leakage."""
+
+    _CANDIDATE_REQUIRED: ClassVar[set[str]] = {
+        "trade_date",
+        "symbol",
+        "event_date",
+        "timing",
+        "decision_at",
+    }
+    _HISTORY_REQUIRED: ClassVar[set[str]] = {
+        "symbol",
+        "event_date",
+        "timing",
+        "eps_actual",
+        "eps_estimate",
+        "ingested_at",
+    }
+
+    def enrich(
+        self,
+        contexts: Sequence[FeatureContext],
+        *,
+        candidate_files: Sequence[Path],
+        earnings_files: Sequence[Path],
+        observed_at: datetime,
+        target_date: date,
+    ) -> tuple[FeatureContext, ...]:
+        """Add exactly one current event plus prior known reported events."""
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        if not candidate_files or not earnings_files:
+            raise ValueError("candidate and earnings files are required")
+        cutoff = observed_at.astimezone(UTC)
+        candidates = self._read_candidates(candidate_files, cutoff=cutoff)
+        history = self._read_history(earnings_files, cutoff=cutoff)
+        enriched: list[FeatureContext] = []
+        for context in contexts:
+            if target_date <= context.asof_date:
+                raise ValueError("target_date must be after every feature asof_date")
+            key = (context.symbol, target_date)
+            current = candidates.get(key)
+            if current is None:
+                raise ValueError(f"no event candidate found for {key}")
+            prior = [
+                EarningsObservation(
+                    event_date=row["event_date"],
+                    effective_trade_date=row["event_date"],
+                    timing=_parse_timing(row["timing"]),
+                    eps_actual=row["eps_actual"],
+                    eps_estimate=row["eps_estimate"],
+                )
+                for row in history.get(context.symbol, ())
+                if row["event_date"] < current.event_date
+                and row["eps_actual"] is not None
+                and row["eps_estimate"] is not None
+            ]
+            observations = tuple(
+                sorted(
+                    (
+                        *prior,
+                        current,
+                    ),
+                    key=lambda item: (
+                        item.effective_trade_date,
+                        item.event_date,
+                        item.timing,
+                    ),
+                )
+            )
+            enriched.append(
+                FeatureContext(
+                    symbol=context.symbol,
+                    asof_date=context.asof_date,
+                    bars=context.bars,
+                    target_date=target_date,
+                    observed_at=context.observed_at,
+                    earnings=observations,
+                    premarket=context.premarket,
+                )
+            )
+        return tuple(enriched)
+
+    def _read_candidates(
+        self,
+        paths: Sequence[Path],
+        *,
+        cutoff: datetime,
+    ) -> dict[tuple[str, date], EarningsObservation]:
+        candidates: dict[tuple[str, date], EarningsObservation] = {}
+        for path in sorted(paths):
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
+            if not self._CANDIDATE_REQUIRED.issubset(table.column_names):
+                raise ValueError(f"candidate file is missing required columns: {path}")
+            for row in table.select(sorted(self._CANDIDATE_REQUIRED)).to_pylist():
+                if row["decision_at"] > cutoff:
+                    continue
+                key = (str(row["symbol"]).upper(), row["trade_date"])
+                observation = EarningsObservation(
+                    event_date=row["event_date"],
+                    effective_trade_date=row["trade_date"],
+                    timing=_parse_timing(row["timing"]),
+                )
+                previous = candidates.get(key)
+                if previous is not None and previous != observation:
+                    raise ValueError(f"conflicting current earnings candidates for {key}")
+                candidates[key] = observation
+        return candidates
+
+    def _read_history(
+        self,
+        paths: Sequence[Path],
+        *,
+        cutoff: datetime,
+    ) -> dict[str, tuple[dict[str, Any], ...]]:
+        latest: dict[tuple[str, date, str], dict[str, Any]] = {}
+        for path in sorted(paths):
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
+            if not self._HISTORY_REQUIRED.issubset(table.column_names):
+                raise ValueError(f"earnings file is missing required columns: {path}")
+            for row in table.select(sorted(self._HISTORY_REQUIRED)).to_pylist():
+                if row["ingested_at"] > cutoff:
+                    continue
+                key = (str(row["symbol"]).upper(), row["event_date"], str(row["timing"]))
+                previous = latest.get(key)
+                if previous is None or previous["ingested_at"] < row["ingested_at"]:
+                    latest[key] = row
+                elif previous["ingested_at"] == row["ingested_at"] and previous != row:
+                    raise ValueError(f"conflicting earnings history revisions for {key}")
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for (symbol, _event_date, _timing), row in latest.items():
+            grouped.setdefault(symbol, []).append(row)
+        return {
+            symbol: tuple(sorted(rows, key=lambda row: row["event_date"]))
+            for symbol, rows in grouped.items()
+        }
+
+
+class PremarketFeatureLoader:
+    """Attach only completed target-date minute bars known at the cutoff."""
+
+    _REQUIRED: ClassVar[set[str]] = {
+        "timestamp",
+        "symbol",
+        "close",
+        "ingested_at",
+    }
+
+    def enrich(
+        self,
+        contexts: Sequence[FeatureContext],
+        *,
+        minute_files: Sequence[Path],
+        target_date: date,
+        observed_at: datetime,
+    ) -> tuple[FeatureContext, ...]:
+        """Resolve revisions and exclude any incomplete cutoff minute."""
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        if not minute_files:
+            raise ValueError("minute-bar files are required")
+        cutoff = observed_at.astimezone(UTC)
+        latest: dict[tuple[str, datetime], dict[str, Any]] = {}
+        for path in sorted(minute_files):
+            table = pq.ParquetFile(path).read()  # type: ignore[no-untyped-call]
+            if not self._REQUIRED.issubset(table.column_names):
+                raise ValueError(f"minute-bars file is missing required columns: {path}")
+            for row in table.select(sorted(self._REQUIRED)).to_pylist():
+                timestamp = row["timestamp"].astimezone(UTC)
+                if timestamp + timedelta(minutes=1) > cutoff or row["ingested_at"] > cutoff:
+                    continue
+                key = (str(row["symbol"]).strip().upper(), timestamp)
+                previous = latest.get(key)
+                if previous is None or previous["ingested_at"] < row["ingested_at"]:
+                    latest[key] = row
+                elif previous["ingested_at"] == row["ingested_at"] and previous != row:
+                    raise ValueError(f"conflicting minute-bar revisions for {key}")
+        enriched: list[FeatureContext] = []
+        for context in contexts:
+            if target_date <= context.asof_date:
+                raise ValueError("target_date must be after feature asof_date")
+            observations = tuple(
+                PremarketObservation(
+                    trade_date=target_date,
+                    timestamp=timestamp,
+                    close=float(row["close"]),
+                )
+                for (symbol, timestamp), row in sorted(
+                    latest.items(),
+                    key=lambda item: item[0][1],
+                )
+                if symbol == context.symbol
+            )
+            if not observations:
+                raise ValueError(f"no completed premarket minute bars for {context.symbol}")
+            enriched.append(
+                FeatureContext(
+                    symbol=context.symbol,
+                    asof_date=context.asof_date,
+                    bars=context.bars,
+                    target_date=target_date,
+                    observed_at=cutoff,
+                    earnings=context.earnings,
+                    premarket=observations,
+                )
+            )
+        return tuple(enriched)
+
+
+def _parse_timing(value: object) -> Literal["bmo", "amc", "dmh"]:
+    if value not in {"bmo", "amc", "dmh"}:
+        raise ValueError(f"invalid earnings timing: {value!r}")
+    return value

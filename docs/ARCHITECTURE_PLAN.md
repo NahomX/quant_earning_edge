@@ -193,8 +193,8 @@ Every backtest produces a standardized report:
 3. **Final proof**: see "Phase 6 methodology" below.
 
 **Daily live workflow:**
-- T-1 21:00 ET: pull data, compute features, freeze universe snapshot.
-- T-1 21:30 ET: run model, generate orders, **log decision-time NBBO snapshot per order**, log to MLflow.
+- T-1 21:00 ET: pull prior-close data and freeze the universe/event candidates.
+- T 09:10 ET: capture completed pre-market observations, compute the final causal feature vectors, run the model, and **log the decision-time NBBO snapshot per order**. Submit only after the independent 09:20 ET breaker refresh.
 - T 09:25 ET: pre-market sanity check (halt list, news gates).
 - T 09:30 ET: submit orders via Alpaca paper (smoke test).
 - T 16:05 ET: reconcile fills, log paper-vs-NBBO-replay divergence, attribute slippage.
@@ -357,7 +357,7 @@ If any of (1)/(2)/(3) fails: **skip Phase 5 entirely**. Go to Phase 6 with the v
 
 ### The pipeline
 
-1. **Decision-time NBBO snapshot.** When orders are generated at T-1 21:30 ET, log the prevailing NBBO and last trade per intended order. This freezes "the world we thought we'd trade in."
+1. **Decision-time NBBO snapshot.** When final orders are generated in the pre-open decision window, log the prevailing NBBO and last trade per intended order. This freezes "the world we thought we'd trade in" while preserving causality for `premarket_gap_pct`.
 2. **NBBO-replay simulator** (runs after market close from Polygon Advanced data):
    - For each intended order, replay against recorded quotes/trades through the day.
    - Compute realistic fill price = mid + signed half-spread + impact term (`5 bps × sqrt(order_size / ADV)`).

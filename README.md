@@ -3,6 +3,10 @@
 Production-grade quantitative research platform for an event-driven (earnings) US-equities strategy. Terminal goal: 90-day NBBO-replay execution-realism proof on Alpaca paper. No live capital in this project's scope.
 
 See [`docs/ARCHITECTURE_PLAN.md`](docs/ARCHITECTURE_PLAN.md) for the full design, budget, and phased plan.
+See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for credentialed Phase 1 commands
+and operational gates.
+See [`PROJECT_STATUS.md`](PROJECT_STATUS.md) for the concise executive handoff,
+current blockers, repository locations, and exact next action.
 
 ## Quickstart
 
@@ -42,9 +46,10 @@ src/quant_earning_edge/
   evaluation/   metrics, bootstrap CI, tearsheets
   live/         Alpaca paper executor + reconciliation
   monitoring/   drift detection, circuit breakers
+  orchestration/ restart-safe daily workflow loop + append-only state
 configs/        YAML strategy/universe configs (pydantic-validated)
 tests/property/ no-lookahead + no-future-read property tests (block PRs)
-ops/            Prefect flows, deploy scripts
+ops/            persistent-worker launch and service deployment
 ```
 
 ## Phases (see ARCHITECTURE_PLAN.md for gates)
@@ -61,4 +66,25 @@ ops/            Prefect flows, deploy scripts
 
 ## Status
 
-Phase 0. Bootstrap only.
+Phase 2's code-level no-lookahead gate and the Phase 3/4 research machinery are
+implemented. Phase 6's deterministic NBBO/trade replay core and active
+pre-decision-read property gate, daily reconciliation, and locked 90-session
+gate evaluator are also implemented. Paper-only Alpaca submission,
+paper/replay reconciliation, and fail-closed circuit breakers are implemented;
+the real 90-session proof has not started. The credentialed historical
+backfill, real-data strategy evaluation, and unattended operational gates
+remain pending observation, while the persistent restart-safe worker and its
+non-secret health evidence, provider-backed daily candidate/feature builder,
+state-driven next-session proof queue, complete eight-stage run-spec generator,
+raw universe/event candidate-generation source capture and terminal
+regeneration, and post-close pending/resume boundary are implemented.
+Historical daily/minute bars, research features, forward labels, and assembled
+training datasets are likewise chained to retained provider observations and
+deeply reconstructed before model selection. Daily bars distinguish their
+truthful physical ingestion time from a manifest-bound causal availability
+time. Historical backfills retain raw unadjusted OHLCV and a complete
+plan-bound split history, then normalize only through each research as-of
+date; current-basis adjusted revisions cannot silently enter old features or
+universe snapshots. See
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for verified
+deliverables, remaining gates, and the next implementation slice.

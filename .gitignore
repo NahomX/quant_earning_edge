@@ -42,9 +42,11 @@ Thumbs.db
 # MLflow
 mlruns/
 mlartifacts/
+.mlflow/
+.mlflow-artifacts/
 
 # Data lake (Bronze/Silver/Gold) — never commit data
-data/
+/data/
 parquet/
 *.parquet
 *.duckdb

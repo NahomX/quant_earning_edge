@@ -1,0 +1,153 @@
+"""Production refit boundary and inference tests."""
+
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+from typing import TYPE_CHECKING
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from quant_earning_edge.signals import LightgbmHyperparameters, ProductionModelTrainer
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def _dataset(path: Path, *, mutate_future: bool = False) -> None:
+    first = date(2025, 1, 2)
+    rows = []
+    for index in range(70):
+        sign = 1.0 if index % 2 == 0 else -1.0
+        label = sign * 0.01
+        if mutate_future and index >= 60:
+            label = -label
+        rows.append(
+            {
+                "asof_date": first + timedelta(days=index),
+                "horizon_end_date": first + timedelta(days=index + 2),
+                "signal": sign + index / 100,
+                "forward_1d_close": label,
+            }
+        )
+    pq.write_table(pa.Table.from_pylist(rows), path)  # type: ignore[no-untyped-call]
+
+
+def test_production_refit_is_deterministic_and_scores_exact_features(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    output = tmp_path / "models"
+    _dataset(dataset)
+    trainer = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10)
+    cutoff = date(2025, 3, 3)
+    study_sha256 = "e" * 64
+
+    first = trainer.run(
+        dataset_files=(dataset,),
+        training_cutoff=cutoff,
+        phase4_gate_sha256="f" * 64,
+        hyperparameter_study_sha256=study_sha256,
+    )
+    second = trainer.run(
+        dataset_files=(dataset,),
+        training_cutoff=cutoff,
+        phase4_gate_sha256="f" * 64,
+        hyperparameter_study_sha256=study_sha256,
+    )
+    paths = trainer.write(first, output)
+    trainer.write(first, output)
+    loaded = first.load(evidence_path=paths[1], model_path=paths[0])
+
+    assert first == second
+    assert loaded == first
+    assert first.fit_end_date < first.validation_start_date < cutoff
+    assert first.validation_end_date < cutoff
+    assert 0 <= first.predict_probability({"signal": 1.0}) <= 1
+    assert all(path.exists() for path in paths)
+    assert json.loads(paths[1].read_text(encoding="utf-8"))["training_cutoff"] == cutoff.isoformat()
+    assert first.hyperparameters_sha256 == first.hyperparameters.sha256
+    assert loaded.hyperparameter_study_sha256 == study_sha256
+
+
+def test_production_refit_binds_custom_hyperparameters(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    _dataset(dataset)
+    hyperparameters = LightgbmHyperparameters(
+        n_estimators=250,
+        learning_rate=0.04,
+        num_leaves=9,
+        min_child_samples=10,
+        reg_alpha=0.5,
+        reg_lambda=2.5,
+        colsample_bytree=0.8,
+    )
+    artifact = ProductionModelTrainer(
+        feature_names=("signal",),
+        early_stopping_rounds=10,
+        hyperparameters=hyperparameters,
+    ).run(
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
+    )
+
+    assert artifact.hyperparameters == hyperparameters
+    assert artifact.hyperparameters_sha256 == hyperparameters.sha256
+    assert json.loads(artifact.evidence_json_bytes())["hyperparameters"]["num_leaves"] == 9
+
+
+def test_rows_whose_labels_close_after_cutoff_cannot_change_model(tmp_path: Path) -> None:
+    original = tmp_path / "original.parquet"
+    mutated = tmp_path / "mutated.parquet"
+    _dataset(original)
+    _dataset(mutated, mutate_future=True)
+    trainer = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10)
+    cutoff = date(2025, 3, 3)
+
+    first = trainer.run(
+        dataset_files=(original,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+    )
+    second = trainer.run(
+        dataset_files=(mutated,), training_cutoff=cutoff, phase4_gate_sha256="f" * 64
+    )
+
+    assert first.model_sha256 == second.model_sha256
+    assert first.model_text == second.model_text
+    assert first.dataset_sha256 != second.dataset_sha256
+
+
+def test_inference_rejects_missing_or_extra_features(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    _dataset(dataset)
+    artifact = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
+    )
+
+    for values in ({}, {"signal": 1.0, "extra": 2.0}):
+        try:
+            artifact.predict_probability(values)
+        except ValueError as error:
+            assert "exactly match" in str(error)
+        else:
+            raise AssertionError("invalid inference feature vector was accepted")
+
+
+def test_loader_rejects_tampered_booster(tmp_path: Path) -> None:
+    dataset = tmp_path / "training.parquet"
+    _dataset(dataset)
+    artifact = ProductionModelTrainer(feature_names=("signal",), early_stopping_rounds=10).run(
+        dataset_files=(dataset,),
+        training_cutoff=date(2025, 3, 3),
+        phase4_gate_sha256="f" * 64,
+    )
+    model_path, evidence_path = ProductionModelTrainer.write(artifact, tmp_path / "models")
+    model_path.write_text(model_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    try:
+        artifact.load(evidence_path=evidence_path, model_path=model_path)
+    except ValueError as error:
+        assert "invalid production model evidence" in str(error)
+    else:
+        raise AssertionError("tampered production booster was accepted")

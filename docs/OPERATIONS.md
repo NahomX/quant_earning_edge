@@ -922,24 +922,34 @@ the download or importing later splits. The fixed 15-minute delay is a
 conservative causal contract, not evidence of the provider's exact historical
 publication time.
 
-Coverage requires an authoritative JSON `sessions` list or line-delimited
-market-calendar file:
+Fetch the authoritative Alpaca calendar over the exact backfill-plan interval:
+
+```powershell
+uv run qee calendar sessions `
+  --start 2021-01-01 `
+  --end 2026-01-01
+```
+
+Then pass the emitted `source_manifest`, not a hand-authored date list:
 
 ```powershell
 uv run qee backfill coverage `
   --plan-id <sha256-from-backfill-output> `
-  --sessions-file .\market-sessions-2021-2026.json
+  --calendar-source-manifest <source-manifest-from-calendar-output>
 ```
 
-Readiness requires every batch, no missing symbol/session pairs, a five-year
-date span, and at least 1,200 explicit sessions. It never infers the expected
-calendar from the data being audited. It also does not scan ambient Silver
-partitions. For each successful batch it requires matching plan-bound Polygon
-source lineage, independently rebuilds Silver in an isolated temporary lake,
-matches the rebuilt logical artifact hashes and row count to the success event,
-and counts sessions only from those reconstructed rows. A row imported by
-another job, a detached success event, or a modified coverage report therefore
-fails closed.
+The calendar source must live in the configured lake, exactly match the
+backfill-plan interval, and reproduce its immutable session file byte-for-byte
+from retained Alpaca observations. Readiness requires every batch, no missing
+symbol/session pairs, a five-year date span, and at least 1,200 reproduced
+sessions. The report binds both the calendar-source and session-file SHA-256.
+It never infers the expected calendar from the bars being audited and does not
+scan ambient Silver partitions. For each successful batch it requires matching
+plan-bound Polygon source lineage, independently rebuilds Silver in an isolated
+temporary lake, matches the rebuilt logical artifact hashes and row count to
+the success event, and counts sessions only from those reconstructed rows. A
+row imported by another job, a detached success event, a copied or hand-edited
+calendar, or a modified coverage report therefore fails closed.
 
 ## Evaluate paper-order circuit breakers
 

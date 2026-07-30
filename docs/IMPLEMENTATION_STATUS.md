@@ -30,7 +30,7 @@ reproducible through `uv.lock`.
 | Provider-source minute-bar reconstruction | Complete | minute ingestion emits the exact interval/event-date/ingestion-time manifest and byte-exactly rebuilds Silver from retained Polygon pages |
 | Resumable historical backfill tooling | Complete | immutable plans and append-only events are canonically revalidated on resume; plans default to provider-unadjusted bars plus one complete, independently replayable Polygon split-history interval; 16:15 America/New_York session availability remains separate from physical ingestion |
 | Five-year historical backfill execution | Blocked on provider credentials | No local credentials |
-| Explicit-session coverage auditing | Complete | only plan-bound Polygon observations independently rebuilt to exact Silver and matched to successful-event artifact hashes can satisfy the authoritative-session audit |
+| Provider-bound coverage auditing | Complete | only exact plan-bound Polygon observations matched to successful-event hashes and an independently rebuilt in-lake Alpaca calendar can satisfy the audit; both calendar identities are report-bound |
 | Authoritative market-calendar client and immutable session files | Complete | `data/clients/alpaca.py`, `data/calendar.py`, contract tests |
 | Provider-source calendar reconstruction | Complete | exact Alpaca calendar Bronze response; strict source manifest; byte-exact session-file reproduction |
 | Combined PIT earnings/split/dividend candidate audit | Complete | `universe/events.py`, cutoff/timing/overlap tests |

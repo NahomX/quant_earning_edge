@@ -18,6 +18,11 @@ from quant_earning_edge.data.bars_source import (
     DailyBarsSourceCapture,
     DailyBarsSourceManifest,
 )
+from quant_earning_edge.data.calendar import SessionFileStore
+from quant_earning_edge.data.calendar_source import (
+    CalendarSourceCapture,
+    CalendarSourceManifest,
+)
 from quant_earning_edge.data.layout import LakehouseLayout
 from quant_earning_edge.data.silver import (
     DAILY_BAR_SESSION_CLOSE_15M,
@@ -105,9 +110,11 @@ class BackfillRunResult:
 
 @dataclass(frozen=True)
 class BarCoverageReport:
-    """Coverage evidence against explicit expected market sessions."""
+    """Coverage evidence against a reproduced authoritative market calendar."""
 
     plan_id: str
+    calendar_source_sha256: str
+    session_file_sha256: str
     expected_sessions: tuple[date, ...]
     completed_batch_indices: tuple[int, ...]
     complete_symbols: tuple[str, ...]
@@ -498,14 +505,13 @@ class BarCoverageAuditor:
         self,
         plan: BarBackfillPlan,
         *,
-        expected_sessions: tuple[date, ...],
+        calendar_source_manifest: Path,
     ) -> BarCoverageReport:
-        """Return and persist evidence; never infer sessions from stored bars."""
-        expected = tuple(sorted(set(expected_sessions)))
-        if not expected:
-            raise ValueError("coverage audit requires expected market sessions")
-        if expected[0] < plan.start_date or expected[-1] > plan.end_date:
-            raise ValueError("expected sessions must fall within the backfill plan")
+        """Persist coverage against an independently replayed Alpaca calendar."""
+        expected, calendar_source_sha256, session_file_sha256 = self._reproduced_calendar_evidence(
+            plan,
+            calendar_source_manifest=calendar_source_manifest,
+        )
         success_events = tuple(
             event
             for event in self._store.read_events(plan.plan_id)
@@ -537,6 +543,8 @@ class BarCoverageAuditor:
         sufficient_sessions = len(expected) >= MIN_FIVE_YEAR_SESSIONS
         report = BarCoverageReport(
             plan_id=plan.plan_id,
+            calendar_source_sha256=calendar_source_sha256,
+            session_file_sha256=session_file_sha256,
             expected_sessions=expected,
             completed_batch_indices=completed_batches,
             complete_symbols=complete_symbols,
@@ -546,6 +554,41 @@ class BarCoverageAuditor:
         )
         self._store.write_coverage_report(report)
         return report
+
+    def _reproduced_calendar_evidence(
+        self,
+        plan: BarBackfillPlan,
+        *,
+        calendar_source_manifest: Path,
+    ) -> tuple[tuple[date, ...], str, str]:
+        manifest = CalendarSourceManifest.load(calendar_source_manifest)
+        source_root = self._layout.root.resolve() / "manifests" / "market-calendar" / "sources"
+        manifest_sha256 = hashlib.sha256(manifest.path.read_bytes()).hexdigest()
+        if (
+            manifest.path.parent != source_root
+            or manifest.path.name != f"source-{manifest_sha256[:20]}.json"
+        ):
+            raise ValueError("coverage calendar source is not canonical in-lake evidence")
+        if (
+            manifest.raw["start_date"] != plan.start_date.isoformat()
+            or manifest.raw["end_date"] != plan.end_date.isoformat()
+        ):
+            raise ValueError("coverage calendar interval differs from its backfill plan")
+        session_file = SessionFileStore.load(
+            manifest.session_path(data_lake_root=self._layout.root)
+        )
+        with TemporaryDirectory(prefix="qee-backfill-calendar-reproduction-") as temporary:
+            reproduced = CalendarSourceCapture.reproduce(
+                manifest,
+                data_lake_root=self._layout.root,
+                output_layout=LakehouseLayout(Path(temporary)),
+            )
+        if reproduced.sha256 != session_file.sha256:
+            raise ValueError("coverage calendar identity differs after reproduction")
+        expected = tuple(item.session_date for item in reproduced.sessions)
+        if not expected:
+            raise ValueError("coverage audit requires expected market sessions")
+        return expected, manifest_sha256, reproduced.sha256
 
     def _reproduced_plan_rows(
         self,

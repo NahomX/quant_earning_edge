@@ -14,12 +14,14 @@ from quant_earning_edge.data import (
     BarBackfillStore,
     BarCoverageAuditor,
     BronzeWriter,
+    CalendarSourceCapture,
     DailyBarsSourceCapture,
     LakehouseLayout,
+    SessionFileStore,
     SilverWriter,
     SplitHistorySourceCapture,
 )
-from quant_earning_edge.data.clients import EquityBar, PolygonClient
+from quant_earning_edge.data.clients import AlpacaCalendarClient, EquityBar, PolygonClient
 from quant_earning_edge.features import DailyBarsFeatureLoader
 
 if TYPE_CHECKING:
@@ -133,6 +135,47 @@ class CapturingBarsProvider:
             symbol=symbol,
             expected_adjusted=adjusted,
         )
+
+
+def _calendar_source(
+    layout: LakehouseLayout,
+    *,
+    sessions: tuple[date, ...],
+    start_date: date,
+    end_date: date,
+) -> Path:
+    raw = [
+        {
+            "date": session.isoformat(),
+            "open": "09:30",
+            "close": "16:00",
+        }
+        for session in sessions
+    ]
+    observation = BronzeWriter(layout).write_json(
+        raw,
+        source="alpaca",
+        dataset="market-calendar",
+        event_date=start_date,
+        received_at=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    session_file = SessionFileStore(layout).write(
+        AlpacaCalendarClient.sessions_from_payload(
+            raw,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    )
+    return (
+        CalendarSourceCapture(layout)
+        .write(
+            start_date=start_date,
+            end_date=end_date,
+            session_file=session_file,
+            provider_observations=(observation,),
+        )
+        .path
+    )
 
 
 def test_plan_identity_is_normalized_and_stable_across_resume(tmp_path: Path) -> None:
@@ -406,13 +449,21 @@ def test_coverage_requires_full_batches_five_years_and_1200_sessions(
         clock=Clock(),
         attempt_id_factory=lambda: "coverage-attempt",
     ).run(plan)
+    calendar_source = _calendar_source(
+        layout,
+        sessions=tuple(sessions),
+        start_date=plan.start_date,
+        end_date=plan.end_date,
+    )
 
     report = BarCoverageAuditor(layout=layout, store=store).audit(
         plan,
-        expected_sessions=tuple(sessions),
+        calendar_source_manifest=calendar_source,
     )
 
     assert report.ready
+    assert len(report.calendar_source_sha256) == 64
+    assert len(report.session_file_sha256) == 64
     assert report.complete_symbols == ("AAPL",)
     assert report.missing_sessions_by_symbol == {}
     assert report.covers_minimum_five_years
@@ -425,7 +476,7 @@ def test_coverage_requires_full_batches_five_years_and_1200_sessions(
     with pytest.raises(RuntimeError, match="coverage collision"):
         BarCoverageAuditor(layout=layout, store=store).audit(
             plan,
-            expected_sessions=tuple(sessions),
+            calendar_source_manifest=calendar_source,
         )
 
 
@@ -449,11 +500,17 @@ def test_coverage_rejects_completed_batch_without_plan_bound_provider_lineage(
         clock=Clock(),
         attempt_id_factory=lambda: "unbound-attempt",
     ).run(plan)
+    calendar_source = _calendar_source(
+        layout,
+        sessions=(session,),
+        start_date=plan.start_date,
+        end_date=plan.end_date,
+    )
 
     with pytest.raises(ValueError, match="lack plan-bound Polygon source lineage"):
         BarCoverageAuditor(layout=layout, store=store).audit(
             plan,
-            expected_sessions=(session,),
+            calendar_source_manifest=calendar_source,
         )
 
 
@@ -482,15 +539,21 @@ def test_coverage_rejects_success_event_detached_from_source_artifacts(
     raw = json.loads(event_path.read_bytes())
     raw["artifact_sha256"] = ["0" * 64]
     event_path.write_bytes(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode())
+    calendar_source = _calendar_source(
+        layout,
+        sessions=(session,),
+        start_date=plan.start_date,
+        end_date=plan.end_date,
+    )
 
     with pytest.raises(ValueError, match="uniquely match its success-event artifacts"):
         BarCoverageAuditor(layout=layout, store=store).audit(
             plan,
-            expected_sessions=(session,),
+            calendar_source_manifest=calendar_source,
         )
 
 
-def test_coverage_reports_missing_sessions_and_rejects_inferred_empty_calendar(
+def test_coverage_reports_missing_sessions_and_rejects_mismatched_calendar_interval(
     tmp_path: Path,
 ) -> None:
     layout = LakehouseLayout(tmp_path)
@@ -502,15 +565,56 @@ def test_coverage_reports_missing_sessions_and_rejects_inferred_empty_calendar(
         batch_size=1,
         created_at=datetime(2026, 1, 2, tzinfo=UTC),
     )
-    with pytest.raises(ValueError, match="expected market sessions"):
+    mismatched_calendar = _calendar_source(
+        layout,
+        sessions=(date(2021, 1, 4),),
+        start_date=date(2021, 1, 4),
+        end_date=plan.end_date,
+    )
+    with pytest.raises(ValueError, match="interval differs"):
         BarCoverageAuditor(layout=layout, store=store).audit(
             plan,
-            expected_sessions=(),
+            calendar_source_manifest=mismatched_calendar,
         )
 
+    calendar_source = _calendar_source(
+        layout,
+        sessions=(date(2021, 1, 4),),
+        start_date=plan.start_date,
+        end_date=plan.end_date,
+    )
     report = BarCoverageAuditor(layout=layout, store=store).audit(
         plan,
-        expected_sessions=(date(2021, 1, 4),),
+        calendar_source_manifest=calendar_source,
     )
     assert not report.ready
     assert report.missing_sessions_by_symbol == {"AAPL": (date(2021, 1, 4),)}
+
+
+def test_coverage_rejects_calendar_manifest_copied_outside_the_data_lake(
+    tmp_path: Path,
+) -> None:
+    layout = LakehouseLayout(tmp_path / "lake")
+    store = BarBackfillStore(layout)
+    session = date(2026, 7, 20)
+    plan = store.prepare_plan(
+        symbols=("AAPL",),
+        start_date=session,
+        end_date=session,
+        batch_size=1,
+        created_at=datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    calendar_source = _calendar_source(
+        layout,
+        sessions=(session,),
+        start_date=session,
+        end_date=session,
+    )
+    copied_source = tmp_path / calendar_source.name
+    copied_source.write_bytes(calendar_source.read_bytes())
+
+    with pytest.raises(ValueError, match="not canonical in-lake evidence"):
+        BarCoverageAuditor(layout=layout, store=store).audit(
+            plan,
+            calendar_source_manifest=copied_source,
+        )

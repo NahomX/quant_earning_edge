@@ -5200,12 +5200,12 @@ def backfill_bars(  # noqa: PLR0917 - CLI options are the backfill contract.
 @backfill_app.command("coverage")
 def backfill_coverage(
     plan_id: Annotated[str, typer.Option(help="SHA-256 plan identifier.")],
-    sessions_file: Annotated[
+    calendar_source_manifest: Annotated[
         Path,
         typer.Option(
             exists=True,
             dir_okay=False,
-            help="JSON or line-delimited authoritative market sessions.",
+            help="Provider-source manifest for the authoritative Alpaca calendar.",
         ),
     ],
     env_file: EnvFileOption = None,
@@ -5215,18 +5215,16 @@ def backfill_coverage(
     layout = LakehouseLayout(environment.data_lake_root)
     store = BarBackfillStore(layout)
     plan = store.load_plan(plan_id)
-    sessions = tuple(
-        _parse_date(item, option="sessions file")
-        for item in _load_string_list(sessions_file, key="sessions")
-    )
     report = BarCoverageAuditor(layout=layout, store=store).audit(
         plan,
-        expected_sessions=sessions,
+        calendar_source_manifest=calendar_source_manifest,
     )
     _echo_json(
         {
             "plan_id": report.plan_id,
             "ready": report.ready,
+            "calendar_source_sha256": report.calendar_source_sha256,
+            "session_file_sha256": report.session_file_sha256,
             "expected_session_count": len(report.expected_sessions),
             "complete_symbol_count": len(report.complete_symbols),
             "missing_symbol_count": len(report.missing_sessions_by_symbol),

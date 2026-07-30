@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from click import unstyle
 from typer.testing import CliRunner
 
 from quant_earning_edge import __version__
@@ -146,6 +147,15 @@ def test_calendar_command_requires_both_credentials(tmp_path: Path) -> None:
     assert "APCA_API_KEY_ID" in result.stderr
     assert "APCA_API_SECRET_KEY" in result.stderr
     assert "required" in result.stderr
+
+
+def test_backfill_coverage_requires_provider_bound_calendar_manifest() -> None:
+    result = runner.invoke(app, ["backfill", "coverage", "--help"])
+    output = unstyle(result.stdout)
+
+    assert result.exit_code == 0
+    assert "--calendar-source-manifest" in output
+    assert "--sessions-file" not in output
 
 
 def test_backtest_plan_splits_writes_auditable_manifest(tmp_path: Path) -> None:
